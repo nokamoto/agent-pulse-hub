@@ -1,114 +1,105 @@
 ---
 type: Requirement
 title: Minimal external event delivery MVP
-description: Validate plugin-originated events resuming work in an existing Codex session without agent polling.
+description: Deliver plugin events to an existing Codex session so it can continue work without polling.
 sources:
   - id: aidd
     resource: ../aidd/README.md
     title: AI-Driven Development
-  - id: go-plugin
-    resource: https://github.com/hashicorp/go-plugin
-    title: HashiCorp go-plugin
-  - id: codex-app-server
-    resource: https://learn.chatgpt.com/docs/app-server
-    title: Codex App Server
 ---
 
 # Minimal external event delivery MVP
 
-Status: Draft proposal. Product choices below require human review; Q-001 and Q-003 block design readiness.
+Status: Draft. Delivery to an existing Codex session, duplicate registration, and delivery while a session is working remain unresolved. See Open questions.
 
-## Problem and goals
+## Problem and goal
 
-Developers using coding agents need to continue work when an external condition changes. Repeated agent-driven checks consume execution resources and delay reactions until the next check. The user's example is responding to pull request reviews, but GitHub and pull request monitoring are not committed deliverables.
+A coding agent may need to wait for a change in an external service before continuing work, such as a new review comment on a pull request. Asking the agent to check repeatedly consumes resources and delays its response until the next check.
 
-Validate one hypothesis: a lightweight daemon can run a separate trigger plugin, register an existing Codex session, and deliver an event that causes that session to continue useful work, without periodic agent turns to check for changes. A simulated trigger proves the delivery path, not real-service detection latency or production cost savings.
+Agent Pulse Hub moves this waiting work to a local background program. Its MVP must demonstrate that an event can reach an existing Codex Desktop conversation and cause it to continue work without another user message. A manually triggered test event is sufficient; integration with a real service is not required.
 
-Success requires a real Codex session demonstration. A mock recipient alone is insufficient. Report observed latency and idle agent calls; do not claim a latency SLA or quantified savings from this experiment.
+## Terms and workflow
 
-## Sources and decisions
+- **Daemon:** the local program that runs plugins and sends their events to Codex.
+- **Plugin:** a separate program launched by the daemon. It watches for a condition and reports an event when that condition is met.
+- **Session:** the existing Codex Desktop conversation that should receive the event.
+- **Subscription:** a registration connecting a plugin and its watch arguments to a session. Each registration has an identifier.
+- **Skill:** instructions bundled with the repository that Codex follows to register the current session and handle incoming events.
 
-- User direction (conversation, 2026-10-08): an OSS daemon launches configurable plugin child processes; plugins may use arbitrary languages and trigger conditions; a bundled skill helps register the current session; the daemon sends event messages to Codex. Future agents, including Claude, must remain possible. Keep this MVP minimal.
-- Repository instructions require Go for project implementation and English documentation. Third-party plugin implementations may use other languages.
-- The [AIDD playbook](../aidd/README.md) governs phase approval. This document defines outcomes, not a transport or implementation design.
-- HashiCorp go-plugin is a reference for process communication, not a mandated dependency. Protocol and library selection belong to design.
-- The official Codex App Server documentation describes thread and turn operations. This research does not establish an externally callable queue API for an existing Desktop-owned session. Do not equate a separate app-server thread with the user's current Desktop session; Q-001 remains unresolved.
-- Local read-only evidence (Windows, 2026-10-08): `codex-cli 0.162.0-alpha.2` exposes `codex queue --thread <THREAD> --message <TEXT>`; CLI help describes THREAD as a session UUID or exact session name. This provides a candidate delivery mechanism, not proof of Desktop delivery or a stable public API. In the investigating subagent, `CODEX_THREAD_ID` and `CODEX_SESSION_ID` both existed as different UUIDs; their semantics must be verified before selecting the registration identity. No test message was sent.
-- Proposed minimum: one local user, one daemon instance, one bundled manually stimulated test plugin, and Codex as the only implemented agent destination. The user confirmed test-plugin-only scope, Windows-only verification, volatile state, no automatic retries, and stopping the daemon to end watches. Single-user/single-instance operation is the proposed demonstration boundary.
+1. The developer starts the daemon with a configuration naming the plugin program to run.
+2. The user invokes the skill in a Codex session. Codex registers that session, the selected plugin, and the arguments describing what to watch.
+3. The plugin reports an event for that subscription.
+4. The daemon sends the event context to the registered session. Codex continues the requested work under the user's existing instructions and permissions.
+5. Stopping the daemon ends all subscriptions. After restart, the user must register again.
 
 ## Scope
 
-In scope (proposed): foreground daemon startup, configured child-process plugins, session subscription, event routing to Codex, a registration skill, useful diagnostics, and a reproducible end-to-end demonstration.
+The MVP runs on Windows for one local user with one daemon instance. The repository provides the daemon, one manually triggered test plugin, and a registration skill as open-source software. The daemon and bundled plugin are implemented in Go. Documentation is written in English.
 
-Out of scope (proposed): GitHub or other production service integrations, Claude delivery, plugin marketplace or installation manager, dynamic configuration reload, OS service installation, GUI, remote or multi-user daemon hosting, persistent subscriptions or events, automatic retries or plugin restarts, deduplication, exactly-once delivery, high availability, and throughput or resource optimization. Stopping the daemon ends all watches; restart requires registration again. External plugins may poll services; the avoided polling is agent-driven checking.
+The plugin interface must allow other languages and trigger types. Future delivery to other coding agents must not require plugins to implement agent-specific APIs. Only Codex delivery is implemented in this MVP.
+
+Excluded from the MVP:
+
+- Real-service integrations, including GitHub monitoring, and delivery to agents other than Codex.
+- Persistence, automatic delivery retries, automatic plugin restarts, duplicate-event suppression, and guaranteed delivery across failures.
+- Individual subscription cancellation; stopping the daemon ends all watches.
+- Remote or multi-user hosting, a GUI, OS service installation, and plugin installation management.
+- Configuration changes while running and performance or high-availability targets.
+
+Plugins may poll external services. The daemon and plugins must not ask the coding agent to poll for changes.
 
 ## Use cases
 
-| ID | Actor and trigger | Expected outcome | Failure or boundary |
+| ID | Action | Expected outcome | Failure or boundary |
 | --- | --- | --- | --- |
-| UC-001 | Developer starts the daemon with a plugin command | Plugin becomes available for subscriptions | Invalid configuration or child startup failure is reported |
-| UC-002 | User invokes the bundled skill in an existing Codex session | Current session and plugin arguments are registered | Missing session identity, unknown plugin, or rejected arguments do not create an active subscription |
-| UC-003 | Plugin observes its configured condition | Registered session receives context and continues work | Unregistered events are rejected; unavailable recipient is reported |
-| UC-004 | Developer stops the daemon or a plugin exits | Watches stop or are reported unavailable | Restart does not silently restore prior subscriptions |
+| UC-001 | Developer starts the daemon | Configured plugins are ready for registration | Invalid configuration or plugin startup failure is reported |
+| UC-002 | User invokes the skill in a session | A subscription connects that session to the requested watch | Missing session identity, unknown plugin, or rejected arguments fail registration |
+| UC-003 | Plugin reports an event | The registered session receives the context and continues work | Invalid events are rejected; delivery failure is reported |
+| UC-004 | Developer stops the daemon or a plugin exits | Affected watches stop | Restart does not restore subscriptions |
 
 ## Functional requirements
 
-All rows are proposed MVP requirements, pending scope approval; no priority below is presented as already agreed.
-
-| ID | Requirement | Rationale / use case | Priority |
-| --- | --- | --- | --- |
-| FR-001 | Provide a foreground serve operation that reads named plugin executable/argument configuration, launches the configured children, reports readiness or startup failure, and stops its children on normal shutdown. | UC-001, UC-004 | Proposed MVP |
-| FR-002 | Provide a subscription operation taking plugin name, agent destination/session identity, and plugin-specific arguments. Report success only after the plugin accepts the watch; invalid input or unavailable daemon/plugin returns failure without an active subscription. Return an identifier usable in diagnostics. | UC-002 | Proposed MVP |
-| FR-003 | Deliver each valid event for an active subscription to its registered Codex session. Preserve plugin identity, subscription identity, and event context supplied by the plugin. Reject events with no active subscription owned by their emitting plugin. Plugins must not choose arbitrary agent recipients in event payloads. | UC-003 | Proposed MVP |
-| FR-004 | Bundle a test plugin with a documented way to cause a matching event on demand and supply recognizable context. It must use the same child-process contract available to external plugins. No real external service integration is required for this proposal. | UC-001, UC-003 | Proposed MVP |
-| FR-005 | Bundle a skill explaining registration from the current execution context, required plugin arguments, handling missing identity without guessing, and interpreting delivered events under the user's existing instructions and permissions. Delivery must be able to initiate subsequent work without a manual follow-up message. | UC-002, UC-003 | Proposed MVP |
-| FR-007 | Repeating an identical active registration returns its existing identity and does not multiply deliveries. For a busy target session, enqueue for subsequent work without interrupting it; if the integration cannot accept the event, report delivery failure without retry. | UC-002, UC-003 | Proposed MVP |
-| FR-006 | Report plugin exit, invalid event, and delivery failure with plugin/subscription identity when available. A failed or uncertain delivery must not be reported as successful. Use one delivery attempt per accepted event, without application-level automatic retries; uncertain outcomes may be lost. Unavailable plugin subscriptions stop accepting events. | UC-003, UC-004 | Proposed MVP |
-
-The illustrative commands `daemon serve` and `daemon codex subscribe <plugin> <thread-id> <args...>` express the intended workflow. Binary name, exact syntax, configuration format, and IPC are design choices. No generic agent SDK or second agent implementation is required.
+| ID | Requirement |
+| --- | --- |
+| FR-001 | Start the daemon in the foreground using configuration that identifies each plugin by name, executable, and arguments. Launch those programs as child processes, report readiness or startup failure, and stop the children on normal shutdown. |
+| FR-002 | Accept registration with a plugin name, target session identity, and watch arguments. Report success and a subscription identifier only after the plugin accepts the watch. Invalid input or an unavailable daemon/plugin must fail without creating an active subscription. |
+| FR-003 | Send valid events to the session registered for their subscription, preserving the plugin name, subscription identifier, and event context. Reject events without an active subscription belonging to the emitting plugin. Event content must not change the registered recipient. |
+| FR-004 | Bundle a test plugin that emits an event with recognizable context on demand. It must use the same communication interface available to other plugins. |
+| FR-005 | Bundle a skill that registers the current session with the required watch arguments and explains how to handle incoming events. Missing session identity must produce an error rather than a guessed recipient. A delivered event must allow Codex to continue work without a follow-up user message. |
+| FR-006 | Report plugin exit, invalid events, and failed or uncertain delivery, including plugin/subscription identifiers when known. Attempt delivery once per accepted event. If Codex acceptance cannot be confirmed, report the outcome as unknown rather than successful; do not retry. Reject subsequent events for an unavailable plugin. Plugin failure must not stop the daemon from serving other available plugins. |
+| FR-007 | Repeating an active registration with the same plugin, target session, and watch arguments must return the same subscription identifier without adding another watch or delivery. If the target session is already working, queue the event for processing after the current work finishes, without interrupting it, or report that delivery could not be accepted. Do not retry a rejected delivery. This behavior is proposed pending Q-003. |
 
 ## Nonfunctional requirements
 
-| ID | Requirement and conditions | Rationale | Evaluation |
-| --- | --- | --- | --- |
-| NFR-001 | While waiting without matching events, the daemon/plugin path must make zero calls that initiate agent turns. After receiving an event, delivery must not depend on the next periodic agent check. | Validate the cost/latency mechanism without invented numeric targets | Trace idle and stimulated runs |
-| NFR-002 | Document a process communication contract implementable without importing Go code. Trigger arguments and event content must not require GitHub concepts; the plugin-facing contract must not require Codex API calls or Codex-specific session fields. | Preserve language, trigger, and future-agent extensibility | Contract and dependency inspection; second-language fixture is optional |
-| NFR-003 | Limit daemon control to the local user environment; do not expose unauthenticated remote control. Treat external event content as data, not authorization to expand agent permissions. Configured plugins are trusted executables; sandboxing hostile plugins is excluded. | Minimum execution boundary | Interface/configuration inspection and skill/message review |
-| NFR-004 | Provide English build, startup, subscription, stimulation, and shutdown instructions for Windows and an explicitly recorded Codex version. Include restart-loss and delivery-loss limitations. | Reproduce the hypothesis with Go project code and minimal support burden | Clean-run walkthrough |
-
-## Constraints and dependencies
-
-- Go implementation, English documentation, and separate AIDD phase deliverables are mandatory repository constraints.
-- A working externally accessible Codex delivery mechanism and a reliable way to identify the current session are critical dependencies, not assumed capabilities.
-- Subscriptions and undelivered events need only live for the running process. No delivery guarantee applies across failure or shutdown. Per-subscription cancellation is excluded. Repeated-registration and busy-session behavior follow the proposed boundary in FR-007.
-- A single bundled plugin proves the minimum path. General plugin loading must not be hard-coded to its name or a GitHub event schema. Shipping multiple plugin languages or multiple agents is not required.
+| ID | Requirement |
+| --- | --- |
+| NFR-001 | While no matching event occurs, neither the daemon nor a plugin may request a new Codex response or task execution. After an event arrives, delivery must not wait for a periodic agent check. |
+| NFR-002 | Document the daemon/plugin communication interface so it can be implemented in another language without importing Go code. It must not require GitHub-specific data, Codex session fields, or calls from plugins to Codex APIs. A configured plugin must be replaceable without changing daemon code. |
+| NFR-003 | Allow daemon control only by the user running it on the same computer. Plugins are trusted programs chosen by the user; isolating malicious plugins is outside scope. Label event content as external data; neither the message nor the skill grants permission beyond the user's existing instructions. |
+| NFR-004 | Provide reproducible Windows instructions for building, starting, registering, triggering a test event, and stopping. Record the tested Codex version and explain that shutdown loses registrations and pending events, and that delivery failures are not retried. |
 
 ## Acceptance criteria
 
-Automate daemon/contract checks where practical during implementation. The maintainer evaluates the real Codex walkthrough and retains version information, commands, timestamps, daemon traces, and the target-session transcript. These are future acceptance procedures, not results already obtained.
+Automate process and interface checks where practical. The maintainer performs the real Codex demonstration and records the commands, versions, daemon logs, and target conversation. A simulated Codex recipient alone does not satisfy AC-003.
 
-| ID | Requirement IDs | Preconditions / stimulus | Observable expected result | Verification |
+| ID | Requirements | Check and expected result |
+| --- | --- | --- |
+| AC-001 | FR-001, FR-004 | Start the configured test plugin and confirm readiness. Invalid configuration and a missing executable produce visible errors. Normal shutdown leaves no daemon-owned child running. |
+| AC-002 | FR-002, FR-005 | Register through the skill and receive a subscription identifier. Missing session identity, an unknown plugin, rejected arguments, and an unavailable daemon each fail without an active subscription. No recipient is guessed. |
+| AC-003 | FR-003, FR-004, FR-005 | Register session A and leave session B unregistered. Instruct A to acknowledge the next event by replying with its recognizable context, then trigger that event. A receives its source and context and acknowledges it without another user message; B receives nothing and no new conversation is created. |
+| AC-004 | FR-003, FR-006 | Submit malformed events, unknown subscription identifiers, and an event claiming another plugin's subscription. None is delivered. Separately cause delivery failure and plugin exit: errors identify the affected plugin/subscription when known, do not claim success, and cause no retry or restart. Other available plugins remain usable. |
+| AC-005 | FR-006, NFR-004 | Register, stop, and restart the daemon. An event using the old subscription is rejected; a new registration is required. Instructions describe this loss of state and the lack of retries. |
+| AC-006 | NFR-001 | Observe a declared idle period and confirm zero agent work requests in the logs. Trigger an event and confirm a delivery attempt without a periodic agent check. Record event-receipt, delivery-attempt, and agent-response times; no numerical latency target is required. |
+| AC-007 | NFR-002 | Inspect the documented interface: another language can implement it; no GitHub schema, Codex session fields, or Codex API calls are required of plugins. Confirm the configured executable can be replaced without a daemon code change. |
+| AC-008 | NFR-003 | Inspect how the daemon is accessed and confirm only the local user running the daemon can control it. Inspect a forwarded event and the skill: external content is identified as data and does not grant additional permissions. |
+| AC-009 | NFR-004 | Follow the instructions from a clean build on Windows. Complete startup, registration, event acknowledgment, and shutdown; record the Codex version and any failures. |
+| AC-010 | FR-007 | Repeat identical registration twice: the identifier is unchanged and one event causes one delivery attempt. Send an event while the target session is working: it is queued without interruption or explicitly rejected without retry. Record the delivery result and session behavior. |
+
+## Open questions
+
+| ID | Decision needed | Impact | Owner | Deadline |
 | --- | --- | --- | --- | --- |
-| AC-001 | FR-001, FR-004 | Start configured test plugin, repeat with invalid config and missing executable, then stop normally | Valid child is ready; invalid cases fail visibly; normal stop leaves no owned child running | Process integration checks |
-| AC-002 | FR-002, FR-005 | Register using the skill; separately omit identity, use unknown plugin, reject arguments, and stop daemon before registration | Valid watch returns success and diagnostic identity; invalid cases report failure and no active watch; skill does not invent identity | CLI/contract checks and maintainer skill walkthrough |
-| AC-003 | FR-003, FR-004, FR-005 | Register session A, leave session B unregistered, then emit a recognizable event | A receives source/context and performs a harmless requested acknowledgment without another user message; B receives nothing; no replacement thread is used | Maintainer walkthrough with real Codex, not only a mock |
-| AC-004 | FR-003, FR-006 | Emit malformed/unregistered event and an event claiming a subscription owned by another plugin; fail delivery and terminate plugin in separate runs | Invalid events cause no delivery; failures identify the affected source/subscription when known, never claim success, and cause no automatic retry/restart; unaffected daemon remains usable | Contract/failure injection checks |
-| AC-005 | FR-006, NFR-004 | Register, stop, restart, and try an event for the old registration | No prior subscription is restored; explicit new registration is required; documented loss boundaries match behavior | Restart check and documentation review |
-| AC-006 | NFR-001 | Record a predeclared idle interval, then stimulate one event in a healthy run | Idle trace has zero agent-turn requests; event causes a delivery attempt without a scheduled agent check; record receipt-to-send and receipt-to-agent-action times separately | Trace inspection and maintainer observation; no numeric latency SLA |
-| AC-007 | NFR-002 | Inspect public contract and daemon/plugin responsibilities | Non-Go implementation is possible from documented messages; trigger payloads contain no mandatory GitHub schema; plugins need no Codex API or Codex session fields; configured executable can be replaced without editing daemon code | Design/implementation inspection |
-| AC-008 | NFR-003 | Inspect control exposure and supply event text asking to override user permissions | No unauthenticated remote control surface; forwarded content is marked as external data and skill grants no additional authorization | Interface and message/skill inspection; no claim of complete prompt-injection prevention |
-| AC-010 | FR-007 | Repeat the same registration twice, emit one event, then repeat emission while the target is busy | Repeated registration returns the same identity and creates one delivery attempt per event. Busy-session delivery is either accepted for subsequent work without interruption or explicitly fails without retry; retain queue response and session transcript | Contract checks and maintainer real-session walkthrough |
-| AC-009 | NFR-004 | Maintainer follows instructions on the selected OS/Codex version from a clean build | Startup through acknowledgment and shutdown is reproducible; versions and limitations are recorded in English | Maintainer walkthrough with retained evidence |
+| Q-001 | Establish how an external daemon can send to an existing Codex Desktop session and how the skill obtains the correct session identity. Verify access requirements and delivery to both idle and working sessions. | The core workflow depends on this capability. If it is unavailable, the MVP scope must be reconsidered. | Maintainer, supported by technical investigation | Before design begins |
+| Q-003 | Confirm the proposed repeated-registration and working-session behavior in FR-007. | Determines registration and delivery behavior; depends on Q-001. | Maintainer | Before design begins |
 
-## Open questions and assumptions
-
-| ID | Question / proposed decision | Impact | Owner | Resolve before | Status |
-| --- | --- | --- | --- | --- | --- |
-| Q-001 | Can the observed `codex queue --thread ... --message ...` command reach the existing Desktop-owned session, and which current-context identity is correct? Verify access/authentication, idle/busy behavior, and actual delivery. A callable CLI is acceptable; a direct HTTP API is not required. | The user confirmed that the API is unverified. Core feasibility; separate app-server or mock delivery is not a substitute. If unavailable, revisit the product target rather than claiming success. | Maintainer, with agent investigation | Design entry | Open; design blocker |
-| Q-002 | Test-plugin-only scope and Windows-only verification. Record the exact Codex version in feasibility evidence. | No real-service integration or other OS support is required. | Maintainer | Design entry | Resolved by user: test plugin and Windows only |
-| Q-003 | The user approved volatile state, no automatic retries, and daemon shutdown to end watches. Remaining proposed boundary: repeated identical registration returns the existing subscription; a busy session must receive queued input without interrupting work, or report inability to accept it without retry. | Defines lifecycle and failure acceptance; busy delivery capability depends on Q-001. | Maintainer | Design entry | Open; design blocker; proposed behavior covered by FR-007 / AC-010 |
-| Q-004 | Choose protocol/library, command spelling, event size/resource limits, and finite operation timeouts. | Needed for interoperable implementation and bounded failure behavior; no library is required by this document. | Design author; maintainer reviews design | Design approval, before implementation | Deferred design choices |
-
-## Change impact
-
-New concept `requirements/mvp`; all IDs are new. No existing requirement or design documents were found to revise. This draft does not approve design or implementation. Approval and merge follow the [AIDD playbook](../aidd/README.md). No existing runtime compatibility or migration is affected.
+The [AIDD playbook](../aidd/README.md) defines the approval process for these requirements and subsequent design work.
