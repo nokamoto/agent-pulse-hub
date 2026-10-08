@@ -24,7 +24,6 @@ All guardrails share:
 - Go module configuration (`go.mod`, `go.sum`) at the repository root
 - Registration in the `commands` list of `Guardrails` in `build/Magefile.go`
 - The same local and CI entry point: `go run build/mage.go -d build -w . guardrails`
-- CI path filters in `.github/workflows/guardrails.yml` covering every input and runner/configuration file that can affect the checks
 
 ## Steps to implement a guardrail
 
@@ -53,22 +52,13 @@ All guardrails share:
    ```
    Keep commands in a clear, deterministic order. The Mage target must return an error if any command fails rather than reporting success.
 
-5. **Update CI path filters**: In both `push.paths` and `pull_request.paths` in `.github/workflows/guardrails.yml`, include:
-   - Every file and directory validated by the guardrail
-   - `tools/guardrails/$command/**`
-   - `build/Magefile.go` and `build/mage.go`
-   - `tools.go`, `go.mod`, and `go.sum` when the guardrail or its dependencies require them
-   - `.github/workflows/guardrails.yml`
-
-   Keep CI on the shared Mage entry point. Do not add a separate workflow step that invokes the guardrail directly with `go run`.
-
-6. **Test locally**:
+5. **Test locally**:
    - Run the individual guardrail with `go run ./tools/guardrails/$command` while developing it.
    - Run the complete set with `go run build/mage.go -d build -w . guardrails`.
    - Use focused unit tests or temporary fixtures as appropriate to verify valid and invalid inputs, clear error messages, and non-zero failure exits. Clean up temporary fixtures.
    - Run relevant Go tests and `go mod tidy -diff` if dependencies changed.
 
-7. **Verify CI integration**: Confirm the workflow still invokes the shared Mage command and its path filters cover the new inputs. Do not claim a GitHub Actions run passed unless it was actually run and observed.
+6. **Verify CI integration**: Confirm `.github/workflows/guardrails.yml` invokes the shared Mage command. Do not claim a GitHub Actions run passed unless it was actually run and observed.
 
 ## Example: requirements format guardrail
 
