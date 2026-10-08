@@ -10,7 +10,7 @@ sources:
 
 # Minimal external event delivery MVP
 
-Status: Draft. The proposed behavior for duplicate registration and delivery while a session is working requires confirmation. See Open questions.
+Status: Pending requirements PR approval.
 
 ## Problem and goal
 
@@ -67,7 +67,7 @@ Plugins may poll external services. The daemon and plugins must not ask the codi
 | FR-004 | Bundle a test plugin that emits an event with recognizable context on demand. It must use the same communication interface available to other plugins. |
 | FR-005 | Bundle a skill that registers the current session with the required watch arguments and explains how to handle incoming events. Missing session identity must produce an error rather than a guessed recipient. A delivered event must allow Codex to continue work without a follow-up user message. |
 | FR-006 | Report plugin exit, invalid events, and failed or uncertain delivery, including plugin/subscription identifiers when known. Attempt delivery once per accepted event. If Codex acceptance cannot be confirmed, report the outcome as unknown rather than successful; do not retry. Reject subsequent events for an unavailable plugin. Plugin failure must not stop the daemon from serving other available plugins. |
-| FR-007 | Repeating an active registration with the same plugin, target session, and watch arguments must return the same subscription identifier without adding another watch or delivery. If the target session is already working, queue the event for processing after the current work finishes, without interrupting it, or report that delivery could not be accepted. Do not retry a rejected delivery. This behavior is proposed pending Q-003. |
+| FR-007 | Repeating an active registration with the same plugin, target session, and watch arguments must return the same subscription identifier without adding another watch or delivery. If the target session is already working, queue the event for processing after the current work finishes, without interrupting it, or report that delivery could not be accepted. Do not retry a rejected delivery. |
 
 ## Nonfunctional requirements
 
@@ -97,8 +97,6 @@ Automate process and interface checks where practical. The maintainer performs t
 
 ## Open questions
 
-| ID | Decision needed | Impact | Owner | Deadline |
-| --- | --- | --- | --- | --- |
-| Q-003 | Confirm the proposed repeated-registration and working-session behavior in FR-007. | Determines registration and delivery behavior. | Maintainer | Before design begins |
+None.
 
 The [AIDD playbook](../aidd/README.md) defines the approval process for these requirements and subsequent design work.
