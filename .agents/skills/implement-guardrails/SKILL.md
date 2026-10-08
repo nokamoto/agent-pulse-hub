@@ -1,73 +1,80 @@
 ---
 name: implement-guardrails
-description: Implement guardrail validation tools in Go and integrate them into the CI/CD pipeline. Guardrails enforce structural and format compliance for repository artifacts.
+description: Implement Go guardrail validators and register them in the shared Mage target used locally and in CI.
 ---
 
 # Implement guardrails
 
-Guardrails are automated validation tools that enforce consistent formatting and structure for repository artifacts. They run in CI to catch compliance issues early.
+Guardrails are automated validation tools that enforce consistent formatting and structure for repository artifacts. They run locally and in CI through one Mage target so both environments execute the same checks.
 
 ## Overview
 
-Guardrails are implemented as standalone Go programs in the `tools/guardrails/` directory and executed automatically in the GitHub Actions workflow `.github/workflows/guardrails.yml`.
+Guardrails are standalone Go programs in `tools/guardrails/`. The `Guardrails` Mage target in `build/Magefile.go` runs every guardrail, and `.github/workflows/guardrails.yml` invokes that target. Mage is run without requiring a separately installed Mage binary, through `build/mage.go`.
 
 ## Implementation structure
 
 Each guardrail is organized as:
 
-```
+```text
 tools/guardrails/$command/
   main.go          # Go implementation of the guardrail
 ```
 
 All guardrails share:
-- Common Go module configuration (`go.mod`, `go.sum` at repository root)
-- Execution via `go run ./tools/guardrails/$command`
-- Integration into the `.github/workflows/guardrails.yml` CI workflow
+- Go module configuration (`go.mod`, `go.sum`) at the repository root
+- Registration in the `commands` list of `Guardrails` in `build/Magefile.go`
+- The same local and CI entry point: `go run build/mage.go -d build -w . guardrails`
+- CI path filters in `.github/workflows/guardrails.yml` covering every input and runner/configuration file that can affect the checks
 
 ## Steps to implement a guardrail
 
-1. **Define validation rules**: Clearly specify what format or structure the guardrail enforces. Document:
+1. **Define validation rules**: Clearly specify what format or structure the guardrail enforces:
    - Files and directories it validates
    - Required fields, field order, and allowed optional fields
    - Error conditions and messages
-   - Any special cases or nested structures
+   - Special cases or nested structures
 
 2. **Implement in Go**: Create `tools/guardrails/$command/main.go` with:
    - A `main()` function that identifies files to validate
    - File parsing and validation functions
    - Error reporting with file paths and specific issue descriptions
-   - Exit code 0 on success, 1 on validation failure
-   - Success message to stdout on validation pass
+   - A non-zero exit on validation failure and a success message on validation pass
+   - Explicit reporting of filesystem, parsing, and validation errors; do not silently skip failures or turn them into success-shaped fallbacks
 
 3. **Handle edge cases**:
-   - Empty or missing directories (should generally be valid)
+   - Empty or missing directories (generally valid unless the rule requires their presence)
    - Malformed files (report specific parsing errors)
    - File permission issues
-   - Symlinks and special files (if applicable)
+   - Symlinks and special files, where applicable
 
-4. **Update CI integration**: Add a step to `.github/workflows/guardrails.yml`:
-   ```yaml
-   - name: Validate [description]
-     run: go run ./tools/guardrails/$command
+4. **Register the guardrail in Mage**: Add the invocation to the `commands` list in `build/Magefile.go`, for example:
+   ```go
+   {"run", "./tools/guardrails/$command"},
    ```
-   Also review and update the `on.paths` configuration to include:
-   - Directories and files the guardrail validates (e.g., `docs/path/**`)
-   - The guardrail tool itself (`tools/guardrails/$command/**`)
-   - Workflow file changes (`.github/workflows/guardrails.yml`)
+   Keep commands in a clear, deterministic order. The Mage target must return an error if any command fails rather than reporting success.
 
-5. **Test locally**:
-   - Run `go run ./tools/guardrails/$command` and verify output
-   - Create test files that should fail validation and verify errors
-   - Verify the tool returns correct exit codes
+5. **Update CI path filters**: In both `push.paths` and `pull_request.paths` in `.github/workflows/guardrails.yml`, include:
+   - Every file and directory validated by the guardrail
+   - `tools/guardrails/$command/**`
+   - `build/Magefile.go` and `build/mage.go`
+   - `tools.go`, `go.mod`, and `go.sum` when the guardrail or its dependencies require them
+   - `.github/workflows/guardrails.yml`
 
-6. **Verify CI**: Confirm the workflow runs and passes on valid files, fails on invalid files.
+   Keep CI on the shared Mage entry point. Do not add a separate workflow step that invokes the guardrail directly with `go run`.
+
+6. **Test locally**:
+   - Run the individual guardrail with `go run ./tools/guardrails/$command` while developing it.
+   - Run the complete set with `go run build/mage.go -d build -w . guardrails`.
+   - Use focused unit tests or temporary fixtures as appropriate to verify valid and invalid inputs, clear error messages, and non-zero failure exits. Clean up temporary fixtures.
+   - Run relevant Go tests and `go mod tidy -diff` if dependencies changed.
+
+7. **Verify CI integration**: Confirm the workflow still invokes the shared Mage command and its path filters cover the new inputs. Do not claim a GitHub Actions run passed unless it was actually run and observed.
 
 ## Example: requirements format guardrail
 
 See `tools/guardrails/requirements/main.go` for a reference implementation that:
 - Validates YAML frontmatter in Markdown files
-- Enforces required fields in specific order
+- Enforces required fields in a specific order
 - Rejects unexpected fields
 - Checks nested structure compliance
 - Validates multiple directories and specific files
@@ -76,6 +83,6 @@ See `tools/guardrails/requirements/main.go` for a reference implementation that:
 
 - **Fail fast, fail clearly**: Report specific errors with file paths and line numbers when possible
 - **Validate structure, not content**: Guardrails check format compliance; business logic validation belongs elsewhere
-- **Composable**: Each guardrail is independent; multiple guardrails can run in sequence
+- **Composable**: Keep each guardrail independent and register it in the shared Mage target
 - **Automatable**: All validation must be deterministic and reproducible
 - **Explain failures**: Error messages must enable developers to fix issues without external documentation
