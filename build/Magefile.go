@@ -10,10 +10,20 @@ import (
 )
 
 func Guardrails() error {
-	commands := [][]string{
+	return runGoCommands([][]string{
 		{"run", "./tools/guardrails/requirements"},
-	}
+	})
+}
 
+func Format() error {
+	return runGoCommands([][]string{
+		{"mod", "tidy"},
+		{"run", "golang.org/x/tools/cmd/goimports", "-w", "."},
+		{"run", "mvdan.cc/gofumpt", "-w", "."},
+	})
+}
+
+func runGoCommands(commands [][]string) error {
 	for _, args := range commands {
 		cmd := exec.Command("go", args...)
 		cmd.Stdout = os.Stdout
