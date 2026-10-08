@@ -4,27 +4,9 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'docs/**'
-      - 'tools/guardrails/**'
-      - 'build/Magefile.go'
-      - 'build/mage.go'
-      - 'tools.go'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/guardrails.yml'
   pull_request:
     branches:
       - main
-    paths:
-      - 'docs/**'
-      - 'tools/guardrails/**'
-      - 'build/Magefile.go'
-      - 'build/mage.go'
-      - 'tools.go'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/guardrails.yml'
 
 jobs:
   guardrails:
