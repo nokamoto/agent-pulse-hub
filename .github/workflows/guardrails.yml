@@ -1,0 +1,39 @@
+name: Guardrails
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'tools/guardrails/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/guardrails.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'tools/guardrails/**'
+      - 'go.mod'
+      - 'go.sum'
+
+jobs:
+  guardrails:
+    name: Run Guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      - name: Validate requirements format
+        run: go run ./tools/guardrails/requirements
