@@ -51,6 +51,10 @@ All guardrails share:
    - name: Validate [description]
      run: go run ./tools/guardrails/$command
    ```
+   Also review and update the `on.paths` configuration to include:
+   - Directories and files the guardrail validates (e.g., `docs/path/**`)
+   - The guardrail tool itself (`tools/guardrails/$command/**`)
+   - Workflow file changes (`.github/workflows/guardrails.yml`)
 
 5. **Test locally**:
    - Run `go run ./tools/guardrails/$command` and verify output
@@ -75,16 +79,3 @@ See `tools/guardrails/requirements/main.go` for a reference implementation that:
 - **Composable**: Each guardrail is independent; multiple guardrails can run in sequence
 - **Automatable**: All validation must be deterministic and reproducible
 - **Explain failures**: Error messages must enable developers to fix issues without external documentation
-
-## Files validated by the requirements guardrail
-
-- `docs/requirements/*.md` - All requirement definition files
-- `.agents/skills/define-requirements/assets/requirement.md` - Requirement template
-- `.agents/skills/*/assets/*.md` - Other skill assets following the same format (if added)
-
-Validation checks:
-- YAML frontmatter present and properly formatted
-- Required fields: `type`, `title`, `description` (in order)
-- Optional fields: `sources` (may appear after required fields)
-- No extra/unknown fields permitted
-- Field order strictly enforced
