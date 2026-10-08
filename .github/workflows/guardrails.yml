@@ -7,6 +7,9 @@ on:
     paths:
       - 'docs/**'
       - 'tools/guardrails/**'
+      - 'build/Magefile.go'
+      - 'build/mage.go'
+      - 'tools.go'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/guardrails.yml'
@@ -16,8 +19,12 @@ on:
     paths:
       - 'docs/**'
       - 'tools/guardrails/**'
+      - 'build/Magefile.go'
+      - 'build/mage.go'
+      - 'tools.go'
       - 'go.mod'
       - 'go.sum'
+      - '.github/workflows/guardrails.yml'
 
 jobs:
   guardrails:
@@ -35,5 +42,5 @@ jobs:
       - name: Download Go dependencies
         run: go mod download
 
-      - name: Validate requirements format
-        run: go run ./tools/guardrails/requirements
+      - name: Run guardrails
+        run: go run build/mage.go -d build -w . guardrails
