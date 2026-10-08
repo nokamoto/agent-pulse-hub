@@ -103,9 +103,6 @@ Reference the authoritative deliverable instead of duplicating content across do
 
 ## Responsibilities of skills, guardrails, and CI
 
-For requirements drafting, review criteria, PR labeling, and the current
-guardrail decision, follow the [requirements workflow](requirements-workflow.md).
-
 | Mechanism | Responsibility |
 | --- | --- |
 | This document | Define development principles, phases, deliverables, roles, and approval boundaries |

@@ -5,10 +5,7 @@ description: Draft or revise agent-pulse-hub requirements with verifiable accept
 
 # Define requirements
 
-Read repository `AGENTS.md`, `docs/aidd/README.md`, and
-[the requirements workflow](../../../docs/aidd/requirements-workflow.md).
 Inspect relevant existing requirements and downstream design before editing.
-Write repository artifacts in English; use the user's language in conversation.
 
 1. Establish the problem, users, intended outcome, and scope from the request and
    available evidence. Ask about missing decisions that materially affect scope
@@ -28,9 +25,14 @@ Write repository artifacts in English; use the user's language in conversation.
 4. For revisions, identify changed or retired IDs and affected downstream
    documents. Describe migration or compatibility implications when relevant.
    Keep design and implementation changes in their own phase PRs.
-5. Apply [the review checklist](../review-requirements/references/checklist.md)
-   to the complete diff. Correct findings within the agreed scope and report
-   unresolved items with evidence. Passing a self-review is not human approval.
+5. Delegate self-review to a new subagent with a clean context (no inherited
+   conversation; use `fork_turns="none"` when available). Have it apply the
+   [review-requirements skill](../review-requirements/SKILL.md) to the complete
+   diff. Supply the repository location, review target and base revision, and
+   original requirement inputs needed to evaluate intent; omit the author's
+   reasoning and expected verdict. Leave review criteria and reporting to that
+   skill. Address findings and request re-review of the updated diff. If a
+   clean-context subagent is unavailable, report self-review as incomplete.
 6. Prepare the body using
    [the PR template](../../../.github/PULL_REQUEST_TEMPLATE/requirements.md).
    Include the checklist results and decisions requiring human review. If PR

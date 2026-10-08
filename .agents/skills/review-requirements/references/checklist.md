@@ -15,7 +15,7 @@ for a PR review it must be verified.
 | R07 | Every functional and nonfunctional requirement maps to acceptance criteria with decisive outcomes and feasible verification methods, including relevant failures. Manual checks identify evidence and evaluators. |
 | R08 | No unresolved question or unsupported assumption blocks design. Deferrable decisions identify impact, owner, and resolution stage. |
 | R09 | Requirements agree with existing approved requirements, or identify revised decisions and downstream impact. Retired IDs and affected links are addressed. |
-| R10 | Documents are English UTF-8 Markdown with YAML type Requirement, stable concept paths, valid relative links, and OKF sources for source documents where applicable. Template prompts are replaced. |
+| R10 | Documents are UTF-8 Markdown with YAML type Requirement, stable concept paths, valid relative links, and OKF sources for source documents where applicable. Template prompts are replaced. |
 | R11 | The entire requirements PR diff is limited to docs/requirements/, including deleted and renamed paths. No design, implementation, skill, or CI changes are mixed into the phase PR. |
 | R12 | The PR has phase:requirements, links deliverables, records changes since prior review, provides actual verification results and limitations, and identifies human decisions and risks. |
 

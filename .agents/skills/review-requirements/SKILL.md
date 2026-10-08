@@ -5,11 +5,7 @@ description: Evaluate requirements documents or requirements pull requests again
 
 # Review requirements
 
-Read `AGENTS.md`, `docs/aidd/README.md`, and
-[the requirements workflow](../../../docs/aidd/requirements-workflow.md).
 Use [the checklist](references/checklist.md) as the review criteria.
-Write repository artifacts and PR review bodies in English; converse in the
-user's language.
 
 Identify the review target: PR URL and base/head commits, or local diff and its
 base. Read the complete changed-file list, including deletions and both sides
@@ -34,6 +30,5 @@ provide the full checklist table and an overall verdict:
 State the reviewed revision and scope, deferred decisions, and limitations.
 Re-evaluate affected checks after updates; do not reuse an earlier verdict for
 a new diff without examining changes. Review without editing unless fixes are
-requested. Return the review in chat unless posting to GitHub is explicitly
-authorized. Do not issue human approval, merge, or authorize the next phase
+requested. Do not issue human approval, merge, or authorize the next phase
 on the strength of this verdict.
