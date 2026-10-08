@@ -10,7 +10,7 @@ sources:
 
 # Minimal external event delivery MVP
 
-Status: Draft. Delivery to an existing Codex session, duplicate registration, and delivery while a session is working remain unresolved. See Open questions.
+Status: Draft. The proposed behavior for duplicate registration and delivery while a session is working requires confirmation. See Open questions.
 
 ## Problem and goal
 
@@ -99,7 +99,6 @@ Automate process and interface checks where practical. The maintainer performs t
 
 | ID | Decision needed | Impact | Owner | Deadline |
 | --- | --- | --- | --- | --- |
-| Q-001 | Establish how an external daemon can send to an existing Codex Desktop session and how the skill obtains the correct session identity. Verify access requirements and delivery to both idle and working sessions. | The core workflow depends on this capability. If it is unavailable, the MVP scope must be reconsidered. | Maintainer, supported by technical investigation | Before design begins |
-| Q-003 | Confirm the proposed repeated-registration and working-session behavior in FR-007. | Determines registration and delivery behavior; depends on Q-001. | Maintainer | Before design begins |
+| Q-003 | Confirm the proposed repeated-registration and working-session behavior in FR-007. | Determines registration and delivery behavior. | Maintainer | Before design begins |
 
 The [AIDD playbook](../aidd/README.md) defines the approval process for these requirements and subsequent design work.
