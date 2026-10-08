@@ -1,0 +1,34 @@
+name: Go
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  go:
+    name: Go CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Format Go code and tidy modules
+        run: go run build/mage.go -d build -w . format
+
+      - name: Check formatting and module files
+        run: git diff --exit-code
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Run go vet
+        run: go vet ./...
