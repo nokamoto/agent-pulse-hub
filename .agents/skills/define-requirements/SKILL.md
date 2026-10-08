@@ -15,8 +15,10 @@ Inspect relevant existing requirements and downstream design before editing.
    [the asset](assets/requirement.md), or revise the existing concept. Replace
    template prompts with evidence-backed content. Keep stable concept paths and
    local requirement IDs; identify requirements by concept path plus local ID.
-   Record actual source documents in OKF `sources` when applicable, and capture
-   user-provided rationale in the document when no linkable source exists.
+   When a requirement derives from a source document, record that document in
+   the YAML frontmatter's `sources` list, using Open Knowledge Format (OKF) as
+   specified by the [AIDD playbook](../../../docs/aidd/README.md#approval-and-traceability).
+   Capture user-provided rationale in the document when no linkable source exists.
 3. Cover normal and relevant failure scenarios, functional and nonfunctional
    requirements, constraints, and observable acceptance criteria. Separate
    confirmed decisions, assumptions, and open questions. Record each deferred
@@ -25,13 +27,17 @@ Inspect relevant existing requirements and downstream design before editing.
 4. For revisions, identify changed or retired IDs and affected downstream
    documents. Describe migration or compatibility implications when relevant.
    Keep design and implementation changes in their own phase PRs.
-5. Delegate self-review to a new subagent with a clean context (no inherited
+5. Apply the [Markdown readability review skill](../review-markdown-readability/SKILL.md)
+   to the requirements document. Then delegate requirements self-review to a
+   new subagent with a clean context (no inherited
    conversation; use `fork_turns="none"` when available). Have it apply the
    [review-requirements skill](../review-requirements/SKILL.md) to the complete
    diff. Supply the repository location, review target and base revision, and
    original requirement inputs needed to evaluate intent; omit the author's
    reasoning and expected verdict. Leave review criteria and reporting to that
-   skill. Address findings and request re-review of the updated diff. If a
+   skill. Address findings and request re-review of the updated diff. After
+   Markdown corrections, repeat the readability review and re-evaluate affected
+   requirements checks. If a
    clean-context subagent is unavailable, report self-review as incomplete.
 6. Prepare the body using
    [the PR template](../../../.github/PULL_REQUEST_TEMPLATE/requirements.md).
@@ -44,4 +50,5 @@ Inspect relevant existing requirements and downstream design before editing.
 Requirements PRs change only `docs/requirements/`. If supporting workflow or
 tooling changes are needed, prepare them separately. Do not erase unrelated
 working-tree changes. Keep unresolved requirements as drafts. Design begins
-after human approval and merge, as defined in the AIDD playbook.
+after human approval and merge, as defined in the
+[AIDD playbook](../../../docs/aidd/README.md#development-flow).
