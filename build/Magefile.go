@@ -23,6 +23,19 @@ func Format() error {
 	})
 }
 
+func Test() error {
+	return runGoCommands([][]string{
+		{"test", "./..."},
+	})
+}
+
+func Lint() error {
+	return runGoCommands([][]string{
+		{"vet", "./..."},
+		{"run", "honnef.co/go/tools/cmd/staticcheck", "./..."},
+	})
+}
+
 func runGoCommands(commands [][]string) error {
 	for _, args := range commands {
 		cmd := exec.Command("go", args...)

@@ -28,7 +28,7 @@ jobs:
         run: git diff --exit-code
 
       - name: Run Go tests
-        run: go test ./...
+        run: go run build/mage.go -d build -w . test
 
-      - name: Run go vet
-        run: go vet ./...
+      - name: Run Go lint
+        run: go run build/mage.go -d build -w . lint
