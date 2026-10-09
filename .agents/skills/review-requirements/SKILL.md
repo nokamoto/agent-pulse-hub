@@ -30,6 +30,10 @@ provide the full checklist table and an overall verdict:
 - INCOMPLETE if none fail but any applicable item is unverified.
 - READY FOR HUMAN REVIEW only if all applicable items pass.
 
+Before the main session decides how to act on findings, apply
+[Validate review findings](../validate-review-findings/SKILL.md). Return the
+original review and independent assessment to the main session for its final
+disposition. Validation does not waive checklist failures or human approval.
 State the reviewed revision and scope, deferred decisions, and limitations.
 Re-evaluate affected checks after updates; do not reuse an earlier verdict for
 a new diff without examining changes. Review without editing unless fixes are
