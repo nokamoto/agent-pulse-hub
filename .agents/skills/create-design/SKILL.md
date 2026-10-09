@@ -29,6 +29,10 @@ approved requirements will be fulfilled and verified.
    Keep upstream PR and approval/revision evidence in the design PR
    description rather than copying provenance-only PR links or SHAs into
    the design document.
+   Describe the intended architecture and decisions without authoring-time
+   implementation progress or temporary repository state; put work status in
+   the PR or issue. Retain existing behavior when it affects a design decision,
+   and identify the applicable version or migration condition.
 3. Describe responsibilities, interfaces, data lifecycle, and normal and
    relevant failure scenarios. Compare viable alternatives and explain important
    tradeoffs. Address applicable compatibility, operations, extensibility,

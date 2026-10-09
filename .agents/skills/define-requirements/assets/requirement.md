@@ -8,7 +8,10 @@ description: "<Intended outcome in one sentence>"
 
 ## Problem and goals
 
-<Describe the problem, affected users, why it matters, and observable success.>
+<Describe the problem, affected users, why it matters, and observable success.
+Describe lasting product context, not authoring-time implementation progress or
+temporary repository state.
+Identify an affected version or transition when existing behavior matters.>
 
 ## Sources and decisions
 
