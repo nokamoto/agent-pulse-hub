@@ -214,8 +214,8 @@ file periodically, claims it by renaming to a unique path in the same directory,
 reads at most the context limit, removes the claimed file, and emits context through the public `event`
 frame. It does not poll Codex. Failed reads, oversized/invalid content, or failed
 removal are reported on stderr with the claimed file path and are not emitted.
-The plugin does not retry a claimed file. The developer removes that file after
-inspecting the error and creates a new trigger to try again. A crash between consumption and emission can lose the
+The plugin does not retry a claimed file. The developer moves that file aside
+before creating a new trigger to try again. A crash between consumption and emission can lose the
 event, consistent with the MVP's lack of guaranteed delivery.
 
 The skill asks for the plugin and its watch arguments, requires both
