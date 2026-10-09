@@ -13,10 +13,7 @@ sources:
 ## Context and scope
 
 This design implements [requirements/mvp](../requirements/mvp.md), FR-001 through
-FR-007, NFR-001 through NFR-004, and AC-001 through AC-010. The source is
-[requirements PR #4](https://github.com/nokamoto/agent-pulse-hub/pull/4), head
-`a2b0ce2d114d17a6a751554bb040b73c5ea6f756`, merged as
-`e48ed3238abbc56deb0da52a4edf797a69e56616`.
+FR-007, NFR-001 through NFR-004, and AC-001 through AC-010.
 
 The repository currently contains development tooling, not a running event hub.
 The new system runs in the foreground on Windows as one local user. It consists
