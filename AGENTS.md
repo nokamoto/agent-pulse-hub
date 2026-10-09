@@ -27,6 +27,9 @@ go run build/mage.go -d build -w . guardrails
 
 ## Go development checks
 
+Follow the [Go development conventions](docs/aidd/go-development.md) for
+package placement, testing, and error handling.
+
 Run the Mage targets from the repository root. Format Go code and tidy modules before committing:
 
 ```sh

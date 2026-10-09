@@ -1,4 +1,4 @@
-module github.com/agent-pulse-hub/guardrail-requirements
+module github.com/nokamoto/agent-pulse-hub
 
 go 1.26.0
 
