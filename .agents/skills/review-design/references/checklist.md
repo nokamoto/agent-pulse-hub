@@ -1,8 +1,11 @@
 # Design review checklist
 
 Apply to new designs and revisions. Evaluate substance, not merely headings.
-For a local document-only review, D12 PR metadata may be N/A with a reason;
-missing source approval evidence in D01 remains UNVERIFIED.
+For a local document-only review, D12 PR metadata may be N/A with a reason.
+D01 remains UNVERIFIED until source approval and merge evidence are checked
+against the source and design PRs. The design document needs source concept
+links and local IDs to explain requirement coverage; it need not repeat PR
+references or approval, head, or merge SHAs solely for provenance.
 
 | ID | Pass condition |
 | --- | --- |
