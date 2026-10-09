@@ -13,8 +13,11 @@ sources:
 ## Context and scope
 
 <Explain the outcome, scope, exclusions, and existing system context. Link
-requirement concepts with relative Markdown links, identify their approved
-revision, and link the merged requirements PR.>
+source requirement concepts with relative Markdown links and include local
+IDs where needed to explain scope and coverage. Keep source PR and
+approval or revision provenance in the design PR description; do not
+repeat source PR links or approval, head, or merge SHA values in this
+design document solely to record provenance.>
 
 ## Requirement coverage
 

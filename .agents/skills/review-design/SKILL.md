@@ -11,8 +11,12 @@ Use [the checklist](references/checklist.md) as review criteria and the
 Identify the target PR and base/head commits, or local diff and base. Read the
 complete changed-file list, including deletions and both sides of renames.
 Read affected design, source requirements and acceptance criteria, relevant
-existing design and code, and source approval/merge evidence. Do not treat
-the author's checked boxes or guardrail success as content-review evidence.
+existing design and code. Verify source approval and merge evidence from the
+requirements PR. The design document needs source concept links and local
+IDs for traceability. It does not need to repeat requirements PR metadata,
+approval evidence, or head and merge SHAs solely to record provenance. Do
+not treat the author's checked boxes or guardrail success as content-review
+evidence.
 If remote evidence is inaccessible, review available artifacts and report
 missing evidence as UNVERIFIED.
 

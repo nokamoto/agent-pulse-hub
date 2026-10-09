@@ -24,7 +24,9 @@ This document defines the principles, phases, deliverables, roles, and pull requ
 
 ## Development flow
 
-Use the following flow. Even for small changes, check the affected requirements and design, and explain why updates are unnecessary when that is the case.
+Use the following flow. Even for small changes, check the affected
+requirements and design. When an upstream phase needs no update, explain
+why in the PR for the first downstream phase with deliverables.
 
 ```text
 Requirements definition → Requirements PR → Human review and approval → Merge
@@ -89,6 +91,12 @@ Use `Requirement`, `Design`, and `Playbook` as project-defined concept types for
 Record human approval as a review on each phase's PR, identifying the version or diff being approved. PR creation, silence, and successful automated checks do not substitute for human approval. Reflect decisions agreed upon in conversation in the relevant deliverables and PR, and obtain approval through the PR review.
 
 Link design documents to the requirement concepts they fulfill, and link implementation and verification evidence from the PR to the corresponding requirement and design documents. Use OKF `sources` entries to record documents from which a concept derives.[^okf] If an approved deliverable changes, do not assume the existing approval covers the new version; obtain renewed approval as appropriate to the impact on decisions.
+
+Design documents should link to source requirement concepts and use their
+requirement-local IDs (for example, `FR-001`) in coverage mappings where
+needed. Keep the source requirements PR URL and approval/revision evidence
+in the design PR description, including the source requirements PR's final head SHA and merge
+commit SHA. Do not require each design document to repeat that evidence.
 
 [^okf]: Open Knowledge Format v0.2, sections 2–6.
 

@@ -15,9 +15,13 @@ approved requirements will be fulfilled and verified.
 2. Create `docs/design/<stable-topic>.md` from
    [the asset](assets/design.md), or revise the existing concept. Preserve stable
    paths. Replace prompts and explain non-applicable sections. Identify each
-   requirement by concept path plus local ID. Record source documents in OKF
-   frontmatter `sources`; resources are relative to the `docs/` bundle root,
-   for example `requirements/topic.md`. Use relative Markdown links in the body.
+   requirement by concept path plus local ID. Record source documents in the
+   Open Knowledge Format (OKF) frontmatter `sources` field; resources are
+   relative to the `docs/` bundle root, for example `requirements/topic.md`.
+   Use relative Markdown links in the body.
+   Keep upstream PR and approval/revision evidence in the design PR
+   description rather than copying provenance-only PR links or SHAs into
+   the design document.
 3. Describe responsibilities, interfaces, data lifecycle, and normal and
    relevant failure scenarios. Compare viable alternatives and explain important
    tradeoffs. Address applicable compatibility, operations, extensibility,
