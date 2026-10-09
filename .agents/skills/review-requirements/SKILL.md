@@ -6,6 +6,9 @@ description: Evaluate requirements documents or requirements pull requests again
 # Review requirements
 
 Use [the checklist](references/checklist.md) as the review criteria.
+Use the [AIDD playbook](../../../docs/aidd/README.md#human-approval-routes)
+for human approval routes. Human merge is a normal route and does not require
+a separate Approve review, including for the human's own PR.
 
 Identify the review target: PR URL and base/head commits, or local diff and its
 base. Read the complete changed-file list, including deletions and both sides

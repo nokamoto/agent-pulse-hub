@@ -6,7 +6,7 @@ missing source approval evidence in D01 remains UNVERIFIED.
 
 | ID | Pass condition |
 | --- | --- |
-| D01 | Source requirements are identified by concept and revision, with human approval evidence and a merged requirements PR. The design respects their scope and constraints. |
+| D01 | Source requirements are identified by concept and approved merged revision. The requirements PR is merged, and its approval route, human actor, final head SHA, merge time, merge commit SHA, and any explicit approval reference are verified under the [AIDD handoff rules](../../../../docs/aidd/README.md#agent-verification-and-handoff-evidence). Human merge passes without a separate Approve review, including for the human's own PR. The design respects the approved scope and constraints. |
 | D02 | Every in-scope functional and nonfunctional requirement and acceptance criterion maps to design and verification. Partial coverage identifies responsible related designs without hiding gaps. |
 | D03 | Architecture defines responsibilities, boundaries, dependencies, and interactions consistently with the existing system. |
 | D04 | Relevant interfaces and data contracts define inputs, outputs, validation, errors, ownership, lifecycle, and compatibility; non-applicability is explained. |
