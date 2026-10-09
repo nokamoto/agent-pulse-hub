@@ -19,6 +19,11 @@ Inspect relevant existing requirements and downstream design before editing.
    the YAML frontmatter's `sources` list, using Open Knowledge Format (OKF) as
    specified by the [AIDD playbook](../../../docs/aidd/README.md#approval-and-traceability).
    Capture user-provided rationale in the document when no linkable source exists.
+   Describe intended behavior and lasting constraints. Keep authoring-time
+   implementation progress and temporary repository state out of requirements;
+   put work status in the PR or issue. When existing behavior is needed to
+   define a constraint or transition, identify the affected version or
+   migration condition.
 3. Cover normal and relevant failure scenarios, functional and nonfunctional
    requirements, constraints, and observable acceptance criteria. Separate
    confirmed decisions, assumptions, and open questions. Record each deferred

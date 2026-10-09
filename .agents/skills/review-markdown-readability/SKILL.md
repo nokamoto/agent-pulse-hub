@@ -59,6 +59,10 @@ Interpret relevance according to the document type:
   rationale; replace conversation provenance with a standalone decision and
   its reason. Implementation candidates belong only where they explain a real
   constraint or an explicitly unresolved choice needed for the requirements.
+- Designs need intended architecture, interfaces, decisions, and verification.
+  Preserve existing behavior when a versioned baseline or migration condition
+  matters to a decision, and preserve relevant runtime and compatibility
+  information.
 - Guides and skills need prerequisites, defined inputs, usable steps, outputs,
   and failure handling that the audience needs to perform the task.
 - Research reports need methods, evidence, environment details, limitations,
@@ -67,6 +71,11 @@ Interpret relevance according to the document type:
   distracts from that purpose.
 - Decision records need relevant context, alternatives, the decision, and its
   consequences. Historical context can be necessary evidence.
+
+For requirements and designs, flag authoring-time implementation progress and
+temporary repository state, such as components not yet implemented, when they
+do not define a needed baseline or transition. Work status belongs in a PR or
+issue.
 
 Apply these relevance criteria as part of the review protocol. A repeated
 priority column, approval reminder, command, or environment variable is a

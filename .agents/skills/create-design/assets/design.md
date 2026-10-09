@@ -12,12 +12,14 @@ sources:
 
 ## Context and scope
 
-<Explain the outcome, scope, exclusions, and existing system context. Link
-source requirement concepts with relative Markdown links and include local
-IDs where needed to explain scope and coverage. Keep source PR and
-approval or revision provenance in the design PR description; do not
-repeat source PR links or approval, head, or merge SHA values in this
-design document solely to record provenance.>
+<Explain the outcome, scope, exclusions, and existing system context relevant
+to the design. Identify the affected version or migration condition where
+needed; keep authoring-time implementation progress and temporary repository
+state in the PR or issue. Link source requirement concepts with relative
+Markdown links and include local IDs where needed to explain scope and
+coverage. Keep source PR and approval or revision provenance in the design PR
+description; do not repeat source PR links or approval, head, or merge SHA
+values in this design document solely to record provenance.>
 
 ## Requirement coverage
 
@@ -31,7 +33,8 @@ criterion. Explain partial coverage and link other responsible designs.>
 ## Architecture and responsibilities
 
 <Describe components, boundaries, dependencies, and responsibilities. Add a
-diagram when useful. Distinguish existing and new behavior.>
+diagram when useful. Distinguish existing and new behavior, including any
+version or migration transition that affects the design.>
 
 ## Interfaces and data
 
