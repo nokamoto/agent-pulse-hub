@@ -8,7 +8,11 @@
 ## Requirements and design to review
 
 <!-- Link the merged requirements PR, approved source revision, requirement
-     documents, and design documents. Summarize coverage and related designs. -->
+     documents, and design documents. Record its normal approval route, human
+     actor, final head SHA, merge time, merge commit SHA, and any explicit approval
+     reference under the AIDD handoff rules. Human merge needs no separate
+     Approve review, including for the human's own PR.
+     Summarize coverage and related designs. -->
 
 ## Decisions requiring human review
 
@@ -38,5 +42,16 @@
 - [ ] All applicable review checklist items pass with evidence above.
 - [ ] Questions affecting implementation have been resolved.
 
-<!-- Human approval must be a GitHub review on the current revision.
-     Implementation starts only after design approval and merge. -->
+## Human approval and merge
+
+The responsible human can approve by reviewing the final revision and merging
+this PR personally, including their own PR. No separate Approve review is
+needed for that route. Alternatively, record approval of the current head with
+an Approve review or an explicit PR comment, then merge or authorize an agent
+to merge that revision. Repository protections and required checks still apply.
+
+Implementation starts after design approval and merge are verified under the
+[AIDD handoff rules](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#agent-verification-and-handoff-evidence).
+The downstream agent records the route, human actor, final head SHA, merge time,
+merge commit SHA, and any explicit approval reference. These are post-merge
+handoff evidence, not boxes the PR author must pre-check.

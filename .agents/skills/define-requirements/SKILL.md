@@ -41,7 +41,11 @@ Inspect relevant existing requirements and downstream design before editing.
    clean-context subagent is unavailable, report self-review as incomplete.
 6. Prepare the body using
    [the PR template](../../../.github/PULL_REQUEST_TEMPLATE/requirements.md).
-   Include the checklist results and decisions requiring human review. If PR
+   Include the checklist results and decisions requiring human review. Explain
+   the playbook's [human approval routes](../../../docs/aidd/README.md#human-approval-routes):
+   the responsible human may approve by personally merging the final revision,
+   including their own PR, or explicitly approve that revision before merge.
+   Do not require a separate Approve review for Human merge. If PR
    creation is requested, use the `phase:requirements` label and verify it was
    applied. If remote access is unavailable, provide the prepared body and
    explicitly report the missing remote step. Do not claim a PR or label exists

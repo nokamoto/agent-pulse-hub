@@ -35,5 +35,16 @@
 - [ ] All applicable review checklist items pass; evidence is recorded above.
 - [ ] Questions affecting design have been resolved.
 
-<!-- Human approval must be a GitHub review on the current revision.
-     Design starts only after approval and merge. -->
+## Human approval and merge
+
+The responsible human can approve by reviewing the final revision and merging
+this PR personally, including their own PR. No separate Approve review is
+needed for that route. Alternatively, record approval of the current head with
+an Approve review or an explicit PR comment, then merge or authorize an agent
+to merge that revision. Repository protections and required checks still apply.
+
+Design starts after approval and merge are verified under the
+[AIDD handoff rules](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#agent-verification-and-handoff-evidence).
+The downstream agent records the route, human actor, final head SHA, merge time,
+merge commit SHA, and any explicit approval reference. These are post-merge
+handoff evidence, not boxes the PR author must pre-check.

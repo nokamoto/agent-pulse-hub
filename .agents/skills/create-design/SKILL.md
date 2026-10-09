@@ -8,10 +8,17 @@ description: Draft or revise agent-pulse-hub design from approved requirements, 
 Follow the [AIDD playbook](../../../docs/aidd/README.md). Design explains how
 approved requirements will be fulfilled and verified.
 
-1. Identify source requirement concepts and local IDs, the merged requirements
-   PR, and human approval for its revision. Inspect relevant design and code.
-   If approval or merge evidence is missing, report the prerequisite and
-   continue only independent investigation until it is verified.
+1. Identify source requirement concepts and local IDs and verify their merged
+   requirements PR using the playbook's
+   [handoff evidence](../../../docs/aidd/README.md#agent-verification-and-handoff-evidence).
+   Record the approval route, human actor, final head SHA, merge time, merge
+   commit SHA, and any explicit approval reference for the downstream PR.
+   Human merge is normal approval, including when the human authored the PR;
+   do not require an additional Approve review or describe it as an exception.
+   Confirm the source documents match the approved merged revision. Inspect
+   relevant design and code. If required evidence is missing or uncertain,
+   report the specific prerequisite as UNVERIFIED and continue only independent
+   investigation until it is verified.
 2. Create `docs/design/<stable-topic>.md` from
    [the asset](assets/design.md), or revise the existing concept. Preserve stable
    paths. Replace prompts and explain non-applicable sections. Identify each
@@ -35,7 +42,8 @@ approved requirements will be fulfilled and verified.
    `type: Design`; nonempty string title/description; a nonempty sources list
    with nonempty string `id` and `resource` and optional string `title`;
    and a nonempty body. Other fields, duplicate keys, malformed YAML, and
-   symlinks are rejected. Coverage and approval require review.
+   symlinks are rejected. Coverage requires content review; human approval
+   follows the playbook's approval routes.
 6. Apply [Markdown readability review](../review-markdown-readability/SKILL.md).
    Delegate self-review to a fresh clean-context subagent using
    `fork_turns="none"`, model `gpt-6.1-sol`, reasoning effort `high`.
@@ -45,6 +53,8 @@ approved requirements will be fulfilled and verified.
    readability review after Markdown edits, and re-evaluate affected design
    checks. Report unavailable review or checks as incomplete.
 7. Prepare the body with [the PR template](../../../.github/PULL_REQUEST_TEMPLATE/design.md).
+   Include source handoff evidence and explain the two normal
+   [human approval routes](../../../docs/aidd/README.md#human-approval-routes).
    If PR creation is requested, explicitly apply and verify `phase:design`;
    Markdown templates do not apply labels. If missing, create the label when
    authorized or report the missing setup. Report unavailable remote steps
