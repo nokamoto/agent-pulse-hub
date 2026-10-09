@@ -1,0 +1,26 @@
+# Design review checklist
+
+Apply to new designs and revisions. Evaluate substance, not merely headings.
+For a local document-only review, D12 PR metadata may be N/A with a reason;
+missing source approval evidence in D01 remains UNVERIFIED.
+
+| ID | Pass condition |
+| --- | --- |
+| D01 | Source requirements are identified by concept and revision, with human approval evidence and a merged requirements PR. The design respects their scope and constraints. |
+| D02 | Every in-scope functional and nonfunctional requirement and acceptance criterion maps to design and verification. Partial coverage identifies responsible related designs without hiding gaps. |
+| D03 | Architecture defines responsibilities, boundaries, dependencies, and interactions consistently with the existing system. |
+| D04 | Relevant interfaces and data contracts define inputs, outputs, validation, errors, ownership, lifecycle, and compatibility; non-applicability is explained. |
+| D05 | Normal, failure, and boundary scenarios describe outcomes and relevant recovery, concurrency, retry, or idempotency behavior. |
+| D06 | Important decisions compare viable alternatives and explain requirement-backed rationale, tradeoffs, and risks at a level appropriate to the change. |
+| D07 | Applicable security, privacy, reliability, performance, extensibility, and operational concerns respect approved constraints; targets are not invented. |
+| D08 | Verification methods and levels can decisively evaluate acceptance criteria, including failures and nonfunctional needs. Manual evaluation identifies evidence and evaluators; plans are distinguished from executed results. |
+| D09 | Changes identify affected designs and implementation, and applicable migration, compatibility, rollout, and rollback impact. Upstream decision changes return to requirements before dependent design. |
+| D10 | No open question or unsupported assumption blocks implementation. Deferrable decisions identify impact, owner, and resolution stage; significant risks and human decisions are explicit. |
+| D11 | Documents have stable concept paths, UTF-8 Markdown, valid relative links, ordered Design frontmatter and OKF sources as specified in [create-design](../../create-design/SKILL.md), and replaced template prompts. The design guardrail passes on the reviewed version. |
+| D12 | The complete design PR diff changes only docs/design/, including deleted and renamed paths. The PR has phase:design, links the merged requirements PR and deliverables, and records the reviewed revision, all checklist results, actual checks and limitations, human decisions, and changes since previous review. |
+
+For a local diff review, inspect its complete file list for D12 even when PR
+metadata is not applicable. Unavailable diff or required PR metadata makes D12
+UNVERIFIED. A known violation makes it FAIL. A draft can record unknowns but
+does not pass D10 while an implementation blocker remains. Human approval and
+merge are subsequent milestones, not outcomes the reviewer can grant.
