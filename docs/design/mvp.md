@@ -15,8 +15,7 @@ sources:
 This design implements [requirements/mvp](../requirements/mvp.md), FR-001 through
 FR-007, NFR-001 through NFR-004, and AC-001 through AC-010.
 
-The repository currently contains development tooling, not a running event hub.
-The new system runs in the foreground on Windows as one local user. It consists
+The system runs in the foreground on Windows as one local user. It consists
 of a Go daemon and registration client, a Go manual-test plugin, and a Codex
 skill. All subscriptions and undelivered events live only in memory. Stop and
 restart loses them. No service integration, retries, plugin restart, persistence,
@@ -333,11 +332,10 @@ rejection from an admitted event's delivery result.
 
 ## Change and rollout impact
 
-Implementation adds the daemon/client commands, plugin supervisor and protocol,
-in-memory registry, Windows control transport, Codex adapter, manual plugin,
-registration skill, Windows usage documentation, and integration fixtures. No
-existing application code or design requires migration. Development tooling is
-retained. Only `docs/design/` changes in this design phase.
+The deployment consists of the daemon/client commands, configured plugins,
+the Codex adapter, and the registration skill. The MVP stores no persistent
+subscription or event data, so replacing its binaries requires no stored-data
+migration.
 
 The maintainer builds and runs the foreground binaries manually. Rollback means
 stopping them and returning to the prior build; registration must be repeated.
