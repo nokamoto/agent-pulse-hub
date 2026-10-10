@@ -17,6 +17,13 @@ Refer to the following directories:
 - [Design](docs/design/)
 - [AI-Driven Development rules](docs/aidd/)
 
+## Implementation completion
+
+Follow the [implementation completion and delivery boundary](docs/aidd/README.md#implementation-completion-and-delivery-boundary)
+and use the [implementation PR template](.github/PULL_REQUEST_TEMPLATE/implementation.md).
+Keep required acceptance evidence in implementation and identify subsequent
+delivery work separately before requesting human review.
+
 ## Specification feedback during implementation
 
 If implementation needs a separate specification document or a change to its

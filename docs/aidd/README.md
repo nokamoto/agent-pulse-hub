@@ -137,13 +137,60 @@ Translate the approved requirements and design into working code and reproducibl
 
 | Item | Description |
 | --- | --- |
-| Deliverables | Code, necessary tests and CI changes, related documentation updates, and review materials mapping the work to requirements and design and presenting verification results |
+| Deliverables | A repository revision containing code, necessary tests and CI changes, and documentation needed to satisfy the approved requirements and design; PR evidence mapping those changes to acceptance criteria and recording verification results |
 | PR | An implementation PR linking to the merged requirements and design PRs and presenting the implementation changes and verification evidence |
 | Human role | Confirm acceptance criteria, remaining risks, and operational impact, and decide whether to merge |
 | Agent role | Implement, self-review, verify, and fix defects; automate necessary verification and present reviewable diffs and evidence |
 | Approval criteria | Applicable acceptance criteria are met, required automated checks pass, necessary manual checks are complete, and known limitations and remaining risks are explicit |
 
 Agents investigate and correct verification failures. Checks that could not be run must not be reported as passing; report the reason, impact, and actions needed to resolve the issue. Do not present work as ready to merge while required verification remains incomplete.
+
+#### Implementation completion and delivery boundary
+
+Implementation produces a reviewable repository revision and its verification
+evidence. The agent is responsible for making that revision satisfy the approved
+requirements and design, correcting defects, and providing enough instructions
+and evidence for reviewers to reproduce the applicable checks. Use the
+[implementation PR template](../../.github/PULL_REQUEST_TEMPLATE/implementation.md)
+to identify the delivered changes, their requirement and design mappings,
+verification results, and any work left for delivery.
+
+An implementation PR is ready for human review only when the implementation
+approval criteria above are met. The phase ends when human approval and merge
+of that revision are verified under the
+[approval routes](#human-approval-routes). A local build, passing CI, or opening
+a PR alone does not complete the phase. Its completed result is the merged
+repository revision together with the PR's verification and approval evidence.
+
+Here, **developer delivery** means subsequent work that makes the completed
+implementation available to developers for acquisition, setup, and continued
+use. Publishing or distributing release artifacts, arranging installation in
+a recipient's environment, and providing onboarding or operational handover
+beyond the approved implementation acceptance criteria belong to delivery.
+Implementation completion does not claim that these activities are complete
+or authorize the agent to perform them. Delivery's detailed process,
+deliverables, and approval criteria require separate definition; this rule
+establishes only the implementation boundary.
+
+Classify work by its purpose and the approved acceptance criteria, not by its
+file extension or location. Build and startup checks, documented commands,
+README updates, and operating instructions remain implementation work when
+needed to fulfill or verify the approved requirements and design. For example,
+the [MVP requirements](../requirements/mvp.md) NFR-004 and AC-009 require Windows
+setup and operation instructions and a clean-build demonstration; those cannot
+be deferred to delivery. Building an artifact for that demonstration is
+verification; publishing it for downstream developers is delivery.
+Documentation changes must still respect the existing
+[specification feedback rule](#specification-documents-and-approved-design).
+
+In the implementation PR, record identified delivery work separately from
+implementation defects or incomplete checks, or state that none has been
+identified. Do not present that list as a complete delivery plan. An unmet
+implementation acceptance criterion remains a blocker; labeling it delivery
+does not defer it. If the approved requirements or design leave the boundary
+unclear, report the unresolved decision and use the existing upstream feedback
+and approval rules before claiming implementation completion. This boundary
+does not define the final end-user offering or change approved product scope.
 
 ## Approval and traceability
 
