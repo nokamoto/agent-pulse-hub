@@ -42,6 +42,17 @@ version or migration transition that affects the design.>
 and data lifecycle. Address persistence, retention, and compatibility where
 applicable; explain non-applicability.>
 
+## Specification documents
+
+<Under the [specification document rules](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#specification-documents-and-approved-design),
+state whether contracts remain in this design or use separate documents.
+For separate specifications, identify intended paths, purpose and readers,
+the authoritative source for each contract, and derivation or reference
+relationships. Identify contract decisions fixed here, details delegated to
+implementation, and their constraints. Include decisions needed for approval
+here even if implementation will create a separate document. If no separate
+specification is needed, say that this design contains the contract.>
+
 ## Normal and failure scenarios
 
 <Describe triggers, interactions, outcomes, and relevant failures or boundaries.

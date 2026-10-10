@@ -37,7 +37,13 @@ approved requirements will be fulfilled and verified.
    relevant failure scenarios. Compare viable alternatives and explain important
    tradeoffs. Address applicable compatibility, operations, extensibility,
    security, and privacy concerns. Match detail to risk and leave routine
-   implementation choices to implementation.
+   implementation choices to implementation. Apply the playbook's
+   [specification document rules](../../../docs/aidd/README.md#specification-documents-and-approved-design):
+   record whether contracts stay in the design or use separate specifications,
+   their intended paths, purpose and readers, authority and derivation, and
+   the contract decisions and constrained details delegated to implementation.
+   Keep approval-relevant contract decisions in the design PR even when the
+   planned specification will be created elsewhere during implementation.
 4. Map every in-scope functional and nonfunctional requirement and acceptance
    criterion to design and feasible verification. Explain partial coverage and
    related designs. Record open decisions, impact, owner, and resolution stage.

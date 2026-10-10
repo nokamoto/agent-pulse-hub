@@ -71,6 +71,51 @@ Define how to fulfill the approved requirements and how to verify the result.
 
 Match the level of design detail to the size and risk of the change. Delegate implementation details that do not require human judgment to agents within the approved design and constraints.
 
+### Specification documents and approved design
+
+A specification document defines a contract used to implement or integrate a
+feature, such as a protocol or API. Before implementation adds or reorganizes
+such a document, the design in `docs/design/` must record:
+
+- Whether the specification stays within the design or has a separate document,
+  its intended path, and its purpose and readers.
+- Which document is authoritative for each contract, and how other documents
+  derive from or reference it. Avoid competing sources of truth.
+- Which contract decisions the design fixes and which details implementation
+  may fill in, with constraints that make that delegation reviewable.
+
+Include these decisions in the design PR for human approval and merge. A
+requirement to document a protocol establishes the need for documentation;
+by itself it does not settle document placement, authority, or delegation.
+If no separate specification is needed, state that the design contains the
+contract. Existing designs need only the affected decisions reviewed; this
+rule does not require reorganizing all existing documentation.
+
+A separate specification may live outside `docs/design/`, for example in
+`docs/protocol/`. The design PR still changes only `docs/design/`: it records
+the intended destination and authority, and includes the contract decisions
+needed for approval. Implementation may then create the planned document and
+fill in delegated details within those constraints. It may add explanatory
+examples and correct wording without changing approved decisions. It must
+not independently choose a new specification's placement or authority,
+transfer authority between documents, or change an approved contract.
+
+When those decisions are missing or must change, return to a design PR and
+verify approval and merge before dependent specification work. Return first
+to requirements if their scope or constraints must change. This uses the
+existing [development flow](#development-flow), rather than treating every
+editorial correction as a new design decision.
+
+Each separate specification must explain and link its relationship to the
+approved design and identify the authoritative source for its contracts.
+For documents under `docs/`, record derivation in OKF `sources` as well.
+`type: Design` classifies content; it does not prove approval or grant
+independent authority. The implementation PR must link the governing design
+decisions, identify specification files added or changed, and explain how
+their content stays within the approved delegation. Reviewers assess this
+relationship and the contract content; structural guardrails alone cannot
+establish either.
+
 ### 3. Implementation
 
 Translate the approved requirements and design into working code and reproducible verification.

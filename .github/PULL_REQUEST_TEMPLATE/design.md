@@ -12,7 +12,10 @@
      actor, final head SHA, merge time, merge commit SHA, and any explicit approval
      reference under the AIDD handoff rules. Human merge needs no separate
      Approve review, including for the human's own PR.
-     Summarize coverage and related designs. -->
+     Summarize coverage and related designs. Link the design sections governing
+     specification documents: intended paths, purpose and readers, authority
+     and derivation, fixed contract decisions, and constrained details delegated
+     to implementation. If contracts stay in the design, identify that decision. -->
 
 ## Decisions requiring human review
 
@@ -21,7 +24,7 @@
 ## Verification and design review
 
 <!-- Record reviewed base/head commits (or local diff), overall verdict, and
-     all D01-D12 results from .agents/skills/review-design/references/checklist.md
+     all D01-D13 results from .agents/skills/review-design/references/checklist.md
      with evidence. Include guardrail results, checks not run and their impact.
      Distinguish planned verification from executed checks. -->
 
