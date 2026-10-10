@@ -1,0 +1,14 @@
+{
+  "suites": [
+    {
+      "package": "./cmd/agent-pulse-hub",
+      "cases": [
+        "MVP-V01-SHUTDOWN",
+        "MVP-V08-SAME-USER",
+        "MVP-V08-DIFFERENT-USER",
+        "MVP-V08-REMOTE",
+        "MVP-V08-SECOND-DAEMON"
+      ]
+    }
+  ]
+}

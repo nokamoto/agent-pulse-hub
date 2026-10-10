@@ -43,8 +43,11 @@ version. Use the Codex executable associated with the local Desktop environment
 and record its exact version. The daemon does not reject a different version
 string. A version change alone does not require a separate design approval or
 adapter verification phase. The governing design's queue invocation and strict
-delivery-result contract remain unchanged; the maintainer performs the existing
-real demonstration for implementation acceptance.
+delivery-result contract remain unchanged; the maintainer performs the real
+demonstration during delivery under the
+[MVP verification allocation](mvp.md#verification-strategy).
+Implementation CI uses controlled external substitutes and cannot establish
+real Codex acceptance or conversation continuation.
 
 You need two PowerShell terminals: **D** holds the foreground daemon, and **T**
 writes test files. Keep existing Codex conversations **A** (recipient) and **B**
@@ -142,12 +145,16 @@ aliases or filename case differences.
 In terminal D:
 
 ```powershell
-& $hub daemon --config $configPath
+$daemonLog = Join-Path $run ('daemon-stderr-' + [guid]::NewGuid().ToString('N') + '.jsonl')
+Write-Output "Daemon stderr file: $daemonLog"
+& $hub daemon --config $configPath 2> $daemonLog
 ```
 
-Keep it running. On stderr, expect a ready result for plugin `manual` followed
-by registration availability. Diagnostic wording is not fixed. Wait for these
-facts before registering; do not use an arbitrary startup sleep. If `manual`
+Keep it running in the foreground. Terminal T can read the captured stderr with
+`Get-Content -LiteralPath <absolute daemon stderr path printed above> -Tail 20`.
+Expect a ready result for plugin `manual` followed by registration availability.
+Diagnostic wording is not fixed. Wait for these facts before registering;
+do not use an arbitrary startup sleep. If `manual`
 is unavailable or startup exits with an error, stop here and use the recovery
 table below. A second daemon for the same user must fail. Startup and idle
 waiting must not ask Codex to do work.
@@ -195,18 +202,7 @@ first demonstration tests an idle recipient.
 
 ## 5. Atomically trigger one event
 
-For AC-006, before triggering, declare an idle interval (for example 60 seconds)
-and record its start/end and zero delivery attempts. Implementation acceptance
-also uses instrumented adapter-call assertions to establish zero agent work
-requests; visual silence alone is insufficient. There is no required latency
-threshold.
-
-In terminal T, paste the run directory printed in step 1 at the prompt. Write a
-closed temporary file in that same directory, then rename it without replacing
-an existing trigger. The two-argument `.NET File.Move` used here fails if the
-destination exists. Keeping both paths in one local directory avoids a
-cross-volume copy. Do not write directly to `next.txt`: the plugin could read
-partial content.
+In terminal T, prepare the paths for every run before publishing a trigger:
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -214,6 +210,86 @@ $run = Read-Host 'Run directory printed by terminal D'
 if (-not [IO.Path]::IsPathFullyQualified($run) -or -not (Test-Path -LiteralPath $run -PathType Container)) {
     throw 'Select the existing absolute run directory.'
 }
+$hub = Join-Path $run 'agent-pulse-hub.exe'
+$manual = Join-Path $run 'manual-plugin.exe'
+$daemonLog = Read-Host 'Daemon stderr file printed by terminal D'
+if (-not [IO.Path]::IsPathFullyQualified($daemonLog) -or -not (Test-Path -LiteralPath $daemonLog -PathType Leaf)) {
+    throw 'Select the existing absolute stderr file for the current daemon.'
+}
+$utf8 = [Text.UTF8Encoding]::new($false, $true)
+```
+
+For AC-006, the maintainer captures the following declared 60-second idle
+interval in terminal T before creating any trigger. Do not trigger another
+subscription during that interval. The acceptance check covers this daemon
+and the manual plugin, excluding unrelated activity inside Codex. The script
+below counts only the daemon's calls. Before evaluating AC-006, retain the
+evaluated source SHA and a review of the manual plugin entry point
+(`cmd/manual-plugin/main_windows.go`) and its implementation
+(`internal/adapters/manualplugin/run_windows.go` and `path_windows.go`). Confirm
+that the plugin's idle path uses only local waiting, file I/O and protocol
+streams, with no independent Codex work-request capability. This structural
+evidence complements the daemon trace; the count alone is insufficient. If the
+selected plugin or revision has an independent request path without equivalent
+zero-work evidence, leave AC-006 incomplete. This walkthrough evaluates the
+bundled manual plugin, not every third-party plugin.
+
+The script below is a capture example for the
+MVP command's JSON logging profile. Confirm that the evaluated revision records
+every delivery adapter call before using the count as evidence; this profile
+uses `delivery_attempt`, while `codex_cli_version` is a startup probe, not a work
+request. Log layout and wording remain implementation choices. A different
+profile needs equivalent evidence of daemon identity, the observation interval,
+zero work requests and correlated event/attempt times. Retain the entire stderr
+file, the interval record below and A's later response time. Visual silence
+alone is insufficient; the separate CI case `MVP-V06-IDLE` also instruments its
+controlled queue endpoint. There is no required latency threshold.
+
+```powershell
+$daemonBeforeIdle = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $hub })
+if ($daemonBeforeIdle.Count -ne 1) { throw 'Expected exactly one daemon from this run.' }
+$idleStart = [DateTime]::UtcNow
+Start-Sleep -Seconds 60
+$idleEnd = [DateTime]::UtcNow
+$daemonAfterIdle = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $hub })
+if ($daemonAfterIdle.Count -ne 1 -or $daemonAfterIdle[0].ProcessId -ne $daemonBeforeIdle[0].ProcessId -or
+    $daemonAfterIdle[0].CreationDate -ne $daemonBeforeIdle[0].CreationDate) {
+    throw 'Daemon identity changed during the idle interval; evidence is incomplete.'
+}
+$records = @(Get-Content -LiteralPath $daemonLog | ForEach-Object { $_ | ConvertFrom-Json })
+if (@($records | Where-Object { $_.msg -eq 'codex_cli_version' }).Count -ne 1 -or
+    @($records | Where-Object { $_.msg -eq 'registration_available' }).Count -ne 1) {
+    throw 'Current daemon startup trace is missing or ambiguous; evidence is incomplete.'
+}
+$idleAttempts = @($records | Where-Object {
+    $_.msg -eq 'delivery_attempt' -and [DateTimeOffset]::Parse($_.time).UtcDateTime -ge $idleStart -and
+    [DateTimeOffset]::Parse($_.time).UtcDateTime -le $idleEnd
+})
+$idleRecord = [ordered]@{
+    daemon_executable = $hub; daemon_pid = $daemonBeforeIdle[0].ProcessId
+    daemon_created_utc = $daemonBeforeIdle[0].CreationDate.ToUniversalTime().ToString('o')
+    start_utc = $idleStart.ToString('o'); end_utc = $idleEnd.ToString('o')
+    daemon_delivery_attempts = $idleAttempts.Count; stderr_file = $daemonLog
+}
+$utf8 = [Text.UTF8Encoding]::new($false, $true)
+[IO.File]::WriteAllText((Join-Path $run 'idle-observation.json'), ($idleRecord | ConvertTo-Json), $utf8)
+if ($idleAttempts.Count -ne 0) { throw 'Daemon issued work during the declared idle interval.' }
+```
+
+Expected: the daemon identity is unchanged and `daemon_delivery_attempts` is
+zero. This is a deliberate observation interval, not a substitute for readiness
+or completion detection. Malformed/missing stderr or an interrupted run leaves
+the check incomplete. After the event, the same file supplies `event_admitted`,
+`delivery_attempt` and `delivery_result` records for the subscription/delivery
+ID; retain their UTC receipt/attempt/result times with the actual A response.
+
+Still in terminal T, write a closed temporary file in the same directory, then
+rename it without replacing an existing trigger. The two-argument `.NET
+File.Move` used here fails if the destination exists. Keeping both paths in one
+local directory avoids a cross-volume copy. Do not write directly to `next.txt`:
+the plugin could read partial content.
+
+```powershell
 $trigger = Join-Path $run 'next.txt'
 $temp = Join-Path $run ('event-' + [guid]::NewGuid().ToString('N') + '.tmp')
 $context = 'PULSE-DEMO-001'
@@ -234,7 +310,8 @@ the harmless marker for this demonstration.
 
 ## 6. Observe delivery and acknowledgement
 
-Terminal D must show receipt/admission and one delivery attempt with plugin,
+The captured daemon stderr log must contain receipt/admission and one delivery
+attempt; read it from terminal T as described in step 3. Records include plugin,
 subscription and delivery IDs, UTC timestamps, and a final outcome. A successful
 queue acknowledgement produces outcome `accepted`; a launch failure is
 `failed`; a timeout or ambiguous post-start response is `unknown`.
@@ -248,19 +325,81 @@ conversation evidence as a failure or incomplete check; do not treat queue
 acceptance as the required acknowledgement or automatically send another event.
 
 For the AC-010 busy case, instruct A in advance to acknowledge
-a new marker such as `PULSE-DEMO-002`, give it a bounded task, and use step 5
-with that marker while the task is visibly active. Record whether the event is
+a new marker such as `PULSE-DEMO-002`, give it a bounded task, and run only
+step 5's atomic trigger publication block with that marker while the task is
+visibly active. Reuse the prepared paths; do not repeat the idle observation
+for this busy check. Record whether the event is
 queued after the current work without interruption or explicitly rejected
 without retry. Do not assume an idle run proves busy behavior.
 
 ## 7. Stop and recover after restart
 
+Before stopping, the maintainer records the currently running owned processes
+in terminal T. Keep `$run`, `$hub` and `$manual` from step 5. This snapshot starts
+with the exact binaries in this run directory and follows parent process IDs
+to include live descendants. Creation times distinguish identities if Windows
+later reuses a PID.
+
+```powershell
+$processesBeforeStop = @(Get-CimInstance Win32_Process)
+$daemonRows = @($processesBeforeStop | Where-Object { $_.ExecutablePath -eq $hub })
+$manualRows = @($processesBeforeStop | Where-Object { $_.ExecutablePath -eq $manual })
+if ($daemonRows.Count -ne 1 -or $manualRows.Count -ne 1 -or
+    $manualRows[0].ParentProcessId -ne $daemonRows[0].ProcessId) {
+    throw 'Cannot identify this run daemon and its manual child; shutdown evidence is incomplete.'
+}
+$tracked = @{}
+foreach ($process in @($daemonRows[0], $manualRows[0])) { $tracked[[int]$process.ProcessId] = $process }
+do {
+    $added = $false
+    foreach ($process in $processesBeforeStop) {
+        $parent = $tracked[[int]$process.ParentProcessId]
+        if ($null -ne $parent -and -not $tracked.ContainsKey([int]$process.ProcessId) -and
+            $process.CreationDate -ge $parent.CreationDate) {
+            $tracked[[int]$process.ProcessId] = $process
+            $added = $true
+        }
+    }
+} while ($added)
+$ownedSnapshot = @($tracked.Values | ForEach-Object {
+    if ($null -eq $_.CreationDate -or [string]::IsNullOrEmpty($_.ExecutablePath)) {
+        throw 'An owned process identity is unreadable; shutdown evidence is incomplete.'
+    }
+    [ordered]@{ pid = $_.ProcessId; parent_pid = $_.ParentProcessId; executable = $_.ExecutablePath
+        created_utc = $_.CreationDate.ToUniversalTime().ToString('o') }
+})
+[IO.File]::WriteAllText((Join-Path $run 'owned-before-stop.json'),
+    (ConvertTo-Json -InputObject $ownedSnapshot), $utf8)
+```
+
 Press **Ctrl+C in terminal D** and wait for the shell prompt to return. The
 daemon closes registration and event admission, discards queued events, and
 stops plugin processes. The plugin shutdown grace period is 5 seconds; remaining
 owned processes are terminated. Expected normal exit status is zero; inspect
-`$LASTEXITCODE` after the command returns. The acceptance evaluator also checks
-recorded owned process IDs and descendants to confirm none remain.
+and record `$LASTEXITCODE` immediately after the command returns.
+Then, in terminal T, compare the saved identities with the live processes:
+
+```powershell
+$processesAfterStop = @(Get-CimInstance Win32_Process)
+$remainingOwned = @($ownedSnapshot | Where-Object {
+    $identity = $_
+    @($processesAfterStop | Where-Object {
+        $_.ProcessId -eq $identity.pid -and
+        $_.CreationDate.ToUniversalTime().ToString('o') -eq $identity.created_utc
+    }).Count -ne 0
+})
+[IO.File]::WriteAllText((Join-Path $run 'owned-still-running.json'),
+    (ConvertTo-Json -InputObject $remainingOwned), $utf8)
+if ($remainingOwned.Count -ne 0) { throw 'Recorded owned processes remain alive after shutdown.' }
+```
+
+Expected: normal exit zero and an empty `owned-still-running.json` array.
+A reused PID with a different creation time is not the saved process. Retain
+both snapshots and the daemon log. This minimal manual-plugin walkthrough checks
+the recorded live tree only: a snapshot can miss short-lived descendants or
+processes created after capture. If that affects the evaluated run, report the
+shutdown evidence as incomplete. The automated `MVP-V01-SHUTDOWN` containment
+and descendant tests remain required; this snapshot does not replace them.
 
 All registrations and undelivered events are lost on stop, crash, or restart.
 An interrupted in-flight delivery is unknown. Work already accepted by Codex
@@ -305,24 +444,27 @@ them until the daemon is stopped and required evidence has been preserved.
 ## Acceptance evidence and coverage
 
 These steps describe expected behavior, not a completed test result. The
-maintainer records an implementation acceptance run with source SHA, Windows /
+maintainer records a delivery verification run with source SHA, Windows /
 PowerShell / Go / Codex versions, selected executable path, build and operation
 commands, daemon logs, subscription and A/B identities, visible responses,
 receipt/attempt/response times, shutdown process checks, and every failure.
-Put that run's evidence in the implementation PR; do not replace this reusable
+Retain that run's evidence in the delivery record, linked to the merged
+implementation revision. The implementation PR records these checks as not
+executed when appropriate; passing CI does not satisfy the real-service parts
+of AC-002, AC-003, AC-006, AC-009, or AC-010. Do not replace this reusable
 guide with one machine's transcript. Keep sensitive local paths and conversation
 identifiers out of public records unless appropriate for the test environment.
 
 | Requirements/mvp IDs | Procedure / verification | Coverage boundary |
 | --- | --- | --- |
-| NFR-004; AC-009 | Steps 1-7, exact version and clean build transcript; MVP V09 | Full operating walkthrough; actual success must be demonstrated on the implementation. |
+| NFR-004; AC-009 | Steps 1-7, exact version and clean build transcript; MVP V09 / D09 | Full real operating walkthrough during delivery; CI CLI checks cover only its service-free parts. |
 | FR-001, FR-004; AC-001 | Steps 2-3 and 7; MVP V01 | Normal lifecycle here; invalid configuration, missing executable and descendant cleanup require process fixtures. |
-| FR-002, FR-005; AC-002 | Step 4 and failure reference; MVP V02 | Skill and identity checks here; negative/race cases remain automated tests. |
-| FR-003, FR-004, FR-005; AC-003 | Steps 4-6; MVP V03 | Real A acknowledgement, B isolation, and no new conversation. |
+| FR-002, FR-005; AC-002 | Step 4 and failure reference; MVP V02 / D02 | Actual skill and top-level identity checks here; negative/race cases also require CI evidence. |
+| FR-003, FR-004, FR-005; AC-003 | Steps 4-6; MVP V03 / D03 | Real A acknowledgement, B isolation, and no new conversation; a simulated recipient cannot complete this criterion. |
 | FR-006; AC-004, AC-005 | Steps 6-7; MVP V04-V05 | Loss/no-retry and recovery instructions; malformed/cross-plugin/old-ID events and uncertain failures require fixtures. |
-| NFR-001; AC-006 | Declared idle interval and trigger in step 5, timing evidence in step 6; MVP V06 | Real trace plus instrumented zero-work assertion. |
+| NFR-001; AC-006 | Declared idle interval and trigger in step 5, timing evidence in step 6; MVP V06 / D06 | Real work/response trace plus separate CI zero-work assertion. |
 | NFR-003; AC-008 | Same-user setup, permission-limited acknowledgement and retention; MVP V08 | Operator guidance only; other-user/remote denial checks remain required. |
-| FR-007; AC-010 | Duplicate registration in step 4 and busy run in step 6; MVP V10 | Real busy outcome plus automated equivalence/concurrency checks. |
+| FR-007; AC-010 | Duplicate registration in step 4 and busy run in step 6; MVP V10 / D10 | Real busy outcome plus required CI equivalence/concurrency checks; an idle run does not establish busy behavior. |
 
 NFR-002 and AC-007 are covered by the authoritative plugin specification and
 MVP V07, not by this operator walkthrough. All remaining automated and manual
