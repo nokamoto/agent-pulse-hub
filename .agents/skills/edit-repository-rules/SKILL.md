@@ -43,14 +43,12 @@ executable checks change. Report actual results and any unavailable required
 checks; incomplete required verification prevents readiness.
 
 Apply [Markdown readability review](../review-markdown-readability/SKILL.md)
-to every written or edited Markdown document. Then delegate consistency
-self-review of the complete diff to a fresh clean-context subagent with
-`fork_turns="none"`, model `gpt-6.1-sol`, and reasoning effort `high`. Supply the
-repository, target/base revision, original request, and authoritative sources;
-ask it to apply the playbook's rule-change consistency criteria. Omit author
-reasoning and expected verdicts. Address findings and re-review the updated
-diff. Repeat readability review after Markdown edits and re-run affected
-checks. Report unavailable independent review as incomplete.
+to every written or edited Markdown document. Then use
+[review-repository-rules](../review-repository-rules/SKILL.md) for independent
+consistency self-review of the complete diff, following its clean-context
+reviewer setup. Address findings and re-review the updated diff. Repeat
+readability review after Markdown edits and re-run affected checks. Report
+unavailable independent review as incomplete.
 
 ## Prepare the repository rules PR
 

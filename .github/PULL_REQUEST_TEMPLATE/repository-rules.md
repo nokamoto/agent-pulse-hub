@@ -13,7 +13,7 @@
      source, inspected use paths (including those needing no change and why),
      findings, corrections, and unresolved uncertainty. -->
 
-[Review criteria](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#rule-change-consistency-review)
+[Review criteria](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#rule-change-consistency-review) and [review procedure](https://github.com/nokamoto/agent-pulse-hub/blob/main/.agents/skills/review-repository-rules/SKILL.md)
 
 ## Verification and reviews
 
