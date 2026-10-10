@@ -10,7 +10,7 @@ Use [the checklist](references/checklist.md) as review criteria and the
 
 Identify the target PR and base/head commits, or local diff and base. Read the
 complete changed-file list, including deletions and both sides of renames.
-Read affected design, source requirements and acceptance criteria, relevant
+Read affected design and separate specification documents, source requirements and acceptance criteria, relevant
 existing design and code. Verify source approval and merge evidence from the
 requirements PR. The design document needs source concept links and local
 IDs for traceability. It does not need to repeat requirements PR metadata,

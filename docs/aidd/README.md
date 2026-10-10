@@ -63,13 +63,73 @@ Define how to fulfill the approved requirements and how to verify the result.
 
 | Item | Description |
 | --- | --- |
-| Deliverables | Design documents in `docs/design/`, including related requirements, architecture and responsibilities, interfaces and data, normal and failure scenarios, extensibility and safety considerations, verification strategy, and rationale for important decisions |
+| Deliverables | Design documents in `docs/design/` and any separate specification documents governed by them, including related requirements, architecture and responsibilities, interfaces and data, normal and failure scenarios, extensibility and safety considerations, verification strategy, and rationale for important decisions |
 | PR | A design PR linking to the merged requirements PR and presenting the design changes and significant tradeoffs |
 | Human role | Evaluate significant tradeoffs, including maintainability, compatibility, and operational risks |
 | Agent role | Investigate the existing architecture and constraints, compare relevant alternatives, draft the design, and check requirement coverage and verifiability |
 | Approval criteria | The design provides a credible path to satisfying the requirements and a verification strategy; important technical decisions and risks are agreed upon; open questions that affect implementation have been resolved |
 
 Match the level of design detail to the size and risk of the change. Delegate implementation details that do not require human judgment to agents within the approved design and constraints.
+
+### Specification documents and approved design
+
+A specification document defines a contract used to implement or integrate a
+feature, such as a protocol or API. Creating a separate specification is design
+work, including when it extracts a contract already described elsewhere.
+Changes to its contract, placement, authority, or relationship to other design
+documents are also design work.
+
+The governing design in `docs/design/` must record:
+
+- Whether the specification stays within the design or has a separate document,
+  its path, and its purpose and readers.
+- Which document is authoritative for each contract, and how other documents
+  derive from or reference it. Avoid competing sources of truth.
+- The contract decisions and the constraints on routine implementation choices.
+  Delegating code details does not delegate creation of a specification document.
+
+A design PR that creates or changes a separate specification includes that
+specification itself and the governing design
+changes needed to establish that relationship. A plan to create the document
+later does not satisfy this requirement. Separate specifications may live under
+`docs/` outside `docs/design/`, for example in `docs/protocol/`. Design PRs may
+change `docs/design/` and these specification documents when their relationship
+is recorded in the governing design; code, tooling, and unrelated documents
+remain outside the design PR. Apply this boundary to deletions and both sides
+of renames, using the base revision for removed paths.
+
+Each separate specification uses `type: Design`, links to its governing design,
+identifies the authoritative source for its contracts, and records derivation
+in OKF `sources`. The type classifies content; it does not prove approval or
+grant independent authority. Review the specification's content and its
+relationship to the governing design together before approval and merge.
+If no separate specification is needed, state that the design contains the
+contract. A requirement to document a protocol does not by itself settle its
+placement or authority.
+
+If implementation discovers the need for a separate specification or a change
+to those design decisions, stop the current implementation session. Preserve
+existing work and report the reason, affected contracts and documents, unfinished
+implementation, and that a separate design session is required. After that
+report, end work in the session. Do not revise the design or specification in
+that session or automatically start another session. A human initiates the
+separate design session, which prepares the design PR with the specification
+and affected design changes. If requirement scope or constraints must change,
+report that a requirements session is needed before design instead.
+
+Implementation may resume only after human approval and merge of the upstream
+PRs are verified under the [handoff rules](#agent-verification-and-handoff-evidence).
+This feedback suspends work; it does not require discarding code or reverting
+commits. Existing documents do not need wholesale reorganization when this
+rule is adopted; apply it when specification work is needed.
+
+Routine code choices, wording corrections, and explanatory examples that
+preserve the approved contract, placement, authority, and document relationships
+may remain in implementation. They cannot be used to create a new separate
+specification in an implementation PR. For such documentation updates, link
+the governing design and explain in the implementation PR why no design decision
+changes. Reviewers assess that explanation and the content; structural
+guardrails alone cannot establish approval or semantic consistency.
 
 ### 3. Implementation
 
