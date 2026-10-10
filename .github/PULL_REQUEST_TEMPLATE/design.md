@@ -1,5 +1,5 @@
 <!-- Apply phase:design explicitly; this template does not set labels. -->
-<!-- Design phase only: changes belong in docs/design/. -->
+<!-- Design phase only: docs/design/ and separate specifications governed by it. -->
 
 ## Purpose and scope
 
@@ -13,9 +13,12 @@
      reference under the AIDD handoff rules. Human merge needs no separate
      Approve review, including for the human's own PR.
      Summarize coverage and related designs. Link the design sections governing
-     specification documents: intended paths, purpose and readers, authority
-     and derivation, fixed contract decisions, and constrained details delegated
-     to implementation. If contracts stay in the design, identify that decision. -->
+     specification documents: paths, purpose and readers, authority and
+     derivation, contract decisions, and constraints on routine implementation
+     choices. Link each specification included here or already approved and
+     merged. If contracts stay in the design, identify that decision.
+     When this design session follows implementation feedback, link the stop
+     report and explain how the specification and design resolve the gap. -->
 
 ## Decisions requiring human review
 
@@ -25,7 +28,7 @@
 
 <!-- Record reviewed base/head commits (or local diff), overall verdict, and
      all D01-D13 results from .agents/skills/review-design/references/checklist.md
-     with evidence. Include guardrail results, checks not run and their impact.
+     with evidence. Include guardrail results, manual structure checks for separate specifications outside docs/design/, and checks not run and their impact.
      Distinguish planned verification from executed checks. -->
 
 ## Open questions and risks
@@ -39,7 +42,7 @@
 
 ## Phase handoff
 
-- [ ] The complete diff changes only docs/design/.
+- [ ] The complete diff stays within docs/design/ and its governed specifications, including deletions and both sides of renames.
 - [ ] The phase:design label is applied.
 - [ ] Source requirements have human approval and are merged.
 - [ ] All applicable review checklist items pass with evidence above.
@@ -53,7 +56,7 @@ needed for that route. Alternatively, record approval of the current head with
 an Approve review or an explicit PR comment, then merge or authorize an agent
 to merge that revision. Repository protections and required checks still apply.
 
-Implementation starts after design approval and merge are verified under the
+Implementation starts or resumes after design approval and merge are verified under the
 [AIDD handoff rules](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#agent-verification-and-handoff-evidence).
 The downstream agent records the route, human actor, final head SHA, merge time,
 merge commit SHA, and any explicit approval reference. These are post-merge

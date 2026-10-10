@@ -17,6 +17,18 @@ Refer to the following directories:
 - [Design](docs/design/)
 - [AI-Driven Development rules](docs/aidd/)
 
+## Specification feedback during implementation
+
+If implementation needs a separate specification document or a change to its
+contract, placement, authority, or relationship to the design, stop the current
+implementation session under the
+[AIDD feedback rule](docs/aidd/README.md#specification-documents-and-approved-design).
+Preserve work and tell the human why a separate design session is needed,
+which contracts and documents are affected, and what implementation is unfinished.
+End work in this session without revising the design or specification or
+starting another session automatically. Resume implementation only after the
+required upstream approval and merge are verified.
+
 ## Guardrails
 
 Run all repository guardrails locally with Go:

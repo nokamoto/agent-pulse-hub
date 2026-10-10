@@ -40,10 +40,13 @@ approved requirements will be fulfilled and verified.
    implementation choices to implementation. Apply the playbook's
    [specification document rules](../../../docs/aidd/README.md#specification-documents-and-approved-design):
    record whether contracts stay in the design or use separate specifications,
-   their intended paths, purpose and readers, authority and derivation, and
-   the contract decisions and constrained details delegated to implementation.
-   Keep approval-relevant contract decisions in the design PR even when the
-   planned specification will be created elsewhere during implementation.
+   their paths, purpose and readers, authority and derivation, and the contract
+   decisions and constraints on routine implementation choices. Create or revise
+   the separate specifications as part of the design PR, with Design frontmatter
+   and links to the governing design. Do not defer document creation to
+   implementation. When a human starts this design session from implementation
+   feedback, use the reported gap as input and keep implementation stopped until
+   the upstream approval and merge prerequisites are verified.
 4. Map every in-scope functional and nonfunctional requirement and acceptance
    criterion to design and feasible verification. Explain partial coverage and
    related designs. Record open decisions, impact, owner, and resolution stage.
@@ -56,8 +59,11 @@ approved requirements will be fulfilled and verified.
    `type: Design`; nonempty string title/description; a nonempty sources list
    with nonempty string `id` and `resource` and optional string `title`;
    and a nonempty body. Other fields, duplicate keys, malformed YAML, and
-   symlinks are rejected. Coverage requires content review; human approval
-   follows the playbook's approval routes.
+   symlinks are rejected. Separate specifications outside `docs/design/` are
+   outside this guardrail's scan: review the same document structure manually
+   and record the files and results in the PR. Coverage, document relationships,
+   and authority require content review; human approval follows the playbook's
+   approval routes.
 6. Apply [Markdown readability review](../review-markdown-readability/SKILL.md).
    Delegate self-review to a fresh clean-context subagent using
    `fork_turns="none"`, model `gpt-6.1-sol`, reasoning effort `high`.
@@ -74,7 +80,9 @@ approved requirements will be fulfilled and verified.
    authorized or report the missing setup. Report unavailable remote steps
    without claiming success.
 
-Design phase PRs change only `docs/design/`, including deletions and both sides
-of renames. Prepare supporting workflow or tooling separately. Preserve
-unrelated working changes. Keep blocked PRs in draft. Implementation starts
-only after human approval and merge of the design PR.
+Keep the complete design PR within the playbook's
+[design and specification scope](../../../docs/aidd/README.md#specification-documents-and-approved-design),
+including deletions and both sides of renames. Prepare supporting workflow or
+tooling separately. Preserve unrelated working changes. Keep blocked PRs in
+draft. Implementation starts or resumes only after human approval and merge
+of the upstream PRs are verified.
