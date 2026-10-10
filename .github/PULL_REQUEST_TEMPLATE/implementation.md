@@ -4,9 +4,12 @@
 ## Purpose and implementation result
 
 <!-- Describe the resulting behavior and identify the code, tests, CI, and
-     documentation delivered by this revision. Map changes to approved
+     permitted updates to existing documentation delivered by this revision. Map changes to approved
      requirement IDs and design sections. Explain why included documentation
-     is needed for implementation or acceptance verification. -->
+     preserves the approved procedures, contracts, and document relationships. Do not create
+     operating instructions or specifications for continued developer use here;
+     they must be created during requirements or design, including new content
+     added to an existing file. -->
 
 ## Upstream approval and scope
 
@@ -14,16 +17,23 @@
      Record approval and revision evidence under the handoff rules. If an
      upstream phase needs no update, explain why. For documentation updates
      covered by the specification feedback rule, link the governing design
-     and explain why no design decision changes. -->
+     and explain why no design decision changes. If required developer
+     documentation is missing, record the stop report: the gap, affected
+     documents and contracts, unfinished implementation and acceptance criteria,
+     and the required upstream phase. Preserve work and end the session; a human
+     starts the separate upstream session. Resume only after upstream approval
+     and merge are verified. An approved obligation to document does not permit
+     creating the document during implementation. -->
 
 [AIDD handoff evidence](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#agent-verification-and-handoff-evidence)
+and [developer documentation feedback](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#developer-documentation-and-upstream-feedback)
 and [specification feedback](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#specification-documents-and-approved-design).
 
 ## Verification and remaining implementation work
 
 <!-- Record automated and manual check results, the tested revision and
      environment, reproduction commands or links, and evidence for applicable
-     acceptance criteria. Report failures, checks not run, defects, known
+     acceptance criteria. Keep reviewer reproduction information in this PR; it does not replace documentation for continued developer use. Report failures, checks not run, defects, known
      limitations, and risks. Required incomplete verification or unmet
      acceptance criteria block readiness; do not move them to delivery. -->
 

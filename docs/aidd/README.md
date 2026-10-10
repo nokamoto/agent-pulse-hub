@@ -131,13 +131,47 @@ the governing design and explain in the implementation PR why no design decision
 changes. Reviewers assess that explanation and the content; structural
 guardrails alone cannot establish approval or semantic consistency.
 
+### Developer documentation and upstream feedback
+
+Create operating instructions and specifications that developers will continue
+referencing after implementation as requirements or design deliverables before
+implementation begins. Include the actual documentation in the upstream phase
+PR; a requirement or plan to write it later is insufficient. Use the existing
+phase scope and document placement rules. For example, include the actual
+operating instructions in the relevant design document under `docs/design/`
+to keep them within the design PR's scope. Adding new operating instructions
+or contracts to an existing file also belongs upstream; an existing README or
+other document does not make that new content implementation work. Separate
+specifications follow the
+[specification rules above](#specification-documents-and-approved-design).
+
+If implementation discovers that such documentation is missing, stop the
+current implementation session, including when the approved requirements or
+design already require the document. Preserve existing work and report the gap,
+affected documents and contracts, unfinished implementation and acceptance
+criteria, and the upstream phase needed to resolve the gap. Use requirements
+when scope or constraints need to change; otherwise use design. End work in the
+session without creating or changing the affected documentation or revising
+requirements or design, and
+do not automatically start another session. A human initiates the separate
+upstream session. Resume implementation only after human approval and merge of
+the required upstream PRs are verified under the
+[handoff rules](#agent-verification-and-handoff-evidence).
+
+Verification results and instructions for reviewers to reproduce checks may
+remain in the implementation PR. They do not replace documentation needed for
+continued developer use. Routine wording corrections and explanatory examples
+in existing documentation may remain in implementation when they preserve the
+approved procedures and contracts, placement, authority, and document relationships under the
+specification rules. This allowance does not permit creating a new document.
+
 ### 3. Implementation
 
 Translate the approved requirements and design into working code and reproducible verification.
 
 | Item | Description |
 | --- | --- |
-| Deliverables | A repository revision containing code, necessary tests and CI changes, and documentation needed to satisfy the approved requirements and design; PR evidence mapping those changes to acceptance criteria and recording verification results |
+| Deliverables | A repository revision containing code, necessary tests and CI changes, and permitted updates to existing documentation under the developer documentation rule; PR evidence mapping those changes to acceptance criteria and recording verification results |
 | PR | An implementation PR linking to the merged requirements and design PRs and presenting the implementation changes and verification evidence |
 | Human role | Confirm acceptance criteria, remaining risks, and operational impact, and decide whether to merge |
 | Agent role | Implement, self-review, verify, and fix defects; automate necessary verification and present reviewable diffs and evidence |
@@ -173,15 +207,17 @@ deliverables, and approval criteria require separate definition; this rule
 establishes only the implementation boundary.
 
 Classify work by its purpose and the approved acceptance criteria, not by its
-file extension or location. Build and startup checks, documented commands,
-README updates, and operating instructions remain implementation work when
-needed to fulfill or verify the approved requirements and design. For example,
-the [MVP requirements](../requirements/mvp.md) NFR-004 and AC-009 require Windows
-setup and operation instructions and a clean-build demonstration; those cannot
-be deferred to delivery. Building an artifact for that demonstration is
-verification; publishing it for downstream developers is delivery.
-Documentation changes must still respect the existing
-[specification feedback rule](#specification-documents-and-approved-design).
+file extension or location. Build and startup checks and their reproduction
+instructions in the PR remain implementation verification. Documentation for
+continued developer use follows the
+[upstream documentation rule](#developer-documentation-and-upstream-feedback).
+For example, the [MVP requirements](../requirements/mvp.md) NFR-004 and AC-009
+require Windows setup and operation instructions and a clean-build
+demonstration. Those obligations cannot be deferred to delivery. If the
+instructions are missing during implementation, stop and return upstream to
+create them; do not claim the acceptance criterion is met. Building an artifact
+for the demonstration is verification; publishing it for downstream developers
+is delivery.
 
 In the implementation PR, record identified delivery work separately from
 implementation defects or incomplete checks, or state that none has been
