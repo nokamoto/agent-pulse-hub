@@ -85,6 +85,12 @@ already knows them; project-specific meanings still need a definition.
 
 ## Correct and re-review
 
+Before deciding which findings to correct, apply
+[Validate review findings](../validate-review-findings/SKILL.md) to first-read
+and meaning-comparison findings. The main session supplies that validator with
+the relevant baseline and authoritative inputs and makes the final disposition
+using both reports. Keep this validation separate from the first-read review;
+do not expand the first-read reviewer's restricted inputs.
 Evaluate findings against the task's original requirements and authoritative
 sources, which remain with the author. Make minimal supported corrections when
 editing is authorized. Preserve requirement IDs, constraints, approval
