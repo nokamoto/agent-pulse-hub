@@ -198,7 +198,7 @@ to resolve uncertainty while the daemon and plugin remain available.
 The daemon writes lifecycle and delivery diagnostics to stderr, leaving stdout
 unused. Startup reports each configured plugin's ready/unavailable result and
 then whether registration is available, so the operator does not guess a delay.
-Fatal configuration, control-pipe, or Codex compatibility validation failure exits
+Fatal configuration, control-pipe, or Codex version-probe failure exits
 with status one before starting plugins; normal Ctrl+C completion exits zero.
 Individual plugin startup failure follows the existing partial-availability
 rule. Exact diagnostic prose and log layout remain implementation choices;
@@ -291,61 +291,15 @@ The adapter runs the configured Codex executable directly as the same Windows
 user, using an argument array equivalent to
 `codex queue --thread <session_id> --message <envelope>`. It must not invoke a
 shell, start a new conversation, interrupt a turn, or fall back to another API.
-Compatibility is defined by the queue and identity capabilities below, not an
-exact CLI version or a version range. Version ordering, particularly alpha
-suffixes, does not establish these capabilities. Queue acceptance means Codex
-accepted work, not that the conversation completed or acknowledged it.
-
-#### Compatibility profile and startup checks
-
-The configured executable must expose `queue --thread <THREAD> --message <TEXT>`
-for an existing conversation. The adapter supplies a UUID, never a session name.
-The registration environment must supply matching `CODEX_THREAD_ID` and
-`CODEX_SESSION_ID` UUIDs under the existing skill contract. An idle recipient must
-continue without another user message; a busy recipient must queue without
-interruption or reject delivery under FR-007. The acceptance response must obey
-the grammar in [delivery outcomes](#delivery-outcomes).
-
-Before starting plugins or accepting registration, the daemon runs the configured
-absolute executable directly with `--version`, then `queue --help`, as the same
-Windows user. These probes must not submit work, select a recipient, or launch a
-conversation. Each has the existing 30-second command deadline and bounded child
-output capture. Capture stdout and stderr separately. Require exit zero for both,
-a single nonempty `codex-cli <version>` stdout line for the version probe, and
-queue help whose usage identifies `codex queue` with required `--thread` and
-`--message` options taking one value each. Require option declarations for both
-flags; ignore placeholder names, whitespace, descriptive prose and unrelated
-options. Do not match the whole help text or compare the version string to a
-hard-coded value. A successful probe may have stderr warnings; retain bounded
-diagnostics without treating warnings alone as failure.
-
-Missing capabilities, unrecognized output, launch failure, timeout, or output
-overflow fails startup with exit one and a visible compatibility diagnostic;
-no plugin starts and no work is queued. Log the selected executable, reported
-version and probe result. The version is diagnostic evidence, not an allowlist.
-Session identity is checked at registration, where its environment is available,
-not guessed by the daemon's startup probes.
-
-Passing these probes permits startup; it does not certify queue semantics,
-acknowledgement grammar, connection to the intended Desktop environment, or
-end-to-end support. Every actual delivery still uses strict outcome recognition.
-The maintainer validates an executable with the adapter fixtures and real
-Windows demonstrations below before claiming it is tested with the hub build.
-Replacing the executable requires that validation again, even if its version
-string is unchanged. A version change alone requires no design revision when
-all contracts remain satisfied. Changed flags, response grammar, identity or
-delivery behavior require design review; changed product scope or acceptance
-criteria must return to requirements first. Operators must keep the selected
-executable unchanged while the daemon runs and restart after replacing it.
-
-Historical idle/busy demonstrations used `codex-cli 0.162.0-alpha.2`. The
-`0.162.0-alpha.17.2` executable exposes the same required queue flags and version
-probe, making it a validation candidate rather than an automatically certified
-replacement. Neither observation justifies an exact pin or an inferred version
-range. Detailed probe and demonstration evidence belongs in the PR, not a
-runtime version list.
-
-#### Delivery outcomes
+The CLI version is recorded using `--version` at startup and in implementation
+acceptance evidence; it is not an allowlist. Startup must not reject an
+executable solely because its version differs from `codex-cli 0.162.0-alpha.2`,
+the historical demonstration version. Compatibility depends on the queue
+invocation above and the acknowledgement and delivery behavior below. A version
+change alone does not require a separate design approval or adapter verification
+phase. The existing implementation acceptance checks still apply. Queue
+acceptance means Codex accepted work, not that the conversation completed or
+acknowledged it.
 
 The message has a fixed instruction wrapper identifying the plugin and
 subscription, followed by a JSON-encoded `context` value. The wrapper says that
@@ -363,7 +317,8 @@ a final line ending, with valid UUIDs and target equal to the registered session
 The [OpenAI source snapshot](https://github.com/openai/codex/blob/0ada5d8806cdad498230d5b1b2924091e04c8feb/codex-rs/tui/src/session_queue_commands.rs)
 returns this line after a typed queue acknowledgement. This snapshot is supporting
 evidence, not proof of binary identity; implementation must capture fixtures and
-repeat the real demonstration on the selected executable. Capture stdout and
+repeat the real demonstration on the executable selected for implementation
+acceptance. Capture stdout and
 stderr separately. Failure to start the process is `failed`; the initial adapter
 does not assume that a general nonzero exit proves non-acceptance. Timeout, lost output, inconsistent
 response, or any post-start error without a definite rejection is `unknown`.
@@ -402,8 +357,8 @@ event, consistent with the MVP's lack of guaranteed delivery.
 The skill asks for the plugin and its watch arguments, requires both
 `CODEX_THREAD_ID` and `CODEX_SESSION_ID` to be valid UUIDs with the same value,
 and invokes registration with that value from the top-level conversation.
-Subagents can have different values and must not be used for this registration
-step. A missing,
+PR #4 demonstrated this environment for the historical CLI; subagents can have
+different values and must not be used for this registration step. A missing,
 conflicting, or unsupported identity fails with an explanation; an agent must
 not delegate registration to a subagent with a different conversation identity.
 The skill reports the returned subscription ID and tells the user how stopping
@@ -450,7 +405,6 @@ termination may lose all pending state and cannot provide delivery guarantees.
 | Explicit byte counts, LF/CRLF, strict Unicode and result schema | Decoder-dependent replacement, platform-specific delimiters, or permissive extra fields | Cross-language implementations need identical acceptance rules. Counts include the delimiter for frames and use decoded UTF-8 for context; rejection text is required only for negative results. Strictness costs tolerance of imperfect plugins. |
 | In-memory registry and one delivery worker | Database and parallel workers | Meets explicit MVP scope and makes ordering visible; restart loses state and slow delivery delays other sessions. |
 | Codex CLI queue adapter | UI automation or undocumented direct database writes | Queue is the tested existing-conversation entry point; isolates version-sensitive behavior and avoids mutating Codex storage. |
-| Capability probes, strict per-delivery acknowledgement and recorded executable validation | Exact CLI pin or a numeric version range | Flags and observed behavior are the relevant contracts. Alpha version ordering gives no compatibility guarantee, and a pin can reject an unchanged interface. Help checks cannot prove semantics, so fixtures and real idle/busy demonstrations remain required; unexpected runtime responses remain unknown without retry. |
 | File-triggered manual plugin | Daemon-specific test injection operation | Exercises the same plugin protocol as future sources; requires documented atomic file creation and permits event loss on crash. |
 | A subcommand CLI and JSON argument file, with a repository-local registration skill | Separate daemon/client executables, inline JSON flags, or a globally installed skill | Keeps build and setup small and avoids native-shell JSON quoting differences. File paths are explicit inputs; discovery requires opening the repository project. NFR-004 is covered by the concrete Windows guide. |
 | Stop a plugin after uncertain watch acceptance | Leave an unconfirmed watch running | Keeps active-registration semantics definite without adding cancellation; all watches on that plugin are lost. |
@@ -480,7 +434,7 @@ are in the specification; control examples and error codes are in this design.
 The [Windows operation guide](windows-operations.md) supplies the concrete
 build, configuration, startup, skill registration, atomic trigger,
 acknowledgement, shutdown, and re-registration procedure. It records the
-Codex compatibility checks and separates expected behavior from acceptance
+tested Codex version and separates expected behavior from acceptance
 evidence gathered on an implementation revision.
 
 ## Requirement coverage
@@ -526,28 +480,6 @@ queue overflow, response loss after registration, immediate event after watch
 acceptance, and shutdown during a delivery. Assertions distinguish plugin event
 rejection from an admitted event's delivery result.
 
-Adapter verification for V01/V04/V06/V09 uses executable fixtures for both startup
-probes and delivery. Versions with different suffixes pass when the probe
-contract matches; an exact formerly tested version fails if the required options
-are missing. Cover help whitespace/placeholder changes and extra options, missing
-or valueless required options, malformed/empty version output, stderr warnings
-with successful stdout, launch failure, nonzero exit, timeout and capture
-overflow. Assert zero plugin starts and zero work submissions for a failed probe.
-Successful probes submit no work either: V06 distinguishes these diagnostic
-invocations from delivery attempts. Delivery fixtures retain exact acknowledgement
-recognition and cover wrong target/UUID, extra output, nonzero exit with an
-otherwise valid line and unknown post-start failures. Only the complete positive
-contract yields accepted; no outcome causes retry.
-
-For each selected executable and hub build claimed as tested, the maintainer
-records its absolute path, exact reported version, probe stdout/stderr and exit
-results, and runs V02/V03/V06/V09/V10 on Windows. Include matching identity and
-skill discovery, idle acknowledgement in A with B unchanged and no new
-conversation, and busy queue/no-interruption or explicit rejection without
-retry. Fixtures or similar help alone cannot replace this evidence. A failure
-leaves the affected acceptance check incomplete until resolved; it must not be
-described as a successfully validated executable.
-
 V02 manual-plugin fixtures also cover separator/dot normalization, filename case,
 parent aliases, unsupported path forms, and failure to obtain parent identity.
 Equivalent file targets cannot acquire a second watch; identical JSON
@@ -579,15 +511,6 @@ CLI fixtures must conform to these interfaces; earlier prototypes with other
 names need command updates, not data migration. The Windows guide is the
 developer entry point, while the plugin specification remains unchanged.
 
-Implementations based on the earlier alpha.2-only startup rule must replace
-their version allowlist with the capability probes. This affects daemon startup
-validation, adapter fixtures and the Windows guide, not the queue invocation,
-acknowledgement grammar, registration identity, plugin protocol or source
-acceptance criteria. Merely changing the accepted version string is insufficient.
-Capture new
-executable validation evidence when evaluating the updated hub build. No
-persistent state migration or additional fallback is introduced.
-
 The maintainer builds and runs the foreground binaries manually. Rollback means
 stopping them and returning to the prior build; registration must be repeated.
 Stopping cannot cancel work already accepted by Codex. Delivery failures must be
@@ -599,8 +522,8 @@ merge under the [AIDD playbook](../aidd/README.md).
 
 | Question or risk | Impact | Owner | Resolve before | Status |
 | --- | --- | --- | --- | --- |
-| Codex queue response and current-session identity contract | Incorrect interpretation could misreport acceptance or select the wrong conversation. | Implementer | Implementation acceptance | Design resolved: capability probes, matching environment UUIDs and strict acknowledgement grammar; capture executable fixtures and repeat the real demonstration. |
-| CLI executable replacement or behavior drift | Help can pass while delivery is unavailable or unknown. | Maintainer | Claiming a replacement executable is tested | Repeat adapter and real idle/busy validation; retain strict runtime recognition, no fallback and no retry. Version equality does not waive validation. |
+| Codex queue response and current-session identity contract | Incorrect interpretation could misreport acceptance or select the wrong conversation. | Implementer | Implementation acceptance | Design resolved: use the specified queue contract, matching environment UUIDs and strict acknowledgement grammar; capture executable fixtures and repeat the real demonstration. |
+| CLI changes after the tested version | Delivery may become unavailable or unknown. | Maintainer | Implementation acceptance | Mitigated by strict adapter recognition and the existing real idle/busy demonstrations; no fallback or retry. Version differences alone do not block implementation. |
 | Local control security tests require another Windows user and remote client | Missing environment could leave AC-008 unverified. | Maintainer | Implementation acceptance | Planned; report missing evidence rather than assuming isolation. |
 | Memory-only state and once-only delivery | Crash or shutdown can lose accepted events; unknown delivery can already have reached Codex. | Maintainer | Design approval | Accepted MVP tradeoff for human review. |
 

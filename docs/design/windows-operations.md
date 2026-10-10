@@ -28,7 +28,7 @@ either source. Implementers use the design's
 [command contract](mvp.md#windows-commands-and-registration-skill). Operators
 can follow the steps below without implementing the wire protocol.
 
-## Prerequisites and Codex compatibility
+## Prerequisites and Codex version recording
 
 Use Windows, PowerShell 7, Git, and Go satisfying the repository's `go.mod` and
 dependency toolchain requirements. Allow Go to obtain its required toolchain
@@ -38,24 +38,13 @@ the same standard Windows user on the same computer. No administrator rights,
 Windows service installation, global skill installation, or TCP listener is
 required. Plugin executables are trusted programs chosen by that user.
 
-Select a Codex executable satisfying the governing design's
-[compatibility profile](mvp.md#compatibility-profile-and-startup-checks): an
-existing-conversation queue command with required `--thread` and `--message`
-values, the specified acceptance response, matching current-conversation UUIDs,
-and idle/busy behavior. There is no exact version pin or numeric version range.
-The daemon checks version/help without requesting agent work before starting
-plugins; it rejects missing or unrecognized capabilities, not a different
-version string. Record the exact version nevertheless.
-
-Historical demonstrations used `codex-cli 0.162.0-alpha.2`;
-`0.162.0-alpha.17.2` has the required version/help surface and is a validation
-candidate. Neither help nor historical evidence certifies a selected executable
-and hub build. The maintainer must complete the design's adapter fixtures and
-this real Windows walkthrough, including the busy check, before claiming that
-combination is tested. Repeat validation after replacing the executable, even
-with the same version string. Keep the executable unchanged while the daemon
-runs; stop and restart after replacement. A version-only change needs no design
-approval when the contracts still hold; a changed contract needs upstream review.
+`codex-cli 0.162.0-alpha.2` is the historical demonstration version, not a required
+version. Use the Codex executable associated with the local Desktop environment
+and record its exact version. The daemon does not reject a different version
+string. A version change alone does not require a separate design approval or
+adapter verification phase. The governing design's queue invocation and strict
+delivery-result contract remain unchanged; the maintainer performs the existing
+real demonstration for implementation acceptance.
 
 You need two PowerShell terminals: **D** holds the foreground daemon, and **T**
 writes test files. Keep existing Codex conversations **A** (recipient) and **B**
@@ -99,10 +88,9 @@ depend on a Mage build target. Do not start an executable after a failed build.
 ## 2. Select Codex and write configuration
 
 In terminal D, enter the absolute path to the selected `codex.exe` when
-prompted. Version and help probes request no agent work. Use the executable
-associated with the local Codex environment that hosts A rather than assuming
-the first `codex` on PATH is suitable. The commands below record probe output;
-the daemon enforces the full startup checks in step 3.
+prompted. The version probe requests no agent work. Use the executable associated
+with the local Codex environment that hosts A, and record its version rather
+than assuming the first `codex` on PATH belongs to that environment.
 
 ```powershell
 $codex = Read-Host 'Absolute path to the selected codex.exe'
@@ -112,9 +100,6 @@ if (-not [IO.Path]::IsPathFullyQualified($codex) -or -not (Test-Path -LiteralPat
 $codexVersion = & $codex --version
 if ($LASTEXITCODE -ne 0) { throw 'Codex version probe failed.' }
 Write-Output $codexVersion
-$codexQueueHelp = & $codex queue --help
-if ($LASTEXITCODE -ne 0) { throw 'Codex queue help probe failed.' }
-Write-Output $codexQueueHelp
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
 $configPath = Join-Path $run 'daemon.json'
 $watchPath = Join-Path $run 'watch.json'
@@ -301,7 +286,7 @@ daemon to recover a failed plugin also discards every other registration.
 | Observation | Meaning and operator action |
 | --- | --- |
 | Build failure or missing executable | Stop; correct the toolchain/source/build problem. Do not use an old binary as a successful clean build. |
-| Codex compatibility probe failure | Preserve version/help stdout, stderr and exit results. Select an executable exposing the required capabilities or resolve the probe failure. Do not bypass startup validation. A contract change requires design review, and a scope/acceptance change requires requirements review first. |
+| Codex version probe failure | Check the selected executable path and probe diagnostics. A different version string alone is not an error. |
 | Invalid configuration, pipe access failure, or second daemon | Correct the reported input, use the same local user, or stop the existing daemon deliberately. Do not elevate privileges as a workaround. |
 | Manual plugin unavailable | Inspect its startup/exit diagnostics and executable path. Correct the cause and restart; no plugin restart occurs automatically. |
 | `missing_session` or skill identity failure | Run in A's supported top-level environment with matching UUIDs. Never invent an ID. |
@@ -321,8 +306,7 @@ them until the daemon is stopped and required evidence has been preserved.
 
 These steps describe expected behavior, not a completed test result. The
 maintainer records an implementation acceptance run with source SHA, Windows /
-PowerShell / Go / Codex versions, selected executable path, version/help probe
-stdout/stderr and exit results, build and operation
+PowerShell / Go / Codex versions, selected executable path, build and operation
 commands, daemon logs, subscription and A/B identities, visible responses,
 receipt/attempt/response times, shutdown process checks, and every failure.
 Put that run's evidence in the implementation PR; do not replace this reusable
