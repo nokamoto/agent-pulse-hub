@@ -21,8 +21,13 @@ Refer to the following directories:
 
 Follow the [implementation completion and delivery boundary](docs/aidd/README.md#implementation-completion-and-delivery-boundary)
 and use the [implementation PR template](.github/PULL_REQUEST_TEMPLATE/implementation.md).
-Keep required acceptance evidence in implementation and identify subsequent
-delivery work separately before requesting human review.
+Follow the approved cases from
+[design verification deliverables](docs/aidd/README.md#design-verification-deliverables).
+Pass every scoped approved CI acceptance case; Pending, skipped, missing,
+filtered, or deleted cases cannot satisfy completion. Changes that weaken
+approved expected behavior require upstream approval and merge. Final quality
+checks using actual Codex or external services are designed upstream and
+executed during delivery under the completion boundary above.
 
 ## Documentation feedback during implementation
 
@@ -54,6 +59,10 @@ go run build/mage.go -d build -w . guardrails
 
 Follow the [Go development conventions](docs/aidd/go-development.md) for
 package placement, testing, and error handling.
+Apply the [test levels and cost guide](docs/aidd/go-development.md#test-levels-and-cost):
+unit tests mock external capabilities; assembled-product Ginkgo integration
+tests belong directly in `cmd/<command>/*_integration_test.go` with
+`//go:build integration`. Require separate unit and integration results.
 
 Run the Mage targets from the repository root. Format Go code and tidy modules before committing:
 
@@ -61,11 +70,15 @@ Run the Mage targets from the repository root. Format Go code and tidy modules b
 go run build/mage.go -d build -w . format
 ```
 
-Run tests with:
+Run the default unit tests with:
 
 ```sh
 go run build/mage.go -d build -w . test
 ```
+
+Run the approved integration command separately with the `integration` tag
+enabled, following the [acceptance test conventions](docs/aidd/go-development.md#design-acceptance-tests).
+The default test target alone does not establish integration completion.
 
 Run `vet` and `staticcheck` together with the lint check:
 

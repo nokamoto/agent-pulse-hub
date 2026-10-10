@@ -1,5 +1,6 @@
 <!-- Apply phase:design explicitly; this template does not set labels. -->
-<!-- Design phase only: docs/design/, including separate specifications governed by it. -->
+<!-- Design phase: docs/design/ and the narrow verification artifact exception
+     defined by the AIDD design verification deliverables. -->
 
 ## Purpose and scope
 
@@ -32,6 +33,26 @@
      not run and their impact.
      Distinguish planned verification from executed checks. -->
 
+<!-- Link the concrete command-level Ginkgo integration acceptance cases initially static Pending, their stable
+     IDs, requirement/acceptance mappings, inputs, actions, expected observable
+     results and failure boundaries, and governed paths directly in
+     cmd/<command>/*_integration_test.go with //go:build integration for all
+     case and suite files, and fixtures in that command's testdata/.
+     Explain why integration is needed, real product components and substituted
+     external boundaries, and setup, runtime, resource, and cleanup budgets.
+     Record compile and registration commands and results with the integration
+     tag enabled, separate service-free unit and integration CI commands,
+     environment, and evidence
+     for minimal harness feasibility. Link separately approved and merged
+     dependency, build, CI, tooling, or shared harness prerequisites; they
+     cannot be added here. Identify delivery quality checks using actual Codex
+     or external services, their expected results, and planned delivery evidence.
+     Report approved acceptance-phase conflicts and the required upstream PR. -->
+
+[Go test levels and cost](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#test-levels-and-cost),
+[design verification deliverables](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#design-verification-deliverables)
+and [implementation completion and delivery boundary](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#implementation-completion-and-delivery-boundary).
+
 ## Open questions and risks
 
 <!-- Identify implementation blockers and deferred decisions with owners and
@@ -43,7 +64,9 @@
 
 ## Phase handoff
 
-- [ ] The complete diff stays within docs/design/, including governed specifications, deletions and both sides of renames.
+- [ ] The complete diff stays within docs/design/ and the narrow verification artifact exception, including governed specifications, deletions and both sides of renames.
+- [ ] Concrete integration cases and suites have design-governed paths and the integration build tag directly in `cmd/<command>/`, with fixtures in that command's `testdata/`; the PR contains no production code or dependency, build, CI, tooling, or shared harness changes.
+- [ ] Service-free CI feasibility and its runtime-cost budget have evidence; required prerequisites are separately approved and merged.
 - [ ] The phase:design label is applied.
 - [ ] Source requirements have human approval and are merged.
 - [ ] All applicable review checklist items pass with evidence above.

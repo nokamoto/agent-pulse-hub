@@ -23,9 +23,9 @@ values in this design document solely to record provenance.>
 
 ## Requirement coverage
 
-| Requirement concept and local ID | Acceptance criterion | Design section or decision | Verification |
+| Requirement concept and local ID | Acceptance criterion | Design section or decision | Verification case IDs or delivery check |
 | --- | --- | --- | --- |
-| <requirements/topic + FR-001 or NFR-001> | <AC-001> | <Section link> | <Verification strategy entry> |
+| <requirements/topic + FR-001 or NFR-001> | <AC-001> | <Section link> | <Stable case IDs or delivery check entry> |
 
 <Cover every in-scope functional and nonfunctional requirement and acceptance
 criterion. Explain partial coverage and link other responsible designs.>
@@ -75,12 +75,51 @@ without inventing targets. Explain non-applicable concerns.>
 
 ## Verification strategy
 
-| Requirement / acceptance IDs | Method and level | Conditions and expected result | Evidence and evaluator |
-| --- | --- | --- | --- |
-| <Concept path + IDs> | <Test, measurement, or inspection> | <Decisive pass/fail conditions> | <Planned evidence; evaluator for manual checks> |
+<Follow the [design verification deliverables](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#design-verification-deliverables).
+Apply the [test levels and cost guide](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#test-levels-and-cost):
+implementation supplies unit tests with mocked external capabilities; design
+supplies command-level integration cases for assembled product behavior.
+Include concrete Ginkgo acceptance cases initially static `Pending` in the design PR,
+with stable IDs and governed paths directly in `cmd/<command>/*_integration_test.go`,
+all case and suite files tagged `//go:build integration`, and fixtures in that
+command's `testdata/`. Follow the [acceptance test conventions](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#design-acceptance-tests).
+Identify separately
+approved and merged prerequisites; dependency, build, CI, tooling, and shared
+harness changes belong in separate PRs. Pending cases must not use dynamic
+`Skip` to hide missing implementation. Record commands and results showing
+that cases compile and register with the `integration` tag enabled and available
+dependencies, without references
+to nonexistent production symbols. Requirements and this design remain
+authoritative for expected behavior.>
 
-<Include relevant failures and nonfunctional evaluation. Distinguish planned
-verification from checks actually executed.>
+### CI acceptance cases
+
+| Stable case ID | Requirement / acceptance IDs | Case and fixture paths | Concrete inputs and action | Observable expected results and failure boundaries |
+| --- | --- | --- | --- | --- |
+| <Case ID> | <Concept path + IDs> | <Governed paths> | <Inputs, initial state, and action> | <Decisive observations, including relevant errors or boundaries> |
+
+<Cover relevant failures and nonfunctional criteria. For each integration case,
+explain why unit tests are insufficient, identify real product components and
+substituted external boundaries, and record setup, runtime, resource, and cleanup
+costs. State separate service-free unit and tagged integration CI commands,
+environment and prerequisites, the agreed verification budget, and evidence
+that the minimal harness is feasible within it. Keep fixtures and substitutes
+focused on observable behavior and avoid infrastructure beyond that evidence.
+Distinguish harness feasibility checks actually executed from Pending product
+acceptance cases. Implementation must pass every scoped approved CI case;
+Pending, skipped, missing, filtered, or deleted cases cannot establish completion.>
+
+### Delivery quality checks
+
+| Requirement / acceptance IDs | Actual Codex or external-service check | Conditions and observable expected results | Planned evidence and evaluator |
+| --- | --- | --- | --- |
+| <Concept path + IDs> | <Final quality check and environment> | <Concrete pass/fail conditions> | <Evidence to collect during delivery; evaluator> |
+
+<Follow the [implementation completion and delivery boundary](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#implementation-completion-and-delivery-boundary).
+Design these checks here and execute them during delivery. They are not
+implementation execution requirements or completion evidence. If approved
+requirements or design assign them differently, obtain the separate upstream
+revision before dependent implementation; do not silently reclassify them.>
 
 ## Change and rollout impact
 

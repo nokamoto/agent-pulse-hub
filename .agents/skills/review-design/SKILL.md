@@ -10,9 +10,22 @@ Use [the checklist](references/checklist.md) as review criteria and the
 
 Identify the target PR and base/head commits, or local diff and base. Read the
 complete changed-file list, including deletions and both sides of renames.
-Read affected design and separate specification documents, source requirements and acceptance criteria, relevant
-existing design and code. Verify source approval and merge evidence from the
-requirements PR. The design document needs source concept links and local
+Read affected design and separate specification documents, concrete acceptance
+cases and fixtures, source requirements and acceptance criteria, and relevant
+existing design and code. Apply the
+[design verification deliverables](../../../docs/aidd/README.md#design-verification-deliverables)
+to case coverage, static `Pending` status, compile and registration evidence,
+governed paths, service-free CI feasibility, and separately resolved
+prerequisites. Check command-level Ginkgo placement, build tags, test-level
+choices, real product components and substituted boundaries, verification
+cost, and separate unit and integration evidence under the
+[Go test conventions](../../../docs/aidd/go-development.md#test-levels-and-cost).
+Verify that actual Codex or external
+service quality checks are designed for delivery under the
+[completion boundary](../../../docs/aidd/README.md#implementation-completion-and-delivery-boundary).
+If approved acceptance phases conflict, require the applicable upstream
+revision before dependent implementation. Verify source approval and merge
+evidence from the requirements PR. The design document needs source concept links and local
 IDs for traceability. It does not need to repeat requirements PR metadata,
 approval evidence, or head and merge SHAs solely to record provenance. Do
 not treat the author's checked boxes or guardrail success as content-review

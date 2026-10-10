@@ -98,18 +98,111 @@ scope; reviewers must check the dependency rules above when reviewing Go code.
 
 ## Tests
 
+### Test levels and cost
+
+For product behavior, separate unit tests from integration tests by what they
+execute, not by measured duration alone. Use the lowest-cost level that can
+establish the behavior. A slow unit test does not become an integration test,
+and a fast test using real network or process boundaries is still integration.
+
+| Level | Purpose and placement | Dependencies and cost |
+| --- | --- | --- |
+| Unit | Standard Go `testing` cases beside the code in `internal/domain`, `internal/application`, or `internal/adapters`. Isolated command logic may also have unit tests in `cmd/<command>`. | Test one responsibility in memory. Mock external capabilities such as network, persistent storage, subprocess execution, and time-dependent waiting. No real network connections, subprocesses, or live services. Keep setup small and deterministic. |
+| Integration | Ginkgo scenarios directly in `cmd/<command>/*_integration_test.go`, at the command that assembles the behavior under test. Exercise the assembled application, domain logic, and relevant adapters together through the command's public behavior. | Real local processes, filesystem, and OS transport are allowed where the scenario requires them. Replace only external service endpoints such as Codex with controlled local substitutes. Account for build, startup, cleanup, and resource costs. |
+| Delivery quality | Checks specified by the approved design and performed during delivery. | Real Codex or other live services, credentials, and environment-dependent behavior. These checks do not gate implementation completion. |
+
+Application unit tests use consumer-owned interfaces and
+[GoMock](#interface-mocks) for external capabilities; they must not start a
+server or subprocess to exercise an application decision. Test pure domain
+rules and adapter parsing or mapping directly without mocks when no external
+capability is involved. Do not add interfaces merely to mock pure functions.
+Tests of actual product I/O or assembled component interactions belong to the
+command-level integration suite, even when they use only local resources.
+Repository tooling tests retain their existing standard Go test placement.
+
+Cover input combinations, decisions, and error branches mainly with unit tests.
+Use integration cases for wiring, protocol interactions, process lifecycle,
+and user-visible paths that unit tests cannot establish. Do not repeat every
+unit-test permutation through a process. Integration must retain the real
+product components involved in the claimed behavior; mocking the application
+itself would not establish their integration. Keep current OS/transport checks
+minimal without dropping required behavior.
+
+For each integration scenario, design records why unit tests are insufficient,
+which product components are real, which external boundaries are substituted,
+and its setup, runtime, resource, and cleanup budget. Bound waits and clean up
+processes and temporary state. Use separate unit and integration commands and
+CI results so expensive checks are visible. Required integration cases still
+gate implementation; cost is not a reason to skip them or move them to delivery.
+
+### Unit test style
+
 Prefer table-driven tests with named subtests when several inputs and expected
 results exercise the same behavior. Include relevant success, failure, and
 boundary cases. Use scenario tests when a sequence of state transitions is
 clearer than a table. Parallel execution is optional and requires isolation of
 shared state and resources.
 
-Keep unit tests runnable without a real Codex installation or external
-services. For tests requiring real processes or Windows-specific facilities,
-document their prerequisites and execution commands. Wait for observable
+### Integration execution
+
+Keep implementation tests runnable in CI without a real Codex installation,
+credentials, or live external services. Real local processes and OS-specific
+facilities may be used with documented CI prerequisites and commands. Keep
+platform-specific infrastructure proportional to the behavior being verified.
+Wait for observable
 conditions with a deadline instead of relying on fixed sleeps in asynchronous
 tests. Passing tests on another operating system does not establish Windows
-acceptance; follow the platform verification in the relevant design.
+behavior; follow the implementation and delivery allocation in the approved design.
+
+### Design acceptance tests
+
+Use Ginkgo for command-level integration acceptance scenarios under the
+[design verification rule](README.md#design-verification-deliverables).
+Design authors these scenarios; implementation adds the unit tests needed for
+local behavior. Put all Ginkgo scenario and suite files directly in
+`cmd/<command>/` as `*_integration_test.go`, with `//go:build integration`.
+Place data fixtures in that command's `testdata/`. Do not put Ginkgo acceptance
+suites in `internal/application` or `internal/adapters`, introduce a new
+top-level test layout, or hide product implementation in fixtures.
+
+The build tag keeps integration suites out of the default unit-test run.
+The integration command must enable the tag and select every suite required
+by the approved scope. Design-time compilation and case registration must
+also enable it; a default run that excludes all integration files is not
+evidence that the cases compile or exist. Keep unit and integration evidence
+separate while requiring both for implementation completion.
+
+Pin Ginkgo and any Gomega dependency in `go.mod`; pin a used Ginkgo CLI to the
+same module version rather than relying on a global installation. Prepare
+missing dependencies and shared runner support separately before a design PR
+uses them. A design PR must compile and register its cases with the available
+dependencies even while product behavior is Pending. Static Pending does not
+exclude undefined Go symbols from compilation.
+
+Give each case a stable ID and concrete inputs, actions, and observable expected
+results, either in the case or a directly associated fixture. A descriptive
+title with no specified checks is insufficient. Use static `Pending` for
+unimplemented cases, not runtime `Skip()`. Exercise the command's public
+contracts rather than internal application entry points in these scenarios.
+Fakes must drive or observe actual product behavior when the case is enabled.
+
+The implementation completion check must compare approved case IDs with a
+machine-readable execution report and require all cases in scope to pass.
+Neither the standard test exit code nor `--fail-on-pending` alone detects every
+missing or skipped case: runtime Skip and filter exclusions require explicit
+report checking. Scope suites and reports so future-design Pending cases do
+not disable the current completion gate. Record commands, environment, and
+case results in the implementation PR. Real-service final quality checks use
+the separately documented delivery procedure; do not skip them inside the
+required service-free CI suite or claim them as passed.
+
+These are required capabilities for design acceptance testing, not a claim
+that the current Mage test target supplies the tagged integration runner or
+report check. The current `go test ./...` target supplies the default unit
+run; a separate integration command and CI gate are prerequisite tooling. Until
+the needed support is installed and verified, report that prerequisite as
+incomplete; do not claim a design using unavailable dependencies or an
+implementation lacking its completion gate is ready.
 
 ### Interface mocks
 

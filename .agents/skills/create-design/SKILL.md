@@ -51,11 +51,37 @@ approved requirements will be fulfilled and verified.
    feedback, use the reported gap as input and keep implementation stopped until
    the upstream approval and merge prerequisites are verified.
 4. Map every in-scope functional and nonfunctional requirement and acceptance
-   criterion to design and feasible verification. Explain partial coverage and
-   related designs. Record open decisions, impact, owner, and resolution stage.
-   Implementation blockers prevent readiness. If approved requirements must
-   change, return to a separate requirements PR and obtain approval and merge
-   before dependent design work.
+   criterion to design and verification under the
+   [design verification deliverables](../../../docs/aidd/README.md#design-verification-deliverables).
+   Apply the [test levels and cost guide](../../../docs/aidd/go-development.md#test-levels-and-cost):
+   reserve Ginkgo for command-level integration of assembled product behavior;
+   implementation supplies unit tests with mocked external capabilities.
+   Deliver concrete Ginkgo acceptance cases initially static `Pending`, with stable case
+   IDs mapped to source requirements and acceptance criteria, concrete inputs,
+   actions, observable expected results, and relevant failure boundaries. Do
+   not substitute dynamic `Skip` for Pending cases. Record their governed
+   paths under the [acceptance test conventions](../../../docs/aidd/go-development.md#design-acceptance-tests):
+   `cmd/<command>/*_integration_test.go` with `//go:build integration` for
+   every case and suite file, and that command's `testdata/` for fixtures.
+   Explain why each integration case needs that level, its real product
+   components and substituted external boundaries, and its setup, runtime,
+   resource, and cleanup budget. Record separate unit and integration CI
+   commands and environment, and feasibility evidence for the minimal harness.
+   Resolve missing framework,
+   dependency, build, CI, tooling, or shared harness prerequisites in a separate
+   PR before preparing dependent cases; do not introduce them in a design PR.
+   Compile and register every case with the `integration` tag enabled and
+   available dependencies, without
+   referencing nonexistent production symbols, and record the commands and
+   results. Pending status does not prove product behavior or harness feasibility.
+   Design final quality checks using actual Codex or external services with
+   expected results and evidence, and assign their execution to delivery under
+   the [completion boundary](../../../docs/aidd/README.md#implementation-completion-and-delivery-boundary).
+   Explain partial coverage and related designs. Record open decisions, impact,
+   owner, and resolution stage. Implementation blockers prevent readiness. If
+   approved behavior or acceptance phases conflict with the proposed strategy,
+   obtain approval and merge in the affected upstream phase before dependent
+   work; do not weaken expected behavior to make verification pass.
 5. Run `go run build/mage.go -d build -w . guardrails` at the repository root.
    The design guardrail checks recursive `docs/design/**/*.md` files and this
    asset: ordered `type`, `title`, `description`, `sources` fields;
@@ -84,7 +110,12 @@ approved requirements will be fulfilled and verified.
 
 Keep the complete design PR within the playbook's
 [design and specification scope](../../../docs/aidd/README.md#specification-documents-and-approved-design),
-including deletions and both sides of renames. Prepare supporting workflow or
-tooling separately. Preserve unrelated working changes. Keep blocked PRs in
-draft. Implementation starts or resumes only after human approval and merge
+including the narrow
+[verification artifact exception](../../../docs/aidd/README.md#design-verification-deliverables),
+deletions, and both sides of renames. The exception permits only verification
+`*_integration_test.go` files directly in `cmd/<command>/` and fixtures in
+that command's `testdata/`, with paths governed by the design. It does not permit production
+code or dependency, build, CI, tooling, or shared harness changes. Prepare
+those prerequisites separately. Preserve unrelated working changes. Keep
+blocked PRs in draft. Implementation starts or resumes only after human approval and merge
 of the upstream PRs are verified.
