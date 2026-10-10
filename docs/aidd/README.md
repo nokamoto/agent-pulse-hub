@@ -323,8 +323,10 @@ matching wording is not required.
   redefinitions, and missed updates. Explain why any inspected use needs no change.
 - Check that each use serves its role: skills describe procedures; assets provide
   document structure and input hints; review checklists express pass/fail criteria;
-  PR templates collect evidence. Repetition needed to perform those tasks is
-  acceptable when its meaning remains consistent with the authoritative rule.
+  PR templates collect evidence. Check whether the change increases the places
+  readers must consult for one decision or maintain for one rule change. Keep
+  repetition only where its role requires it and its meaning remains consistent
+  with the authoritative rule; otherwise consolidate it or use a reference.
 - Record the authoritative source, inspected use paths, findings, corrections,
   and any unresolved uncertainty in the PR description. If no rule or use changes,
   record this review as not applicable with a reason.

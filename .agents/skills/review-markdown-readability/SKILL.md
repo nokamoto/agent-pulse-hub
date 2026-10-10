@@ -92,8 +92,9 @@ the relevant baseline and authoritative inputs and makes the final disposition
 using both reports. Keep this validation separate from the first-read review;
 do not expand the first-read reviewer's restricted inputs.
 Evaluate findings against the task's original requirements and authoritative
-sources, which remain with the author. Make minimal supported corrections when
-editing is authorized. Preserve requirement IDs, constraints, approval
+sources, which remain with the author. When editing is authorized, prefer replacing,
+consolidating, or deleting existing text to appending explanations. Add only missing
+information supported by those sources. Preserve requirement IDs, constraints, approval
 boundaries, source attribution, and meaningful uncertainty. If a correction
 would resolve an undecided requirement, record or ask for the missing decision
 instead of inventing it. Distinguish a missing explanation from an unresolved
