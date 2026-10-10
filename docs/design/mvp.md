@@ -198,7 +198,7 @@ to resolve uncertainty while the daemon and plugin remain available.
 The daemon writes lifecycle and delivery diagnostics to stderr, leaving stdout
 unused. Startup reports each configured plugin's ready/unavailable result and
 then whether registration is available, so the operator does not guess a delay.
-Fatal configuration, control-pipe, or Codex-version validation failure exits
+Fatal configuration, control-pipe, or Codex version-probe failure exits
 with status one before starting plugins; normal Ctrl+C completion exits zero.
 Individual plugin startup failure follows the existing partial-availability
 rule. Exact diagnostic prose and log layout remain implementation choices;
@@ -291,13 +291,15 @@ The adapter runs the configured Codex executable directly as the same Windows
 user, using an argument array equivalent to
 `codex queue --thread <session_id> --message <envelope>`. It must not invoke a
 shell, start a new conversation, interrupt a turn, or fall back to another API.
-The initial supported CLI is `codex-cli 0.162.0-alpha.2`, the version recorded
-in PR #4 and confirmed by local `--version` and `queue --help` on 2026-10-09.
-[PR #4](https://github.com/nokamoto/agent-pulse-hub/pull/4) records successful idle
-and busy conversation demonstrations. A different
-version requires adapter verification before support is claimed; startup rejects
-an unsupported version without invoking queue. Queue acceptance means Codex accepted work, not that
-the conversation completed or acknowledged it.
+The CLI version is recorded using `--version` at startup and in implementation
+acceptance evidence; it is not an allowlist. Startup must not reject an
+executable solely because its version differs from `codex-cli 0.162.0-alpha.2`,
+the historical demonstration version. Compatibility depends on the queue
+invocation above and the acknowledgement and delivery behavior below. A version
+change alone does not require a separate design approval or adapter verification
+phase. The existing implementation acceptance checks still apply. Queue
+acceptance means Codex accepted work, not that the conversation completed or
+acknowledged it.
 
 The message has a fixed instruction wrapper identifying the plugin and
 subscription, followed by a JSON-encoded `context` value. The wrapper says that
@@ -315,7 +317,8 @@ a final line ending, with valid UUIDs and target equal to the registered session
 The [OpenAI source snapshot](https://github.com/openai/codex/blob/0ada5d8806cdad498230d5b1b2924091e04c8feb/codex-rs/tui/src/session_queue_commands.rs)
 returns this line after a typed queue acknowledgement. This snapshot is supporting
 evidence, not proof of binary identity; implementation must capture fixtures and
-repeat the real demonstration on the supported executable. Capture stdout and
+repeat the real demonstration on the executable selected for implementation
+acceptance. Capture stdout and
 stderr separately. Failure to start the process is `failed`; the initial adapter
 does not assume that a general nonzero exit proves non-acceptance. Timeout, lost output, inconsistent
 response, or any post-start error without a definite rejection is `unknown`.
@@ -354,7 +357,7 @@ event, consistent with the MVP's lack of guaranteed delivery.
 The skill asks for the plugin and its watch arguments, requires both
 `CODEX_THREAD_ID` and `CODEX_SESSION_ID` to be valid UUIDs with the same value,
 and invokes registration with that value from the top-level conversation.
-PR #4 demonstrated this environment for the supported CLI; subagents can have
+PR #4 demonstrated this environment for the historical CLI; subagents can have
 different values and must not be used for this registration step. A missing,
 conflicting, or unsupported identity fails with an explanation; an agent must
 not delegate registration to a subagent with a different conversation identity.
@@ -431,7 +434,7 @@ are in the specification; control examples and error codes are in this design.
 The [Windows operation guide](windows-operations.md) supplies the concrete
 build, configuration, startup, skill registration, atomic trigger,
 acknowledgement, shutdown, and re-registration procedure. It records the
-supported Codex baseline and separates expected behavior from acceptance
+tested Codex version and separates expected behavior from acceptance
 evidence gathered on an implementation revision.
 
 ## Requirement coverage
@@ -519,8 +522,8 @@ merge under the [AIDD playbook](../aidd/README.md).
 
 | Question or risk | Impact | Owner | Resolve before | Status |
 | --- | --- | --- | --- | --- |
-| Codex queue response and current-session identity contract | Incorrect interpretation could misreport acceptance or select the wrong conversation. | Implementer | Implementation acceptance | Design resolved: support the observed CLI version, matching environment UUIDs and strict acknowledgement grammar; capture executable fixtures and repeat the real demonstration. |
-| CLI changes after the tested version | Delivery may become unavailable or unknown. | Maintainer | Each supported-version release | Mitigated by strict adapter recognition and real idle/busy demonstrations; no fallback or retry. |
+| Codex queue response and current-session identity contract | Incorrect interpretation could misreport acceptance or select the wrong conversation. | Implementer | Implementation acceptance | Design resolved: use the specified queue contract, matching environment UUIDs and strict acknowledgement grammar; capture executable fixtures and repeat the real demonstration. |
+| CLI changes after the tested version | Delivery may become unavailable or unknown. | Maintainer | Implementation acceptance | Mitigated by strict adapter recognition and the existing real idle/busy demonstrations; no fallback or retry. Version differences alone do not block implementation. |
 | Local control security tests require another Windows user and remote client | Missing environment could leave AC-008 unverified. | Maintainer | Implementation acceptance | Planned; report missing evidence rather than assuming isolation. |
 | Memory-only state and once-only delivery | Crash or shutdown can lose accepted events; unknown delivery can already have reached Codex. | Maintainer | Design approval | Accepted MVP tradeoff for human review. |
 
