@@ -72,6 +72,18 @@ not create empty packages or duplicate types solely to populate all layers.
 Specific package names within each layer are implementation choices consistent
 with the relevant design.
 
+## Interface ownership
+
+Define an interface in the package that consumes it, with only the methods
+that consumer needs. A provider implements the interface implicitly; it must
+not dictate a shared interface merely to expose all of its methods. For
+example, an application package that delivers events owns its delivery
+interface, and a Codex adapter supplies the implementation.
+
+Do not introduce interfaces solely to mirror concrete types or to make every
+type mockable. Use them at the dependency boundaries required by the consuming
+code, consistent with the layer rules above.
+
 ## Layout enforcement
 
 The `go-layout` guardrail scans the filesystem, including test files and files
@@ -98,6 +110,32 @@ document their prerequisites and execution commands. Wait for observable
 conditions with a deadline instead of relying on fixed sleeps in asynchronous
 tests. Passing tests on another operating system does not establish Windows
 acceptance; follow the platform verification in the relevant design.
+
+### Interface mocks
+
+Use [Uber GoMock](https://github.com/uber-go/mock) for interface mocks in unit
+tests. Generate mocks with `go.uber.org/mock/mockgen` and use
+`go.uber.org/mock/gomock` for expectations. Tests that do not need an interface
+mock can test the real code directly; table-driven tests do not require mocks.
+
+Keep the generator pinned through `tools.go` and `go.mod`, so generation and
+the runtime use the same module version. Do not depend on a globally installed
+`mockgen` or an unpinned `@latest` command.
+
+Keep generated mocks in the consuming package as `*_mock_test.go` files, using
+that package's name. Commit them alongside the tests. Place a `go:generate`
+directive next to the consumer-owned interface and regenerate whenever the
+interface changes. For example, an interface in
+`internal/application/delivery/ports.go` with `package delivery` uses:
+
+```go
+//go:generate go run go.uber.org/mock/mockgen -source=ports.go -destination=ports_mock_test.go -package=delivery
+```
+
+Run `go generate ./...` from the repository root, then the required checks
+below. Do not edit generated mocks by hand. Each test or table-driven subtest
+that uses mocks creates its own `gomock.NewController(t)`; controller cleanup
+and expectation checks are registered with `testing.T` automatically.
 
 ## Errors and process exit
 
