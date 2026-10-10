@@ -187,7 +187,13 @@ Expected client output is one JSON line such as
 identifier is opaque and the example value is not fixed. The skill reports the
 actual ID after plugin acceptance. Save it with A's identity in the acceptance
 record. An error response or uncertain result is not success. No event is
-triggered by registering. Wait for A to finish the registration turn so the
+triggered by registering.
+
+When evaluating AC-010, before proceeding to step 5, explicitly invoke the
+skill again with the same inputs: it must return the same active subscription
+ID. The single trigger in step 5 must still cause only one delivery attempt.
+
+Wait for A to finish the registration turn so the
 first demonstration tests an idle recipient.
 
 ## 5. Atomically trigger one event
@@ -244,9 +250,7 @@ daemon's receipt/attempt times. If A does not acknowledge, preserve the logs and
 conversation evidence as a failure or incomplete check; do not treat queue
 acceptance as the required acknowledgement or automatically send another event.
 
-For AC-010, explicitly invoke the skill again with the same inputs before
-triggering: it must return the same active subscription ID. One trigger must
-still cause one attempt. For the busy case, instruct A in advance to acknowledge
+For the AC-010 busy case, instruct A in advance to acknowledge
 a new marker such as `PULSE-DEMO-002`, give it a bounded task, and use step 5
 with that marker while the task is visibly active. Record whether the event is
 queued after the current work without interruption or explicitly rejected
@@ -321,7 +325,7 @@ identifiers out of public records unless appropriate for the test environment.
 | FR-006; AC-004, AC-005 | Steps 6-7; MVP V04-V05 | Loss/no-retry and recovery instructions; malformed/cross-plugin/old-ID events and uncertain failures require fixtures. |
 | NFR-001; AC-006 | Declared idle interval and trigger in step 5, timing evidence in step 6; MVP V06 | Real trace plus instrumented zero-work assertion. |
 | NFR-003; AC-008 | Same-user setup, permission-limited acknowledgement and retention; MVP V08 | Operator guidance only; other-user/remote denial checks remain required. |
-| FR-007; AC-010 | Duplicate registration and busy run in step 6; MVP V10 | Real busy outcome plus automated equivalence/concurrency checks. |
+| FR-007; AC-010 | Duplicate registration in step 4 and busy run in step 6; MVP V10 | Real busy outcome plus automated equivalence/concurrency checks. |
 
 NFR-002 and AC-007 are covered by the authoritative plugin specification and
 MVP V07, not by this operator walkthrough. All remaining automated and manual
