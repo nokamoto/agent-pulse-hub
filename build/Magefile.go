@@ -35,6 +35,7 @@ func Format() error {
 func Test() error {
 	return runGoCommands([][]string{
 		{"test", "./..."},
+		{"test", "-tags", "mage", "./build"},
 	})
 }
 
@@ -42,6 +43,8 @@ func Lint() error {
 	return runGoCommands([][]string{
 		{"vet", "./..."},
 		{"run", "honnef.co/go/tools/cmd/staticcheck", "./..."},
+		{"vet", "-tags", "mage,integration", "./build", "./build/testdata/qualification"},
+		{"run", "honnef.co/go/tools/cmd/staticcheck", "-tags", "mage,integration", "./build", "./build/testdata/qualification"},
 	})
 }
 
