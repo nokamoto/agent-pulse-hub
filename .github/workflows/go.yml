@@ -21,11 +21,22 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Generate Go code
+        run: go run build/mage.go -d build -w . generate
+
       - name: Format Go code and tidy modules
         run: go run build/mage.go -d build -w . format
 
-      - name: Check formatting and module files
-        run: git diff --exit-code
+      - name: Check generated code, formatting, and module files
+        shell: bash
+        run: |
+          status=$(git status --porcelain --untracked-files=all)
+          if [ -n "$status" ]; then
+            echo "Run the Mage generate and format targets, then commit the resulting changes."
+            printf '%s\n' "$status"
+            git diff --exit-code
+            exit 1
+          fi
 
       - name: Run Go tests
         run: go run build/mage.go -d build -w . test
