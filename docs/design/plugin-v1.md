@@ -14,7 +14,7 @@ sources:
 
 This is the authoritative version 1 wire specification for plugin authors in
 any language and for daemon implementers and interoperability testers. It
-derives from the [governing MVP design](../design/mvp.md#specification-documents),
+derives from the [governing MVP design](mvp.md#specification-documents),
 which defines the architecture, registration and delivery lifecycle, local
 control interface, and bundled manual plugin. This specification owns frame
 encoding, fields, validation, ordering, wire limits, and plugin deadlines.
@@ -131,7 +131,7 @@ It does not need to wait for the registration client to receive success.
 An event before acceptance, with an unknown ID, or with another plugin's ID is
 discarded and logged. Events have no acknowledgement: a plugin receives neither
 event admission nor delivery results. The daemon applies the
-[event admission and delivery rules](../design/mvp.md#bounds-and-event-acceptance)
+[event admission and delivery rules](mvp.md#bounds-and-event-acceptance)
 and fixes the recipient from registration. Repeated event frames are separate
 events; do not retransmit in an attempt to obtain delivery confirmation.
 
@@ -153,17 +153,17 @@ unavailable. The daemon invalidates its registrations and stops its process.
 Process exit or stdout closure has the same unavailability effect. No automatic
 restart, individual cancellation, or delivery retry exists in v1. Other plugins
 remain available. See the governing design's
-[failure scenarios](../design/mvp.md#normal-and-failure-scenarios) for unread
+[failure scenarios](mvp.md#normal-and-failure-scenarios) for unread
 frames, events already admitted before failure, and shutdown loss.
 
-The governing design owns [global resource limits](../design/mvp.md#bounds-and-event-acceptance)
-and [registration equivalence](../design/mvp.md#registration-state-and-identity).
+The governing design owns [global resource limits](mvp.md#bounds-and-event-acceptance)
+and [registration equivalence](mvp.md#registration-state-and-identity).
 Equivalent active registrations reuse a watch, and concurrent equivalent
 registrations share a pending operation. Plugins must support multiple distinct
 watches but may reject arguments they cannot serve. They may poll their source;
 they must not ask the coding agent to poll or work while idle.
 
-The [manual test plugin profile](../design/mvp.md#manual-test-plugin-and-skill)
+The [manual test plugin profile](mvp.md#manual-test-plugin-and-skill)
 defines `trigger_file` and file consumption. It uses this same public wire
 protocol and is not an additional frame type. Protocol v1 carries external data,
 not permission to act on it. The daemon's envelope and the skill enforce the
@@ -180,7 +180,7 @@ operational deadlines, not throughput or end-to-end latency promises.
 These are planned implementation checks, not completed test results. A fixture
 written without daemon packages must exercise the following cases; the maintainer
 reviews its transcripts and assertions under
-[MVP verification](../design/mvp.md#verification-strategy). At least one replacement
+[MVP verification](mvp.md#verification-strategy). At least one replacement
 fixture must use another language to demonstrate the contract is independent of Go.
 
 | Cases | Decisive result | Design verification |

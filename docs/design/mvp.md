@@ -28,7 +28,7 @@ The design set has two stable entry points with distinct authority:
 | Document | Purpose and readers | Authoritative contracts |
 | --- | --- | --- |
 | This document, `docs/design/mvp.md` | System design for daemon, client, adapter, skill implementers and maintainers | Architecture, configuration/local control, registration identity and state, global admission and delivery, manual-plugin profile, security, operations, and verification. |
-| [Plugin protocol v1](../protocol/plugin-v1.md), `docs/protocol/plugin-v1.md` | Interoperability specification for plugin authors in any language and daemon/test implementers | Plugin wire encoding, frame fields and validation, ordering, frame/context limits, readiness/watch deadlines, and shutdown exchange/grace period. |
+| [Plugin protocol v1](plugin-v1.md), `docs/design/plugin-v1.md` | Interoperability specification for plugin authors in any language and daemon/test implementers | Plugin wire encoding, frame fields and validation, ordering, frame/context limits, readiness/watch deadlines, and shutdown exchange/grace period. |
 
 The plugin specification derives from this design's process boundary and
 language-neutral interoperability decision, recorded in the specification's
@@ -165,7 +165,7 @@ repeating the identical registration returns the existing identifier.
 
 ### Plugin protocol version 1
 
-The authoritative [plugin wire specification](../protocol/plugin-v1.md) defines
+The authoritative [plugin wire specification](plugin-v1.md) defines
 all frames, encoding, validation, ordering, wire limits, and plugin deadlines.
 It is required reading for daemon implementers and plugin authors. The daemon
 identifies a plugin by its private process pipes; plugins never receive session
@@ -191,8 +191,8 @@ state without adding cancellation or retries.
 
 ### Bounds and event acceptance
 
-The [wire bounds](../protocol/plugin-v1.md#transport-and-encoding) and
-[context bound](../protocol/plugin-v1.md#frame-schema) are fixed by the plugin
+The [wire bounds](plugin-v1.md#transport-and-encoding) and
+[context bound](plugin-v1.md#frame-schema) are fixed by the plugin
 specification. This design fixes global capacity at 1,024 active or pending
 registrations and 128 queued or in-flight delivery events across all plugins.
 These are resource bounds, not performance targets.
@@ -202,7 +202,7 @@ Oversized inputs are rejected with identifiers when recoverable; no truncation
 is forwarded as if it were the original event.
 
 Plugin readiness, watch acknowledgement, and shutdown deadlines are defined in
-the [wire exchange](../protocol/plugin-v1.md#exchange-and-ordering). Delivery
+the [wire exchange](plugin-v1.md#exchange-and-ordering). Delivery
 commands have a 30-second deadline. These defaults are fixed for this MVP
 revision and must be documented and tested; changing them requires design review.
 They are not latency guarantees.
@@ -317,7 +317,7 @@ termination may lose all pending state and cannot provide delivery guarantees.
 | --- | --- | --- |
 | SID-restricted local named pipe | Loopback HTTP with secret | Windows supplies the user boundary without token storage; requires Windows-specific transport and access tests. |
 | JSON lines over child stdio | Per-plugin HTTP servers or Go RPC | Language-neutral with process-bound source identity and no plugin network endpoint; strict framing and serialized writes are required. |
-| Separate authoritative plugin wire specification under `docs/protocol/` | All wire detail inside this design; or a derivative guide repeating this design's wire rules | Gives NFR-002/AC-007 readers a focused contract while avoiding duplicate normative schemas. The two documents must be reviewed together when boundaries change. Keeping local control here avoids another specification for the bundled-only client. |
+| Separate authoritative plugin wire specification under `docs/design/` | All wire detail inside this design; or a derivative guide repeating this design's wire rules | Gives NFR-002/AC-007 readers a focused contract while avoiding duplicate normative schemas. Both documents remain design deliverables in the existing design directory and are covered by the design guardrail. They must be reviewed together when boundaries change. Keeping local control here avoids another specification for the bundled-only client. |
 | Explicit byte counts, LF/CRLF, strict Unicode and result schema | Decoder-dependent replacement, platform-specific delimiters, or permissive extra fields | Cross-language implementations need identical acceptance rules. Counts include the delimiter for frames and use decoded UTF-8 for context; rejection text is required only for negative results. Strictness costs tolerance of imperfect plugins. |
 | In-memory registry and one delivery worker | Database and parallel workers | Meets explicit MVP scope and makes ordering visible; restart loses state and slow delivery delays other sessions. |
 | Codex CLI queue adapter | UI automation or undocumented direct database writes | Queue is the tested existing-conversation entry point; isolates version-sensitive behavior and avoids mutating Codex storage. |
@@ -365,7 +365,7 @@ to another design. Verification entries V01-V10 are defined in the next section.
 | FR-006 | AC-004, AC-005 | Once-only worker, outcome classification and invalidation | V04, V05 |
 | FR-007 | AC-010 | Canonical registration identity and Codex queue | V10 |
 | NFR-001 | AC-006 | No Codex request until event admission | V06 |
-| NFR-002 | AC-007 | Authoritative [plugin specification](../protocol/plugin-v1.md), process boundary and delivery adapter | V07 |
+| NFR-002 | AC-007 | Authoritative [plugin specification](plugin-v1.md), process boundary and delivery adapter | V07 |
 | NFR-003 | AC-008 | Local pipe security and external-data boundary | V08 |
 | NFR-004 | AC-005, AC-009 | Documented Windows lifecycle and state loss | V05, V09 |
 
@@ -383,7 +383,7 @@ and failure behavior; they do not replace the real Codex demonstration.
 | V04 / AC-004 | Fixtures submit malformed/oversized frames, unknown IDs, cross-plugin IDs and post-exit frames: zero delivery calls. Simulate launch failure, nonzero exit, timeout, mismatched target and ambiguous output: correct failed/unknown result, one attempt, no retry. Exit one plugin; another continues to register and deliver. | Automated invocation counts, identifiers and lifecycle logs; maintainer inspects results. |
 | V05 / AC-005 | Restart integration: old ID is rejected, registry is empty, and a fresh watch is needed. Inspect instructions for registration/event loss and no retries. | Automated restart trace and documentation review by maintainer. |
 | V06 / AC-006 | Declare an idle observation period, instrument every adapter call, and observe zero calls. Trigger an event; record receipt and attempt timestamps and the real conversation response time. No periodic agent check participates. | Automated idle assertion plus maintainer's timestamped real demonstration; no numeric latency threshold. |
-| V07 / AC-007 | Review the [public specification and conformance cases](../protocol/plugin-v1.md#conformance-verification) and replace the configured plugin executable with an independent fixture written in another language using that contract. No daemon code, Go import, Codex identity, GitHub schema or agent API is needed by the plugin. | Contract review, fixture source and replacement transcript; maintainer evaluates portability. |
+| V07 / AC-007 | Review the [public specification and conformance cases](plugin-v1.md#conformance-verification) and replace the configured plugin executable with an independent fixture written in another language using that contract. No daemon code, Go import, Codex identity, GitHub schema or agent API is needed by the plugin. | Contract review, fixture source and replacement transcript; maintainer evaluates portability. |
 | V08 / AC-008 | Windows tests show same-user control works; a different standard-user token and remote pipe connection are denied; second daemon cannot take over the pipe. Check explicit DACL and server SID validation. Inspect envelope and skill for external-data labeling and absence of additional authorization. | Automated transport tests where available plus maintainer-run account/network checks and message inspection. Unavailable checks remain incomplete. |
 | V09 / AC-009 | From a clean Windows build, follow documented build/start/skill-register/file-trigger/acknowledge/stop steps. Record exact Codex version and all failures; inspect documented limits and reset behavior. | Maintainer's reproducible command transcript and lifecycle logs. |
 | V10 / AC-010 | Repeat and concurrently submit equivalent registrations: one watch and same ID; one event yields one attempt. In a real busy session, queue a recognizable event and observe current work uninterrupted followed by the event, or explicit rejection with no retry. | Automated canonicalization/concurrency tests and maintainer's busy-conversation trace. |
