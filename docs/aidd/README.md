@@ -160,3 +160,23 @@ If required metadata is inaccessible or approval coverage is uncertain, report t
 | CI | Continuously run the reproducible verification needed for changes, such as builds, tests, and static analysis, and make results available for review |
 
 Automation supports human judgment about the suitability of requirements and design. Add necessary verification alongside implementation, and treat recurring checks as opportunities to improve skills, guardrails, and CI.
+
+## Rule-change consistency review
+
+For a PR that changes a development rule or how another repository artifact
+uses it, the PR author completes the following checks as part of self-review
+and records evidence for human review. Review meaning and responsibilities;
+matching wording is not required.
+
+- Identify and link the authoritative document for each changed rule, including
+  any rationale and exceptions that affect its application.
+- Identify affected uses in skills, assets, review checklists, and PR templates.
+  Check them against the authoritative rule for contradictions, independent
+  redefinitions, and missed updates. Explain why any inspected use needs no change.
+- Check that each use serves its role: skills describe procedures; assets provide
+  document structure and input hints; review checklists express pass/fail criteria;
+  PR templates collect evidence. Repetition needed to perform those tasks is
+  acceptable when its meaning remains consistent with the authoritative rule.
+- Record the authoritative source, inspected use paths, findings, corrections,
+  and any unresolved uncertainty in the PR description. If no rule or use changes,
+  record this review as not applicable with a reason.
