@@ -21,16 +21,58 @@ are needed; empty placeholder packages are not required.
 | Location | Responsibility and allowed depth |
 | --- | --- |
 | `cmd/<command>/` | Executable entry points: startup, dependency wiring, and process exit decisions. Go files belong directly in the command directory; place reusable implementation in `internal/`. |
-| `internal/<responsibility>/` | Product implementation grouped by responsibility. Nested packages are allowed. |
+| `internal/domain/` | Product concepts and pure rules. Nested packages are allowed. |
+| `internal/application/` | Use-case coordination and interfaces for required external capabilities. Nested packages are allowed. |
+| `internal/adapters/` | External I/O, protocols, and platform-specific implementations. Nested packages are allowed. |
 | `tools/guardrails/<validator>/` | Repository validators. Nested packages are allowed. |
 | `build/` | Mage build and validation tooling. Go files belong directly in this directory. |
 | `tools.go` at the root | Build-tagged tool dependency declarations. No other root Go source files are allowed. |
 
-Command, responsibility, and validator names may be added within these
-locations without changing this policy. New placement categories, such as
-`pkg/`, require a policy update and a corresponding guardrail change. Concrete
-product package boundaries and import dependencies belong in the relevant
-design; this table does not mandate an architectural layering scheme.
+Command and validator names, and responsibility-specific packages within each
+defined internal layer, may be added without changing this policy. Only
+`domain`, `application`, and `adapters` are allowed directly under `internal`
+for Go code. New layers or placement categories, such as `internal/common`
+or `pkg/`, require a policy update and a corresponding guardrail change.
+
+## Architecture and dependency direction
+
+Product code uses three layers with ports and adapters: application code
+declares the external capabilities it needs as Go interfaces, and adapters
+provide concrete implementations. Dependencies point toward the product's
+rules; external protocols and platform details stay in adapters.
+
+| Layer | Responsibilities and examples from the [MVP design](../design/mvp.md) |
+| --- | --- |
+| `domain` | Subscription, event, and delivery-result concepts and pure rules such as subscription equivalence. No wire-format DTOs, process operations, or Windows or Codex integrations. |
+| `application` | Coordinate registration, duplicate-request handling, event acceptance, registry and queue operations, and delivery. Define interfaces for external capabilities at the consuming boundary. |
+| `adapters` | Read configuration and implement named-pipe transport, plugin process communication and JSON frames, Codex CLI integration, and manual-plugin file I/O. Translate external representations into application or domain inputs and results. |
+
+The following rules apply to imports between product layers, including their
+nested packages. Imports within the same layer must remain acyclic, as Go
+requires.
+
+| Importing location | Allowed product imports |
+| --- | --- |
+| `internal/domain/...` | Other domain packages only |
+| `internal/application/...` | Application and domain packages |
+| `internal/adapters/...` | Adapter, application, and domain packages |
+| `cmd/<command>/` | All three internal layers to assemble the executable |
+
+Internal product packages must not import `cmd`, `build`, or
+`tools/guardrails`. Standard-library and third-party imports must respect the
+same responsibilities: application code must not bypass its interfaces to
+perform external I/O, and domain code must remain independent of external
+systems. Interfaces are required where an application use case needs an
+external capability, not for every function or type.
+
+`cmd/<command>` is the composition root: it constructs concrete adapters and
+passes them to application code. Keep product rules and use-case coordination
+in the internal layers. Subdivide a layer by responsibility when needed; do
+not create empty packages or duplicate types solely to populate all layers.
+Specific package names within each layer are implementation choices consistent
+with the relevant design.
+
+## Layout enforcement
 
 The `go-layout` guardrail scans the filesystem, including test files and files
 excluded by the current operating system or build tags. It rejects Go files
@@ -38,8 +80,9 @@ outside the allowed locations and nested `go.mod` files. It skips `.git` and
 directories named `testdata`; use `testdata` only for fixtures, not application
 or tooling implementation. Symlinks outside those skipped directories are
 rejected rather than followed. Vendored Go source is not an allowed category.
+The guardrail also rejects Go files under an undefined `internal` layer.
 Package declarations and import dependency direction are outside this check's
-scope.
+scope; reviewers must check the dependency rules above when reviewing Go code.
 
 ## Tests
 

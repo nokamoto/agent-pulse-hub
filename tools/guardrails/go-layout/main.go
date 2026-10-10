@@ -74,7 +74,7 @@ func validateRepository(root string) []error {
 			return nil
 		}
 		if filepath.Ext(rel) == ".go" && !allowedGoPath(rel) {
-			errors = append(errors, fmt.Errorf("%s: Go source must be tools.go at the root, build/*.go, cmd/<command>/*.go, internal/<responsibility>/**/*.go, or tools/guardrails/<validator>/**/*.go", rel))
+			errors = append(errors, fmt.Errorf("%s: Go source must be tools.go at the root, build/*.go, cmd/<command>/*.go, internal/{domain,application,adapters}/**/*.go, or tools/guardrails/<validator>/**/*.go", rel))
 		}
 		return nil
 	})
@@ -96,7 +96,7 @@ func allowedGoPath(path string) bool {
 	case "cmd":
 		return len(parts) == 3
 	case "internal":
-		return len(parts) >= 3
+		return len(parts) >= 3 && (parts[1] == "domain" || parts[1] == "application" || parts[1] == "adapters")
 	case "tools":
 		return len(parts) >= 4 && parts[1] == "guardrails"
 	default:
