@@ -1,5 +1,5 @@
 <!-- Apply phase:design explicitly; this template does not set labels. -->
-<!-- Design phase only: docs/design/ and separate specifications governed by it. -->
+<!-- Design phase only: docs/design/, including separate specifications governed by it. -->
 
 ## Purpose and scope
 
@@ -28,7 +28,8 @@
 
 <!-- Record reviewed base/head commits (or local diff), overall verdict, and
      all D01-D13 results from .agents/skills/review-design/references/checklist.md
-     with evidence. Include guardrail results, manual structure checks for separate specifications outside docs/design/, and checks not run and their impact.
+     with evidence. Include design and docs-layout guardrail results, and checks
+     not run and their impact.
      Distinguish planned verification from executed checks. -->
 
 ## Open questions and risks
@@ -42,7 +43,7 @@
 
 ## Phase handoff
 
-- [ ] The complete diff stays within docs/design/ and its governed specifications, including deletions and both sides of renames.
+- [ ] The complete diff stays within docs/design/, including governed specifications, deletions and both sides of renames.
 - [ ] The phase:design label is applied.
 - [ ] Source requirements have human approval and are merged.
 - [ ] All applicable review checklist items pass with evidence above.

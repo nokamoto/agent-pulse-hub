@@ -13,6 +13,7 @@ func Guardrails() error {
 	return runGoCommands([][]string{
 		{"run", "./tools/guardrails/requirements"},
 		{"run", "./tools/guardrails/design"},
+		{"run", "./tools/guardrails/docs-layout"},
 		{"run", "./tools/guardrails/go-layout"},
 	})
 }

@@ -41,10 +41,13 @@ approved requirements will be fulfilled and verified.
    [specification document rules](../../../docs/aidd/README.md#specification-documents-and-approved-design):
    record whether contracts stay in the design or use separate specifications,
    their paths, purpose and readers, authority and derivation, and the contract
-   decisions and constraints on routine implementation choices. Create or revise
-   the separate specifications as part of the design PR, with Design frontmatter
-   and links to the governing design. Do not defer document creation to
-   implementation. When a human starts this design session from implementation
+   decisions and constraints on routine implementation choices. Keep separate
+   specifications under `docs/design/`. Include a new or changed specification
+   in the design PR with Design frontmatter and links to the governing design;
+   link an existing approved and merged specification when it does not change.
+   Do not create another top-level directory under `docs/` or defer creating a
+   required specification to implementation.
+   When a human starts this design session from implementation
    feedback, use the reported gap as input and keep implementation stopped until
    the upstream approval and merge prerequisites are verified.
 4. Map every in-scope functional and nonfunctional requirement and acceptance
@@ -59,11 +62,10 @@ approved requirements will be fulfilled and verified.
    `type: Design`; nonempty string title/description; a nonempty sources list
    with nonempty string `id` and `resource` and optional string `title`;
    and a nonempty body. Other fields, duplicate keys, malformed YAML, and
-   symlinks are rejected. Separate specifications outside `docs/design/` are
-   outside this guardrail's scan: review the same document structure manually
-   and record the files and results in the PR. Coverage, document relationships,
-   and authority require content review; human approval follows the playbook's
-   approval routes.
+   symlinks are rejected. The docs-layout guardrail rejects directories directly
+   under `docs/` beyond `aidd/`, `design/`, and `requirements/`. Coverage,
+   document relationships, and authority require content review; human approval
+   follows the playbook's approval routes.
 6. Apply [Markdown readability review](../review-markdown-readability/SKILL.md).
    Delegate self-review to a fresh clean-context subagent using
    `fork_turns="none"`, model `gpt-6.1-sol`, reasoning effort `high`.
