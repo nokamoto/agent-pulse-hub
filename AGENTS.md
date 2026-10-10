@@ -17,17 +17,30 @@ Refer to the following directories:
 - [Design](docs/design/)
 - [AI-Driven Development rules](docs/aidd/)
 
-## Specification feedback during implementation
+## Implementation completion
 
-If implementation needs a separate specification document or a change to its
-contract, placement, authority, or relationship to the design, stop the current
-implementation session under the
-[AIDD feedback rule](docs/aidd/README.md#specification-documents-and-approved-design).
-Preserve work and tell the human why a separate design session is needed,
-which contracts and documents are affected, and what implementation is unfinished.
-End work in this session without revising the design or specification or
-starting another session automatically. Resume implementation only after the
-required upstream approval and merge are verified.
+Follow the [implementation completion and delivery boundary](docs/aidd/README.md#implementation-completion-and-delivery-boundary)
+and use the [implementation PR template](.github/PULL_REQUEST_TEMPLATE/implementation.md).
+Keep required acceptance evidence in implementation and identify subsequent
+delivery work separately before requesting human review.
+
+## Documentation feedback during implementation
+
+Create operating instructions and specifications that developers will continue
+referencing after implementation during requirements or design, as required by
+the [developer documentation rule](docs/aidd/README.md#developer-documentation-and-upstream-feedback).
+If implementation discovers a missing document, stop the current session even
+when the approved requirements or design already require it. Apply the same
+feedback when a separate specification or its contract, placement, authority,
+or relationship to the design needs to change under the
+[specification rule](docs/aidd/README.md#specification-documents-and-approved-design).
+Preserve work and report the gap, affected documents and contracts, unfinished
+implementation and acceptance criteria, and the required upstream phase.
+End work without creating or changing the affected documentation, revising
+requirements or design, or
+starting another session automatically. A human starts the separate upstream
+session. Resume implementation only after the required upstream approval and
+merge are verified.
 
 ## Guardrails
 
