@@ -132,8 +132,9 @@ interface changes. For example, an interface in
 //go:generate go run go.uber.org/mock/mockgen -source=ports.go -destination=ports_mock_test.go -package=delivery
 ```
 
-Run `go generate ./...` from the repository root, then the required checks
-below. Do not edit generated mocks by hand. Each test or table-driven subtest
+Run the Mage `generate` target from the repository root, then the remaining
+required checks below. It runs `go generate ./...` with the module-pinned tools.
+Do not edit generated mocks by hand. Each test or table-driven subtest
 that uses mocks creates its own `gomock.NewController(t)`; controller cleanup
 and expectation checks are registered with `testing.T` automatically.
 
@@ -152,6 +153,7 @@ Formatting and module tidying are defined by the existing Mage target rather
 than duplicated in this document.
 
 ```sh
+go run build/mage.go -d build -w . generate
 go run build/mage.go -d build -w . format
 go run build/mage.go -d build -w . test
 go run build/mage.go -d build -w . lint
@@ -161,3 +163,9 @@ go run build/mage.go -d build -w . guardrails
 Resolve failures before presenting a change as verified. If an environment
 prevents a check, report the unexecuted check and its limitation in the PR.
 Guardrails run through the same Mage target locally and in CI.
+
+Go CI runs `generate` before `format`, tests, and lint. After generation and
+formatting, it requires a clean Git working tree, including no untracked files.
+This detects stale or missing committed mocks as well as formatting and module
+changes. Before pushing, review and commit the outputs of the commands above;
+CI must be able to reproduce them without changing the checkout.

@@ -17,6 +17,12 @@ func Guardrails() error {
 	})
 }
 
+func Generate() error {
+	return runGoCommands([][]string{
+		{"generate", "./..."},
+	})
+}
+
 func Format() error {
 	return runGoCommands([][]string{
 		{"mod", "tidy"},
