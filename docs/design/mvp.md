@@ -21,6 +21,39 @@ skill. All subscriptions and undelivered events live only in memory. Stop and
 restart loses them. No service integration, retries, plugin restart, persistence,
 individual cancellation, GUI, or service installation is introduced.
 
+## Specification documents
+
+The design set has two stable entry points with distinct authority:
+
+| Document | Purpose and readers | Authoritative contracts |
+| --- | --- | --- |
+| This document, `docs/design/mvp.md` | System design for daemon, client, adapter, skill implementers and maintainers | Architecture, configuration/local control, registration identity and state, global admission and delivery, manual-plugin profile, security, operations, and verification. |
+| [Plugin protocol v1](../protocol/plugin-v1.md), `docs/protocol/plugin-v1.md` | Interoperability specification for plugin authors in any language and daemon/test implementers | Plugin wire encoding, frame fields and validation, ordering, frame/context limits, readiness/watch deadlines, and shutdown exchange/grace period. |
+
+The plugin specification derives from this design's process boundary and
+language-neutral interoperability decision, recorded in the specification's
+frontmatter `sources`.
+This design references that specification for wire detail rather than defining
+a second copy. References back to this design supply system lifecycle context;
+they do not transfer wire authority back here. Requirements remain authoritative
+for product scope and acceptance. A conflict between documents is a design
+defect to resolve before dependent implementation, not a choice for implementers.
+
+The specification body is a design deliverable reviewed with this document.
+Its strict schemas, bounds, deadlines and failure rules are fixed contracts.
+The authority assignments, paths and relationships are also design decisions.
+Routine implementation may choose Go types, algorithms, buffers, scheduling,
+diagnostic wording and test organization only while preserving these contracts
+and the [Go development conventions](../aidd/go-development.md). It may not
+create another specification or defer missing contract decisions to code.
+The AIDD [specification feedback rule](../aidd/README.md#specification-documents-and-approved-design)
+applies when a contract or document relationship needs revision.
+
+Configuration and local control contracts stay in this design; no separate
+control specification is needed for the bundled client. Windows usage guides
+derive commands and examples from these contracts and the actual CLI. Such
+guides do not define new wire behavior or another source of authority.
+
 ## Architecture and responsibilities
 
 ```text
@@ -81,6 +114,50 @@ human-readable `message`. Invalid JSON/version/fields, missing identity, unknown
 or unavailable plugin, rejected arguments, and resource exhaustion have distinct
 error codes. A connection failure is a client error, never registration success.
 
+Control frames follow the plugin specification's UTF-8, JSON object, duplicate
+key, Unicode and line-ending rules and its whole-frame size bound, but use the
+control fields above, not plugin `type` fields. Only those request fields are
+allowed: `version` is the token `1`, `op` is `register`, `plugin` is a nonempty
+configured name, and `session_id` is a UUID string. A successful response has
+exactly `ok` and a nonempty opaque `subscription_id`; an error has exactly `ok`,
+`code`, and a nonempty `message` bounded to 1,024 decoded UTF-8 bytes. The daemon
+sanitizes diagnostics to this bound; messages are not machine-readable contracts.
+
+```json
+{"version":1,"op":"register","plugin":"manual","session_id":"11111111-1111-4111-8111-111111111111","watch_args":{"trigger_file":"C:\\events\\next.txt"}}
+```
+
+```json
+{"ok":true,"subscription_id":"subscription-a"}
+```
+
+```json
+{"ok":false,"code":"unknown_plugin","message":"Plugin is not configured."}
+```
+
+The daemon uses these stable codes. Where several fields are invalid, any
+applicable validation code may be returned; validation precedes dispatching a
+watch. If a response cannot be sent safely, close the connection and let the
+client report transport failure or uncertainty rather than invent success.
+
+| Code | Condition |
+| --- | --- |
+| `invalid_json` | Malformed JSON, encoding, or duplicate keys. |
+| `unsupported_version` | Missing or unsupported version. |
+| `invalid_request` | Unknown/missing/mistyped fields other than session identity, invalid operation, or non-object arguments. |
+| `missing_session` | Absent, empty, or invalid UUID session identity. |
+| `unknown_plugin` | Plugin name is not configured. |
+| `plugin_unavailable` | Selected plugin is unavailable, exits, times out, or cannot receive the watch. |
+| `watch_rejected` | Plugin rejects its argument schema or cannot serve that watch. |
+| `resource_exhausted` | Registration capacity or frame-size limit would be exceeded, including the outgoing watch. |
+
+Validate the encoded outgoing watch size before writing any bytes; a rejected
+oversized registration must not stop an otherwise healthy plugin. Pipe access
+denial, inability to connect, and response loss are client-side failures with no
+daemon error frame guaranteed. After the request may have committed, a missing
+or invalid response is uncertain and may only be resolved by explicit identical
+registration, not automatic retry.
+
 Session IDs must be UUIDs; session-name lookup is not supported.
 The CLI never discovers a session from plugin data. If the response connection
 is lost after registration commits, the client reports an uncertain result;
@@ -88,35 +165,13 @@ repeating the identical registration returns the existing identifier.
 
 ### Plugin protocol version 1
 
-Each child receives one private stdin/stdout pair. Both directions use UTF-8
-newline-delimited JSON objects; stdout is protocol only and stderr is diagnostics.
-No Go types or agent-specific values are required. Every frame has `version: 1`
-and `type`. The following fields are required in addition to those two fields.
+The authoritative [plugin wire specification](../protocol/plugin-v1.md) defines
+all frames, encoding, validation, ordering, wire limits, and plugin deadlines.
+It is required reading for daemon implementers and plugin authors. The daemon
+identifies a plugin by its private process pipes; plugins never receive session
+identity or select a delivery recipient.
 
-| Direction / type | Fields | Meaning |
-| --- | --- | --- |
-| Plugin -> daemon, `ready` | None | Plugin can accept watches; exactly once before registration. |
-| Daemon -> plugin, `watch` | `request_id`, `subscription_id`, `watch_args` | Proposed watch; identifiers are opaque strings. |
-| Plugin -> daemon, `watch_result` | `request_id`, `accepted` | Boolean acceptance; rejection also includes string `error`. |
-| Plugin -> daemon, `event` | `subscription_id`, `context` | Context is a nonempty UTF-8 string, never a routing instruction. |
-| Daemon -> plugin, `shutdown` | None | Stop watching, release resources, and exit. |
-
-For example, a plugin event is
-`{"version":1,"type":"event","subscription_id":"opaque-id","context":"manual check 1"}`.
-The emitting process establishes plugin identity; a frame cannot supply or
-override plugin name or recipient. Unknown fields, duplicate object keys,
-invalid versions/types, and missing or mistyped fields are rejected. A malformed
-event is logged and discarded; its next valid framed event may still be read.
-An oversized or unterminated frame that prevents safe framing makes the plugin
-unavailable. A duplicate/unsolicited `watch_result` or event before acceptance
-is rejected without changing the active registry.
-
-Watches are multiplexed over the process. The plugin must send an accepted
-`watch_result` before its first event for that watch. The daemon processes a
-plugin's frames in read order, activating the registration before processing
-the next event. It never waits for the client to consume the success response
-before accepting the event. Request identifiers are unique for the process
-lifetime and must match a pending request.
+### Registration state and identity
 
 The registry holds `(plugin instance, subscription_id, session_id, watch_args,
 state)` plus an index for equivalent registrations. IDs are randomly generated
@@ -136,18 +191,21 @@ state without adding cancellation or retries.
 
 ### Bounds and event acceptance
 
-Protocol limits are implementation choices for bounded resource use, not
-performance targets: 64 KiB per wire frame, 8 KiB UTF-8 event context, 1,024 active
-or pending registrations, and 128 queued or in-flight delivery events globally.
+The [wire bounds](../protocol/plugin-v1.md#transport-and-encoding) and
+[context bound](../protocol/plugin-v1.md#frame-schema) are fixed by the plugin
+specification. This design fixes global capacity at 1,024 active or pending
+registrations and 128 queued or in-flight delivery events across all plugins.
+These are resource bounds, not performance targets.
 The Codex adapter also rejects a rendered command line over 24,000 UTF-16 code
 units before launching it. Error messages and captured child output are bounded.
 Oversized inputs are rejected with identifiers when recoverable; no truncation
 is forwarded as if it were the original event.
 
-Startup readiness and watch acknowledgement each have a 10-second deadline;
-delivery commands have a 30-second deadline. Normal shutdown gives plugin
-processes up to 5 seconds to exit before terminating them. These are initial
-operational defaults to document and test, not latency guarantees.
+Plugin readiness, watch acknowledgement, and shutdown deadlines are defined in
+the [wire exchange](../protocol/plugin-v1.md#exchange-and-ordering). Delivery
+commands have a 30-second deadline. These defaults are fixed for this MVP
+revision and must be documented and tested; changing them requires design review.
+They are not latency guarantees.
 
 An event becomes accepted only when its frame, plugin availability, subscription
 ownership, context, and queue capacity have passed validation and it is admitted
@@ -166,7 +224,8 @@ user, using an argument array equivalent to
 shell, start a new conversation, interrupt a turn, or fall back to another API.
 The initial supported CLI is `codex-cli 0.162.0-alpha.2`, the version recorded
 in PR #4 and confirmed by local `--version` and `queue --help` on 2026-10-09.
-PR #4 records successful idle and busy conversation demonstrations. A different
+[PR #4](https://github.com/nokamoto/agent-pulse-hub/pull/4) records successful idle
+and busy conversation demonstrations. A different
 version requires adapter verification before support is claimed; startup rejects
 an unsupported version without invoking queue. Queue acceptance means Codex accepted work, not that
 the conversation completed or acknowledged it.
@@ -258,6 +317,8 @@ termination may lose all pending state and cannot provide delivery guarantees.
 | --- | --- | --- |
 | SID-restricted local named pipe | Loopback HTTP with secret | Windows supplies the user boundary without token storage; requires Windows-specific transport and access tests. |
 | JSON lines over child stdio | Per-plugin HTTP servers or Go RPC | Language-neutral with process-bound source identity and no plugin network endpoint; strict framing and serialized writes are required. |
+| Separate authoritative plugin wire specification under `docs/protocol/` | All wire detail inside this design; or a derivative guide repeating this design's wire rules | Gives NFR-002/AC-007 readers a focused contract while avoiding duplicate normative schemas. The two documents must be reviewed together when boundaries change. Keeping local control here avoids another specification for the bundled-only client. |
+| Explicit byte counts, LF/CRLF, strict Unicode and result schema | Decoder-dependent replacement, platform-specific delimiters, or permissive extra fields | Cross-language implementations need identical acceptance rules. Counts include the delimiter for frames and use decoded UTF-8 for context; rejection text is required only for negative results. Strictness costs tolerance of imperfect plugins. |
 | In-memory registry and one delivery worker | Database and parallel workers | Meets explicit MVP scope and makes ordering visible; restart loses state and slow delivery delays other sessions. |
 | Codex CLI queue adapter | UI automation or undocumented direct database writes | Queue is the tested existing-conversation entry point; isolates version-sensitive behavior and avoids mutating Codex storage. |
 | File-triggered manual plugin | Daemon-specific test injection operation | Exercises the same plugin protocol as future sources; requires documented atomic file creation and permits event loss on crash. |
@@ -283,9 +344,11 @@ prevent unbounded pending operations; they do not promise throughput or uptime.
 
 Protocol v1 is strict: incompatible versions fail visibly. Future additions must
 update the contract deliberately rather than allowing plugins to guess fields.
-There is no persisted schema to migrate. Implementation documentation must include
-the exact wire examples, error codes, limits, Windows commands, expected output,
-Codex version, and recovery by re-registering after restart.
+There is no persisted schema to migrate. Exact plugin wire examples and limits
+are in the specification; control examples and error codes are in this design.
+Implementation usage documentation must reference these contracts and provide
+Windows commands, expected output, the Codex version, and recovery by
+re-registering after restart.
 
 ## Requirement coverage
 
@@ -302,7 +365,7 @@ to another design. Verification entries V01-V10 are defined in the next section.
 | FR-006 | AC-004, AC-005 | Once-only worker, outcome classification and invalidation | V04, V05 |
 | FR-007 | AC-010 | Canonical registration identity and Codex queue | V10 |
 | NFR-001 | AC-006 | No Codex request until event admission | V06 |
-| NFR-002 | AC-007 | Language-neutral child protocol and delivery adapter | V07 |
+| NFR-002 | AC-007 | Authoritative [plugin specification](../protocol/plugin-v1.md), process boundary and delivery adapter | V07 |
 | NFR-003 | AC-008 | Local pipe security and external-data boundary | V08 |
 | NFR-004 | AC-005, AC-009 | Documented Windows lifecycle and state loss | V05, V09 |
 
@@ -320,7 +383,7 @@ and failure behavior; they do not replace the real Codex demonstration.
 | V04 / AC-004 | Fixtures submit malformed/oversized frames, unknown IDs, cross-plugin IDs and post-exit frames: zero delivery calls. Simulate launch failure, nonzero exit, timeout, mismatched target and ambiguous output: correct failed/unknown result, one attempt, no retry. Exit one plugin; another continues to register and deliver. | Automated invocation counts, identifiers and lifecycle logs; maintainer inspects results. |
 | V05 / AC-005 | Restart integration: old ID is rejected, registry is empty, and a fresh watch is needed. Inspect instructions for registration/event loss and no retries. | Automated restart trace and documentation review by maintainer. |
 | V06 / AC-006 | Declare an idle observation period, instrument every adapter call, and observe zero calls. Trigger an event; record receipt and attempt timestamps and the real conversation response time. No periodic agent check participates. | Automated idle assertion plus maintainer's timestamped real demonstration; no numeric latency threshold. |
-| V07 / AC-007 | Review the public JSON contract and replace the configured plugin executable with an independent fixture using that contract. No daemon code, Go import, Codex identity, GitHub schema or agent API is needed by the plugin. | Contract review and replacement transcript; maintainer evaluates portability. |
+| V07 / AC-007 | Review the [public specification and conformance cases](../protocol/plugin-v1.md#conformance-verification) and replace the configured plugin executable with an independent fixture written in another language using that contract. No daemon code, Go import, Codex identity, GitHub schema or agent API is needed by the plugin. | Contract review, fixture source and replacement transcript; maintainer evaluates portability. |
 | V08 / AC-008 | Windows tests show same-user control works; a different standard-user token and remote pipe connection are denied; second daemon cannot take over the pipe. Check explicit DACL and server SID validation. Inspect envelope and skill for external-data labeling and absence of additional authorization. | Automated transport tests where available plus maintainer-run account/network checks and message inspection. Unavailable checks remain incomplete. |
 | V09 / AC-009 | From a clean Windows build, follow documented build/start/skill-register/file-trigger/acknowledge/stop steps. Record exact Codex version and all failures; inspect documented limits and reset behavior. | Maintainer's reproducible command transcript and lifecycle logs. |
 | V10 / AC-010 | Repeat and concurrently submit equivalent registrations: one watch and same ID; one event yields one attempt. In a real busy session, queue a recognizable event and observe current work uninterrupted followed by the event, or explicit rejection with no retry. | Automated canonicalization/concurrency tests and maintainer's busy-conversation trace. |
@@ -330,7 +393,20 @@ queue overflow, response loss after registration, immediate event after watch
 acceptance, and shutdown during a delivery. Assertions distinguish plugin event
 rejection from an admitted event's delivery result.
 
+Control fixtures also cover each stable error code, exact response fields,
+outgoing-watch frame overflow before writing, and invalid/lost response
+uncertainty. Specification review checks the frame matrix, examples, rejection
+rules and limits against V01/V02/V04/V05/V07/V10. These content checks complement
+frontmatter guardrails; neither claims the planned runtime checks have passed.
+
 ## Change and rollout impact
+
+MVP v1 conformance requires checking implementations against both this design
+and the authoritative plugin specification, including their verification cases.
+Daemon parsers, plugin writers, client error handling and usage documentation
+must use the assigned contract sources. A prototype that has not passed these
+checks cannot claim v1 conformance. Extracting the plugin wire contract does
+not change the Codex adapter contract or the approved product scope.
 
 The deployment consists of the daemon/client commands, configured plugins,
 the Codex adapter, and the registration skill. The MVP stores no persistent
