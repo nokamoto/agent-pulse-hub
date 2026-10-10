@@ -31,11 +31,22 @@ and [specification feedback](https://github.com/nokamoto/agent-pulse-hub/blob/ma
 
 ## Verification and remaining implementation work
 
-<!-- Record automated and manual check results, the tested revision and
-     environment, reproduction commands or links, and evidence for applicable
-     acceptance criteria. Keep reviewer reproduction information in this PR; it does not replace documentation for continued developer use. Report failures, checks not run, defects, known
-     limitations, and risks. Required incomplete verification or unmet
-     acceptance criteria block readiness; do not move them to delivery. -->
+<!-- Record required repository check results, separate unit and tagged
+     integration commands and results, and the full scoped set of
+     approved CI acceptance case IDs and each
+     result against the design's expected behavior, compared with the
+     machine-readable execution report. Include commands, environment,
+     tested revision, and runtime-cost evidence. Every case must pass; Pending,
+     skipped, missing, filtered, or deleted cases do not satisfy completion.
+     Report failures, checks not run, defects, and risks; incomplete required
+     implementation checks block readiness and cannot be moved to delivery.
+     Keep reviewer reproduction information here; it does not replace
+     documentation for continued developer use. Do not weaken approved
+     expectations to pass checks; resolve behavioral changes through upstream
+     approval and merge. -->
+
+[Go test levels and cost](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#test-levels-and-cost)
+and [acceptance test conventions](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#design-acceptance-tests).
 
 ## Subsequent developer delivery
 
@@ -43,6 +54,12 @@ and [specification feedback](https://github.com/nokamoto/agent-pulse-hub/blob/ma
      state None identified. Explain why each item is outside implementation
      acceptance criteria. This is a boundary record, not a complete delivery
      plan or authorization to publish, distribute, or deploy. -->
+
+<!-- Identify the designed final quality checks using actual Codex or external
+     services, their expected results, and evidence to collect during delivery.
+     Their execution and results are outside implementation completion. If
+     approved acceptance phases conflict with that boundary, link the separate
+     upstream revision resolving the conflict before dependent implementation. -->
 
 [Implementation completion and delivery boundary](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#implementation-completion-and-delivery-boundary).
 

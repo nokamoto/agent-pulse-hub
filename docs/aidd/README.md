@@ -63,13 +63,71 @@ Define how to fulfill the approved requirements and how to verify the result.
 
 | Item | Description |
 | --- | --- |
-| Deliverables | Design documents and any separate specifications governed by them in `docs/design/`, including architecture and responsibilities, interfaces and data, normal and failure scenarios, extensibility and safety considerations, verification strategy, and rationale for important decisions |
+| Deliverables | Design documents and governed specifications in `docs/design/`, plus the verification test cases defined below; architecture, interfaces, scenarios, tradeoffs, and separate implementation and delivery verification plans |
 | PR | A design PR linking to the merged requirements PR and presenting the design changes and significant tradeoffs |
 | Human role | Evaluate significant tradeoffs, including maintainability, compatibility, and operational risks |
 | Agent role | Investigate the existing architecture and constraints, compare relevant alternatives, draft the design, and check requirement coverage and verifiability |
-| Approval criteria | The design provides a credible path to satisfying the requirements and a verification strategy; important technical decisions and risks are agreed upon; open questions that affect implementation have been resolved |
+| Approval criteria | Requirements map to concrete verification cases, implementation can be verified in CI without real external services, and verification cost and delivery checks are explicit; important technical decisions and implementation blockers are resolved |
 
 Match the level of design detail to the size and risk of the change. Delegate implementation details that do not require human judgment to agents within the approved design and constraints.
+
+### Design verification deliverables
+
+Design includes command-level Ginkgo integration acceptance cases for behavior that implementation
+must verify in CI without a real Codex installation, service credentials, or
+other live external services. Assign stable case IDs and map them to requirement
+concepts and acceptance criteria. Each case defines concrete inputs, actions,
+observable expected results, and relevant failure and boundary conditions.
+Test names alone are insufficient. Requirements and design remain authoritative;
+tests encode their verification rather than introduce a competing specification.
+Apply the [test levels and cost guide](go-development.md#test-levels-and-cost):
+use unit tests with mocked external capabilities for isolated decisions, and
+reserve integration scenarios for behavior of the assembled product. Design
+specifies the integration cases; implementation supplies the supporting unit
+tests. Explain why each integration scenario needs that level of verification.
+
+Use static `Pending` for cases awaiting implementation. The cases and their
+fixtures must compile with the available test dependencies without referencing
+nonexistent production symbols. Specify the inputs and expected results even
+when the connection to the product is deferred. Follow the
+[Go test conventions](go-development.md#design-acceptance-tests).
+
+The governing design identifies test and fixture paths, the approved case IDs,
+and which cases gate each implementation scope. Design PRs may include these
+verification-only `*_integration_test.go` files directly in `cmd/<command>/`
+and fixtures in that command's `testdata/`, following the
+[Go test conventions](go-development.md#design-acceptance-tests).
+New command directories within the placement policy are permitted when needed
+by the design; new placement categories are not. This exception does not permit production code, shared
+test infrastructure, dependency, build, or CI configuration changes. Prepare
+missing shared infrastructure and dependencies in a separate prerequisite PR
+under the applicable development rules, and verify its approval and merge
+before relying on it in a design PR.
+
+Describe how the tests exercise real product behavior through replaceable
+external boundaries, not just interactions among test doubles. Record the CI
+environment, separate unit and integration commands, fixtures, isolation and cleanup, expected runtime and
+resource cost, and evidence to retain. Agree a verification budget during
+design review. Where feasibility is uncertain, demonstrate the smallest useful
+test setup before approval; a compiling Pending case alone proves no behavior
+or execution feasibility. Do not approve a design with unresolved CI feasibility
+or verification cost.
+
+Prefer observable contracts over transport internals so that changing an
+adapter does not require rewriting unrelated acceptance cases. Keep checks of
+the current OS or transport to the minimum needed to establish its correctness;
+do not build elaborate platform-specific test infrastructure for hypothetical
+future needs. This does not select a replacement transport or waive required
+behavior. Separate OS-dependent CI checks from checks requiring live services.
+
+Record real-service final quality checks separately as delivery verification,
+with requirement mappings, prerequisites, actions, expected results, evidence,
+and the responsible delivery role. Explain what cannot be established in
+service-free CI. Delivery checks do not gate implementation completion, and
+passing CI does not claim that those checks have passed. Changes to approved
+behavior, expected results, or phase allocation require the applicable upstream
+revision; implementation may complete test wiring but may not weaken cases to
+match its output.
 
 ### Specification documents and approved design
 
@@ -93,8 +151,11 @@ specification itself and the governing design changes needed to establish that
 relationship. A plan to create the document later does not satisfy this
 requirement. Store design documents and separate specifications under
 `docs/design/`. Design PRs may change files under `docs/design/` when their
-relationship is recorded in the governing design; code, tooling, and unrelated
-documents remain outside the design PR. Apply this boundary to deletions and
+relationship is recorded in the governing design. The only code exception is
+the verification cases and fixtures allowed by
+[design verification deliverables](#design-verification-deliverables);
+production code, tooling, and unrelated documents remain outside the design PR.
+Apply this boundary to deletions and
 both sides of renames, using the base revision for removed paths.
 
 Each separate specification uses `type: Design`, links to its governing design,
@@ -172,21 +233,28 @@ Translate the approved requirements and design into working code and reproducibl
 | --- | --- |
 | Deliverables | A repository revision containing code, necessary tests and CI changes, and permitted updates to existing documentation under the developer documentation rule; PR evidence mapping those changes to acceptance criteria and recording verification results |
 | PR | An implementation PR linking to the merged requirements and design PRs and presenting the implementation changes and verification evidence |
-| Human role | Confirm acceptance criteria, remaining risks, and operational impact, and decide whether to merge |
+| Human role | Confirm implementation verification, the remaining delivery checks and risks, and decide whether to merge |
 | Agent role | Implement, self-review, verify, and fix defects; automate necessary verification and present reviewable diffs and evidence |
-| Approval criteria | Applicable acceptance criteria are met, required automated checks pass, necessary manual checks are complete, and known limitations and remaining risks are explicit |
+| Approval criteria | All approved cases allocated to the implementation scope pass in service-free CI, required repository checks pass, and delivery checks, known limitations, and remaining risks are explicit |
 
 Agents investigate and correct verification failures. Checks that could not be run must not be reported as passing; report the reason, impact, and actions needed to resolve the issue. Do not present work as ready to merge while required verification remains incomplete.
 
 #### Implementation completion and delivery boundary
 
-Implementation produces a reviewable repository revision and its verification
-evidence. The agent is responsible for making that revision satisfy the approved
-requirements and design, correcting defects, and providing enough instructions
-and evidence for reviewers to reproduce the applicable checks. Use the
+Implementation produces a reviewable repository revision and service-free CI
+verification evidence. The agent implements the approved requirements and
+design, corrects defects, and provides instructions and evidence for reviewers
+to reproduce implementation checks. Use the
 [implementation PR template](../../.github/PULL_REQUEST_TEMPLATE/implementation.md)
 to identify the delivered changes, their requirement and design mappings,
 verification results, and any work left for delivery.
+
+Compare the approved case IDs for the implementation scope with the execution
+report. Every required case must be present and passed. Pending, runtime Skip,
+deleted cases, and cases excluded by filters do not satisfy completion. Keep
+future-scope Pending cases separate from the current completion gate; do not
+disable the gate to accommodate them. Infrastructure changes needed to enforce
+this check must be in place before claiming implementation readiness.
 
 An implementation PR is ready for human review only when the implementation
 approval criteria above are met. The phase ends when human approval and merge
@@ -195,37 +263,37 @@ of that revision are verified under the
 a PR alone does not complete the phase. Its completed result is the merged
 repository revision together with the PR's verification and approval evidence.
 
-Here, **developer delivery** means subsequent work that makes the completed
-implementation available to developers for acquisition, setup, and continued
-use. Publishing or distributing release artifacts, arranging installation in
-a recipient's environment, and providing onboarding or operational handover
-beyond the approved implementation acceptance criteria belong to delivery.
-Implementation completion does not claim that these activities are complete
-or authorize the agent to perform them. Delivery's detailed process,
-deliverables, and approval criteria require separate definition; this rule
-establishes only the implementation boundary.
+Here, **developer delivery** includes final quality verification against real
+Codex or other live external services, as well as making the implementation
+available for acquisition, setup, and continued use. Real-service connection,
+compatibility, and end-to-end user scenarios belong to delivery: implementation
+does not require their execution or successful evidence. Publishing artifacts,
+installation in a recipient's environment, and operational handover also belong
+to delivery. Implementation completion neither establishes delivery quality nor
+authorizes these activities. Design supplies the delivery verification cases;
+the detailed delivery process and its approval criteria require separate definition.
 
-Classify work by its purpose and the approved acceptance criteria, not by its
-file extension or location. Build and startup checks and their reproduction
-instructions in the PR remain implementation verification. Documentation for
-continued developer use follows the
-[upstream documentation rule](#developer-documentation-and-upstream-feedback).
-For example, the [MVP requirements](../requirements/mvp.md) NFR-004 and AC-009
-require Windows setup and operation instructions and a clean-build
-demonstration. Those obligations cannot be deferred to delivery. If the
-instructions are missing during implementation, stop and return upstream to
-create them; do not claim the acceptance criterion is met. Building an artifact
-for the demonstration is verification; publishing it for downstream developers
-is delivery.
+Classify checks by their dependencies and approved phase allocation. Local
+build, startup, and OS-specific checks that run without live services remain
+implementation verification in CI. Documentation for continued developer use
+still follows the [upstream documentation rule](#developer-documentation-and-upstream-feedback);
+moving execution to delivery does not defer authoring that documentation.
 
 In the implementation PR, record identified delivery work separately from
-implementation defects or incomplete checks, or state that none has been
-identified. Do not present that list as a complete delivery plan. An unmet
-implementation acceptance criterion remains a blocker; labeling it delivery
-does not defer it. If the approved requirements or design leave the boundary
-unclear, report the unresolved decision and use the existing upstream feedback
-and approval rules before claiming implementation completion. This boundary
-does not define the final end-user offering or change approved product scope.
+implementation defects or incomplete CI checks. Link the designed delivery
+checks and mark them not executed when appropriate; they are not implementation
+blockers. An unmet implementation case remains a blocker and cannot simply be
+relabeled as delivery.
+
+Existing approved requirements and designs are not silently reclassified by
+this rule. Before dependent implementation, reconcile conflicting or unclear
+phase allocations through separate upstream PRs and verify approval and merge.
+For example, the [MVP requirements](../requirements/mvp.md) and its
+[verification strategy](../design/mvp.md#verification-strategy) include real
+Codex demonstrations: preserve their expected product behavior while explicitly
+allocating real-service evidence to delivery and service-free cases to
+implementation. This rule does not itself revise those product deliverables
+or claim their acceptance criteria have been met.
 
 ## Approval and traceability
 
@@ -307,7 +375,11 @@ If required metadata is inaccessible or approval coverage is uncertain, report t
 | Guardrails | Express execution scope and approval boundaries through repository instructions, tool permissions, and automated checks |
 | CI | Continuously run the reproducible verification needed for changes, such as builds, tests, and static analysis, and make results available for review |
 
-Automation supports human judgment about the suitability of requirements and design. Add necessary verification alongside implementation, and treat recurring checks as opportunities to improve skills, guardrails, and CI.
+Automation supports human judgment about the suitability of requirements and
+design. Define acceptance cases during design, make them pass during
+implementation, and retain real-service final quality verification for
+delivery. Treat recurring checks as opportunities to improve skills,
+guardrails, and CI.
 
 ## Rule-change consistency review
 
