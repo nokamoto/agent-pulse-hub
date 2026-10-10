@@ -79,10 +79,19 @@ without inventing targets. Explain non-applicable concerns.>
 Apply the [test levels and cost guide](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#test-levels-and-cost):
 implementation supplies unit tests with mocked external capabilities; design
 supplies command-level integration cases for assembled product behavior.
-Include concrete Ginkgo acceptance cases initially static `Pending` in the design PR,
-with stable IDs and governed paths directly in `cmd/<command>/*_integration_test.go`,
-all case and suite files tagged `//go:build integration`, and fixtures in that
-command's `testdata/`. Follow the [acceptance test conventions](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#design-acceptance-tests).
+Explain how defect-detection value and coverage justify implementation
+complexity and maintenance and execution costs, and how cheaper verification,
+combined scenarios, or removal of unnecessary or impractical candidates retain
+requirement and acceptance coverage. Follow the playbook's case selection rule;
+removing a candidate does not remove a product requirement, and changing approved
+required behavior or removing an approved required case needs upstream approval
+and merge. Include only necessary, feasible Ginkgo acceptance cases, initially
+static `Pending`, whose concrete implementation method and CI feasibility are
+resolved; test code completion and product wiring may follow in implementation.
+Give cases stable IDs and governed paths directly in
+`cmd/<command>/*_integration_test.go`, tag all case and suite files with
+`//go:build integration`, and place fixtures in that command's `testdata/`.
+Follow the [acceptance test conventions](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#design-acceptance-tests).
 Identify separately
 approved and merged prerequisites; dependency, build, CI, tooling, and shared
 harness changes belong in separate PRs. Pending cases must not use dynamic
@@ -98,12 +107,17 @@ authoritative for expected behavior.>
 | --- | --- | --- | --- | --- |
 | <Case ID> | <Concept path + IDs> | <Governed paths> | <Inputs, initial state, and action> | <Decisive observations, including relevant errors or boundaries> |
 
-<Cover relevant failures and nonfunctional criteria. For each integration case,
-explain why unit tests are insufficient, identify real product components and
+<Cover relevant failures and nonfunctional criteria. For each selected case,
+record its concrete implementation method. Explain why unit tests are
+insufficient, identify real product components and
 substituted external boundaries, and record setup, runtime, resource, and cleanup
 costs. State separate service-free unit and tagged integration CI commands,
 environment and prerequisites, the agreed verification budget, and evidence
-that the minimal harness is feasible within it. Keep fixtures and substitutes
+that the minimal harness is feasible within it. Simplify or replace uncertain
+verification before demonstrating the smallest useful setup where uncertainty
+remains. A list of unproven cases and a blocker report do not complete selection;
+identify any necessary case still lacking a feasible method as an unresolved
+blocker with its coverage impact. Keep fixtures and substitutes
 focused on observable behavior and avoid infrastructure beyond that evidence.
 Distinguish harness feasibility checks actually executed from Pending product
 acceptance cases. Implementation must pass every scoped approved CI case;

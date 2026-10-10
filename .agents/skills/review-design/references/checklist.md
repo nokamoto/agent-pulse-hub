@@ -31,13 +31,22 @@ and [Go test conventions](../../../../docs/aidd/go-development.md#test-levels-an
 and [completion boundary](../../../../docs/aidd/README.md#implementation-completion-and-delivery-boundary).
 D08 passes only when all of the following hold:
 
+- Case selection weighs defect-detection value and coverage against
+  implementation complexity and maintenance and execution costs. Necessary
+  cases use the least costly sufficient verification; consolidation or removal
+  of unnecessary or impractical candidates explains retained requirement and
+  acceptance coverage. Product requirements and approved required cases are
+  not silently dropped; affected approved decisions have upstream approval
+  and merge.
 - Ginkgo cases and suite files reside directly in
   `cmd/<command>/*_integration_test.go` with `//go:build integration`;
   fixtures reside in that command's `testdata/`.
 - Concrete Ginkgo acceptance cases are initially static `Pending`, without
   dynamic `Skip`. Stable IDs map to requirements and acceptance criteria;
   cases define concrete inputs and actions, observable expected results, and
-  failure boundaries.
+  failure boundaries. Each selected Pending case has a resolved concrete
+  implementation method and CI execution feasibility; only test code
+  completion and product wiring remain for implementation.
 - Each integration case explains why unit tests cannot establish its behavior,
   identifies real product components and substituted external boundaries, and
   accounts for setup, runtime, resources, and cleanup. Unit tests mock external
@@ -46,8 +55,11 @@ D08 passes only when all of the following hold:
   are available without nonexistent production symbols.
 - Separate service-free unit and tagged integration CI commands, environment,
   verification budget, and minimal
-  harness feasibility have evidence. Required prerequisites are separately
-  approved and merged.
+  harness feasibility have evidence. Uncertain verification is simplified or
+  replaced before any remaining uncertainty is resolved with the smallest
+  useful setup. A list of unproven cases and a blocker report do not complete
+  selection; necessary cases still lacking a feasible method prevent readiness.
+  Required prerequisites are separately approved and merged.
 - Final quality checks using actual Codex or external services have expected
   results and planned evidence for delivery. They are not implementation
   execution requirements or completion evidence.

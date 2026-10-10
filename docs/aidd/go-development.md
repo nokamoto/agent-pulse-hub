@@ -128,9 +128,14 @@ product components involved in the claimed behavior; mocking the application
 itself would not establish their integration. Keep current OS/transport checks
 minimal without dropping required behavior.
 
-For each integration scenario, design records why unit tests are insufficient,
-which product components are real, which external boundaries are substituted,
-and its setup, runtime, resource, and cleanup budget. Bound waits and clean up
+Before proposing integration scenarios, the design author applies the
+[case selection and Pending rules](README.md#design-verification-deliverables):
+compare defect-detection value with implementation, maintenance, and execution
+cost, and choose the least costly sufficient coverage. For each selected
+integration scenario, design records why unit tests are insufficient, its
+concrete implementation method, which product components are real, which
+external boundaries are substituted, and its setup, runtime, resource, and
+cleanup budget. Bound waits and clean up
 processes and temporary state. Use separate unit and integration commands and
 CI results so expensive checks are visible. Required integration cases still
 gate implementation; cost is not a reason to skip them or move them to delivery.
@@ -181,8 +186,11 @@ exclude undefined Go symbols from compilation.
 
 Give each case a stable ID and concrete inputs, actions, and observable expected
 results, either in the case or a directly associated fixture. A descriptive
-title with no specified checks is insufficient. Use static `Pending` for
-unimplemented cases, not runtime `Skip()`. Exercise the command's public
+title with no specified checks is insufficient. Use static `Pending` only when
+necessity, a concrete implementation method, and CI feasibility are resolved
+under the [design verification rule](README.md#design-verification-deliverables);
+test code completion and product wiring may follow during implementation.
+Do not substitute runtime `Skip()`. Exercise the command's public
 contracts rather than internal application entry points in these scenarios.
 Fakes must drive or observe actual product behavior when the case is enabled.
 
