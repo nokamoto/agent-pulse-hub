@@ -460,99 +460,223 @@ to another design. Verification entries V01-V10 are defined in the next section.
 ## Verification strategy
 
 This allocation takes effect after human approval and merge of this design
-revision. It replaces the earlier combined implementation-acceptance allocation
-through an explicit design decision under the
+revision. It selects the lowest-cost verification level for each required
+observation and replaces the earlier combined implementation-acceptance
+allocation through an explicit design decision under the
 [completion boundary](../aidd/README.md#implementation-completion-and-delivery-boundary).
-It preserves every requirement and expected result. Requirements acceptance and
-implementation completion have different evidence boundaries: a simulated Codex
-recipient does not satisfy AC-003, and the real-service portions of AC-002,
-AC-003, AC-006, AC-009 and AC-010 remain unverified until delivery. Passing CI
-does not claim those acceptance criteria are complete.
+Product behavior, numeric bounds and deadlines remain unchanged. The integration
+cases below are the selected design proposal; removing redundant proposal cases
+or assigning input combinations to unit tests does not waive approved behavior
+or permit implementation to skip an approved case.
 
-V01-V10 remain the coverage identifiers. The `MVP-*` IDs below identify concrete
-CI cases; the associated integration cases and fixtures specify inputs,
-operations and observations. Static Pending records an unimplemented case,
-never passing behavior. Every case in both inventories gates implementation
-completion. Windows security and local process checks use no live service and
-remain implementation obligations even when their setup is unavailable.
+Requirements acceptance and implementation completion have different evidence
+boundaries: a simulated Codex recipient does not satisfy AC-003. The real-service
+portions of AC-002, AC-003, AC-006, AC-009 and AC-010 remain unverified until
+delivery. Passing CI does not claim those acceptance criteria are complete.
+Windows local control and process lifecycle remain service-free implementation
+obligations. Dedicated second-account and remote-network connection scenarios
+are replaced by the security inspection defined below, rather than made into
+manual delivery prerequisites.
 
-| Coverage / requirements acceptance | Required service-free CI cases and decisive observation | Separate delivery evidence |
+V01-V10 remain coverage identifiers. Eleven stable `MVP-*` IDs identify the
+selected command-level integration workflows. Every ID in both inventories
+gates implementation completion; static Pending records a case awaiting product
+wiring, never passing behavior. Tests exercise real public commands, application,
+domain and relevant adapters. Only the external Codex endpoint is replaced by a
+controlled local executable; its records cannot prove a real conversation reply.
+
+| Coverage / requirements acceptance | Service-free implementation evidence | Separate delivery evidence |
 | --- | --- | --- |
-| V01 / AC-001; FR-001, FR-004 | `MVP-V01-STARTUP`, `MVP-V01-INVALID-CONFIG`, `MVP-V01-SHUTDOWN`: readiness is observable; malformed configuration, missing executable, version-probe failure and partial startup show errors; Ctrl+C leaves no owned child or descendant. | D09 repeats the normal lifecycle on the delivered revision. |
-| V02 / AC-002; FR-002, FR-005 | `MVP-V02-REGISTER`, `MVP-V02-REGISTER-REJECTION`, `MVP-V02-UNCERTAIN-REPEAT`, `MVP-V02-MANUAL-PATHS`: success follows plugin acceptance; missing/conflicting identity, unknown/unavailable plugin, rejected arguments and pre-send connection failure create no active watch; response loss after commit is uncertain and an explicit identical repeat reuses the ID. Watch timeout stops only the uncertain plugin. Path aliases cannot acquire a second watch. | D02 establishes actual skill discovery, top-level environment identity and registration. |
-| V03 / AC-003; FR-003, FR-004, FR-005 | `MVP-V03-ROUTE`, `MVP-V03-MANUAL-TRIGGER`: a real manual plugin consumes one atomically published trigger; the queue invocation targets registered A and preserves source, subscription and recognizable context without recipient input from the plugin. | D03 requires A's actual acknowledgement, B's silence and no new conversation. CI covers routing mechanics only. |
-| V04 / AC-004; FR-003, FR-006 | `MVP-V04-INVALID-EVENT`, `MVP-V04-DELIVERY-OUTCOME`, `MVP-V04-PLUGIN-ISOLATION`, `MVP-V04-MANUAL-INVALID-CONTENT`, `MVP-V04-MANUAL-CLAIM-FAILURE`: malformed, oversized, unknown, foreign and post-exit events cause no attempt; admitted events receive one failed/unknown/accepted result with no retry; another plugin remains usable; invalid or unsuccessfully consumed files emit no event. | D03/D09 retain actual queue result and observed conversation outcome separately. |
-| V05 / AC-005; FR-006, NFR-004 | `MVP-V05-RESTART`: old IDs are rejected after restart and a new accepted watch is required. Review instructions for loss of registrations/pending events and absence of retries. | D09 follows shutdown and registration recovery instructions. |
-| V06 / AC-006; NFR-001 | `MVP-V06-IDLE`: during a declared one-second idle interval, the controlled queue endpoint records zero work invocations; one trigger records receipt and a subsequent delivery attempt without an agent check. Version probes are distinguished from work requests. | D06 adds the actual conversation response time to the receipt/attempt trace. No numerical latency target is introduced. |
-| V07 / AC-007; NFR-002 | `MVP-V07-INDEPENDENT-PLUGIN`, `MVP-V07-PROTOCOL-BOUNDARIES`: replace the configured executable with an independent non-Go plugin without changing daemon code; exercise protocol framing and lifecycle through its public streams. Review the authoritative specification for absence of agent identity, agent API and GitHub schema requirements. | No real service is needed for portability. |
-| V08 / AC-008; NFR-003 | `MVP-V08-SAME-USER`, `MVP-V08-DIFFERENT-USER`, `MVP-V08-REMOTE`, `MVP-V08-SECOND-DAEMON`: actual Windows control allows the same user, denies a different standard-user token and a remote connection, and refuses a second daemon. Check explicit DACL and client server-SID verification. Inspect envelope and skill for external-data labeling and existing-permission limits. | D02/D03 inspect the actual skill and forwarded envelope; account/network denial remains a CI obligation. |
-| V09 / AC-009; NFR-004 | `MVP-V09-CLI`: the public CLI validates flags, identity and strict JSON-file input, emits exact success/error stdout and exit contracts, and reports local/uncertain failures without a success object or automatic retry. | D09 executes the clean Windows build and complete real operating walkthrough, recording the selected Codex version and all failures. |
-| V10 / AC-010; FR-007 | `MVP-V10-DUPLICATE`, `MVP-V10-ADMISSION-BOUNDS`: sequential and concurrent equivalent registrations issue one watch and return one ID; repeated event frames remain separate events; registration and queued/in-flight event capacity is enforced without attempts for rejected events. | D10 observes a real busy conversation continue uninterrupted and then handle the event, or records rejection without retry. |
+| V01 / AC-001; FR-001, FR-004 | `MVP-V03-ROUTE` observes real startup/readiness. `MVP-V01-INVALID-CONFIG` rejects representative malformed input and a missing executable before plugin startup. `MVP-V01-SHUTDOWN` observes genuine Ctrl+C and owned process-tree cleanup. Unit tests cover configuration, version-probe and partial-startup branches. | D09 repeats normal startup and shutdown in the actual operating walkthrough. |
+| V02 / AC-002; FR-002, FR-005 | `MVP-V02-REGISTER` gates activation on accepted watch acknowledgement and exercises one rejected watch. `MVP-V10-DUPLICATE` preserves committed identity after response loss and concurrent repeats. `MVP-V02-MANUAL-PATHS` rejects an equivalent watched path and existing file. Unit tests cover missing/conflicting identity, unknown/unavailable daemon/plugin, response classification and watch deadlines. | D02 establishes actual skill discovery, top-level identity and registration. |
+| V03 / AC-003; FR-003, FR-004, FR-005 | `MVP-V03-ROUTE` atomically publishes a real manual-plugin trigger, observes claim/read/remove, preserves recognizable context and invokes queue only for registered A. | D03 requires A's actual acknowledgement, B's silence and no new conversation. |
+| V04 / AC-004; FR-003, FR-006 | `MVP-V04-INVALID-EVENT` recovers one malformed frame, rejects unknown/foreign IDs and keeps B usable after A exits. `MVP-V04-DELIVERY-OUTCOME` observes nonzero and actual timeout outcomes with one attempt and process termination. `MVP-V04-MANUAL-INVALID-CONTENT` observes real invalid-file rejection. Unit tests cover remaining invalid events, failures and outcome permutations. | D03/D09 retain actual queue result and conversation outcome separately. |
+| V05 / AC-005; FR-006, NFR-004 | `MVP-V05-RESTART` rejects an old ID and requires a fresh registration. Review the instructions for lost registrations/pending events and no retries. | D09 follows shutdown and registration recovery instructions. |
+| V06 / AC-006; NFR-001 | `MVP-V03-ROUTE` declares one second of idle time, records zero work requests, then one event-receipt/delivery-attempt trace. Distinguish version probes and review the evaluated manual-plugin source for independent Codex request capability. | D06 adds actual conversation response time to the receipt/attempt trace; no latency target is introduced. |
+| V07 / AC-007; NFR-002 | `MVP-V02-REGISTER` uses an independent PowerShell plugin speaking only plugin-v1 JSON lines. `MVP-V04-INVALID-EVENT` observes actual framed-stream recovery. Unit tests cover wire/schema/encoding bounds and lifecycle combinations; review the authoritative specification for absence of agent APIs or GitHub schema requirements. | No live service is needed to establish the language-neutral interface. |
+| V08 / AC-008; NFR-003 | `MVP-V08-SAME-USER` observes actual same-user access, semantic pipe DACL/server-SID inspection and second-daemon rejection. Review pinned remote-reject creation and Windows access semantics. Unit tests cover client SID-validation failures. `MVP-V03-ROUTE` and skill review establish external-data and existing-permission wrappers. | D02/D03 inspect the actual skill and forwarded envelope. No dedicated account or remote-network setup is required. |
+| V09 / AC-009; NFR-004 | `MVP-V01-INVALID-CONFIG`, `MVP-V02-REGISTER` and `MVP-V03-ROUTE` exercise public file/CLI/status/stdout paths. Unit tests cover their input/error permutations. | D09 executes the clean Windows build and complete operating walkthrough, recording Codex version and failures. |
+| V10 / AC-010; FR-007 | `MVP-V10-DUPLICATE` observes one watch/ID despite response loss and concurrent equivalent requests, then two ordered attempts for two valid frames. `MVP-V03-ROUTE` repeats ordinary registration. Unit tests cover canonical identity, capacity and busy-target outcome decisions. | D10 observes actual busy work uninterrupted followed by event handling, or rejection without retry. |
 
 ### Unit and integration responsibilities
 
-Implementation supplies in-memory unit tests beside each responsibility. Mock
-application-owned external capabilities with GoMock; mock subprocess execution,
-transport, storage and time-dependent waiting rather than invoking real I/O in
-unit tests. Cover strict JSON/schema permutations, Unicode and duplicate keys,
-exact decimal equivalence, array ordering, envelope escaping, response parsing,
-error mapping, admission decisions and capacity boundaries mainly at this level.
+Implementation supplies standard Go unit tests beside the consuming responsibility.
+Mock external process, transport, filesystem, identity and time-dependent waiting
+capabilities; use GoMock for application-owned interfaces. Pure parsing and
+mapping require no artificial interface. The following responsibilities preserve
+the full product contracts after removing their exhaustive process permutations.
 
-Integration retains real command startup, application/domain behavior and every
-adapter needed for the claim. Tests invoke the built public commands and observe
-their streams, processes, files and queue endpoint records. Direct calls into an
-application service or interactions among mocks cannot establish these cases.
-The real Codex executable is replaced with a controlled local executable that
-records argument arrays and emits configured acknowledgements, failures or delays.
-The fake does not replace the product's Codex adapter. The bundled manual plugin
-remains real in the trigger and consumption cases; independent protocol fixtures
-drive malformed or lifecycle input that the bundled plugin correctly cannot emit.
+| Unit-test owner | Required decisions, boundaries and failures |
+| --- | --- |
+| Configuration and public command input adapters | Strict UTF-8/JSON files; BOM, duplicate/unknown fields, malformed/non-object data, missing/relative files, duplicate names, executable paths, flags and no shell expansion; version-probe success/failure; exact stdout/stderr/exit classification. |
+| Registration client and control adapter | Missing/conflicting/mismatching session identity; local connection failure; malformed, truncated and duplicate-field responses; uncertain response after possible commit; same-user server-SID comparison and unverifiable/mismatching identity; no guessed recipient or automatic retry. |
+| Domain registration identity and application registry | Key ordering, exact decimal equivalence, nested arrays and distinct registrations; pending/active transitions, rejected/unavailable plugin, concurrent commit and response loss; 1,024/1,025 active-or-pending registrations; resource errors before watch writes. |
+| Plugin protocol and process adapter | Every schema/direction/version, duplicate key, Unicode/UTF-8/BOM/line-ending case; 65,536/65,537-byte frames, 8,192/8,193-byte and empty context; partial EOF, unknown/late/duplicate results, readiness and immediate-event ordering; failed/blocked writes and fixed ten-second ready/watch deadlines with mocked time. |
+| Application admission and delivery | Subscription ownership, inactive/unknown/foreign/post-exit events, queue order and plugin isolation; 128/129 queued-or-in-flight events; separate IDs for repeated frames; once-only attempts, no retry/restart, invalidation, state loss and shutdown during pending/in-flight work. |
+| Codex adapter | Exact acknowledgements and mismatching/ambiguous/lost/oversized stdout; bounded diagnostics and verbose stderr; prelaunch failure versus launched unknown, actual command construction/escaping, 24,000/24,001 UTF-16 units and nontruncating rejection; cancellation and bounded output. |
+| Manual-plugin path and file adapter | Ordinal case, unsupported UNC/device/alternate-stream/trailing-dot-or-space forms, directory identity and aliases, lookup failure and duplicate paths; empty/invalid/oversized context; claim/read/close/removal failures with claimed-path diagnostics and no event or claimed-file retry. Use mocked file operations for faults rather than permission races. |
+| Supervisor and shutdown coordination | Partial startup, failed process/job assignment, queued/in-flight cancellation, shutdown exchange/deadline and descendants; mocks establish branch decisions while SHUTDOWN establishes actual signal and process-tree cleanup. |
 
-Windows named pipes, SID checks, file identity, atomic renames, command-line
-quoting, Job Objects, descendant cleanup and Ctrl+C require real Windows
-integration. Unit tests alone cannot establish these OS/process boundaries.
-Keep current-transport tests to one decisive same-user, different-user, remote
-and second-instance scenario, plus necessary lifecycle and response-loss paths.
-Other input permutations stay in unit tests. These checks neither select a new
-transport nor authorize a communication migration or Go-plugin mechanism.
+The real integration observations are deliberately small: public command wiring,
+acknowledgement-gated activation, file consumption, malformed-stream recovery,
+process isolation, current-user access and normal process-tree shutdown. Unit
+permutations do not become process scenarios merely because they are boundaries.
+Neither this allocation nor the fixtures select a new transport, change product
+features, or introduce a Go-plugin mechanism.
 
-The protocol integration fixtures retain LF/CRLF, 65,536/65,537 total-byte frames,
-invalid UTF-8/surrogates, recoverable malformed input, partial EOF, missing or
-duplicate readiness, late/unknown/duplicate results, failed/blocked writes,
-multiple watches, immediate events after acceptance and foreign/old IDs.
-Context cases retain empty, 8,192/8,193 decoded UTF-8-byte inputs, multibyte and
-escaped/newline text, without truncation. Include pre-launch command-line rejection,
-nonzero exit, timeout, lost/ambiguous/mismatched-target output, and shutdown during
-delivery; distinguish rejection before admission from an admitted delivery result.
-Boundary permutations may use unit evidence, but integration must establish the
-real framed-stream recovery, deadline and once-only lifecycle behavior.
+### Local security verification boundary
 
-Manual-plugin cases retain slash/dot normalization, ordinal filename case,
-parent directory aliases, unsupported path forms and unavailable parent identity.
-Different JSON resolving to one file is rejected; identical registration reuses
-its active ID. Read/size/encoding/removal failures identify the claimed path and
-emit nothing; a claimed file is not retried. Review the complete schema, examples,
-bounds and rejection matrix in [plugin-v1](plugin-v1.md#conformance-verification)
-against V01/V02/V04/V05/V07/V10. Guardrails alone do not prove these contracts.
+AC-008 requires inspection and confirmation that control is limited to the local
+user running the daemon. For this MVP, Windows access checks and the pinned pipe
+library's remote-rejection behavior are trusted OS/dependency boundaries. Product
+verification establishes the policy supplied to those boundaries and its actual
+local installation, rather than implementing a multi-account/network laboratory.
 
-### Governed artifacts and execution
+`MVP-V08-SAME-USER` opens the actual pipe and calls `GetSecurityInfo` on its
+handle. Check that the DACL is present, non-null and protected, with the intended
+user SID as its only allow trustee and the required access rights; record semantic
+ACE fields rather than compare a serialized ACL string. Retrieve and compare the
+actual server process SID, exercise successful public registration, and confirm
+a second daemon cannot reserve the endpoint before starting its plugins.
+
+Review the server's explicit DACL/local namespace and the module-pinned
+`github.com/Microsoft/go-winio` creation path: it must pass
+`FILE_PIPE_REJECT_REMOTE_CLIENTS` to `NtCreateNamedPipeFile` for pipe instances.
+Retain the dependency version and relevant source location with implementation
+review evidence; recheck this contract when the dependency or creation path
+changes. Windows performs the access check against the actual pipe DACL and
+rejects remote clients under that mode. Review these semantics against
+[Microsoft's pipe security contract](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+and [remote-client mode contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea).
+
+These observations establish the selected security policy without a second
+account, credentials, network route or firewall setup. They do not claim an
+executed different-user or remote-client connection. Client identity-failure
+branches use mocked identity queries in unit tests. Administrators taking
+ownership and malicious same-user programs remain outside the product boundary.
+
+### Governed artifacts and fixture construction
 
 | Path | Role and scope |
 | --- | --- |
-| `cmd/agent-pulse-hub/suite_integration_test.go` and `mvp_integration_test.go` | Ginkgo suite and hub public-command cases; every file uses `//go:build integration`. |
-| `cmd/manual-plugin/suite_integration_test.go` and `mvp_integration_test.go` | Ginkgo suite and standalone manual-plugin public-protocol cases; the same build tag applies. |
-| `cmd/agent-pulse-hub/testdata/mvp-cases.json` | Required general scope: 16 hub cases and four manual-plugin cases listed above. |
-| `cmd/agent-pulse-hub/testdata/mvp-windows-cases.json` | Additional required Windows scope: `MVP-V01-SHUTDOWN` and the four `MVP-V08-*` cases. |
-| Each command's `testdata/` | Associated concrete fixtures, protocol transcripts, controlled external executables and independent non-Go plugin source; no product implementation or shared harness implementation. |
+| `cmd/agent-pulse-hub/suite_integration_test.go` and `mvp_integration_test.go` | Ginkgo suite and nine hub public workflows, seven general and two Windows lifecycle/security cases; each file uses `//go:build integration`. |
+| `cmd/manual-plugin/suite_integration_test.go` and `mvp_integration_test.go` | Ginkgo suite and two real-file/path workflows with the same build tag. |
+| `cmd/agent-pulse-hub/testdata/mvp-cases.json` | Required general scope: seven hub cases and two manual-plugin cases. |
+| `cmd/agent-pulse-hub/testdata/mvp-windows-cases.json` | Required Windows scope: `MVP-V01-SHUTDOWN` and `MVP-V08-SAME-USER`. |
+| Each command's `testdata/` | Case-owned fixtures and transcript/input files; no product code, shared test framework, dependency, build or CI tooling changes. |
 
-Run from the repository root with the module-pinned Go/Ginkgo dependencies.
-Product integration runs on Windows with PowerShell 7 and a local writable
-drive, as one standard user. A provisioned different standard-user token and a
-remote-client environment must actually reach the security check: denial caused
-only by unavailable routing, authentication or firewall setup is not evidence
-of daemon isolation. No Codex installation, live service or service credential
-is required. Any reusable account/network/console harness prerequisite must be
-approved and merged separately before design relies on it.
+Build the product commands and controlled executable once per suite. The Codex
+substitute records argument arrays, invocation/delivery correlation and process
+identity; support `--version`, exact successful queue response, nonzero exit and
+a held queue process. Local record/gate files make fixture progress observable.
+Only one small independent PowerShell plugin-v1 script is needed for REGISTER,
+INVALID-EVENT, DELIVERY-OUTCOME, RESTART and DUPLICATE. Save its reviewed fixed
+source in the command's `testdata/`. The test driver reads that source and sets
+the configured plugin's executable to the absolute Windows `powershell.exe`
+path, with arguments `-NoLogo`, `-NoProfile`, `-NonInteractive`, `-Command`, and
+the fixed script body as one final argument. PowerShell directly interprets its
+own script body; the fixture does not load a script file or use
+`Invoke-Expression`. This invocation requires no execution-policy change,
+bypass argument or signed-file setup.
+
+Pass fixture directory paths through environment overrides only on the daemon
+child process launched by the test driver; the fixture can use per-process
+record/gate directories below that root. Keep the host environment unchanged,
+and supply matching Codex identity variables only to registration-client child
+processes, not to the daemon/plugin. Context and control frames remain UTF-8
+JSON/file data and are never inserted into script source. The fixed source
+reads/writes JSON lines, records watches, holds/releases ACK and emits selected
+frames or exits. It imports no Go product package or agent API. The daemon
+continues to execute the configured trusted plugin using an argument array,
+without interpreting shell strings or expanding variables; configuring PowerShell
+to interpret its own fixed script does not change that product contract.
+
+The hub's case-owned hidden-console fixture supports normal shutdown of test
+runs and the decisive SHUTDOWN scenario. Start an isolated console with
+`CREATE_NEW_CONSOLE` and `SW_HIDE`, launch the real daemon inside it, and use a
+non-null per-process handler that consumes the driver's Ctrl+C while leaving
+the daemon's handler enabled. Call `GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)`
+in that console. A nonzero process-group argument cannot deliver the required
+Ctrl+C; forced kill or Ctrl+Break cannot substitute. The SHUTDOWN fixture's
+protocol-child and descendant modes consume Ctrl+C themselves, report receipt
+of `shutdown` and remain alive, making the daemon's five-second grace and Job
+Object cleanup observable through retained process handles. Other workflows use
+healthy children that acknowledge shutdown and exit immediately. The fixture is
+compiled with existing dependencies under this command's `testdata/`; it is not
+a new installed or reusable platform test framework. Follow
+[Microsoft's console-event contract](https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent).
+
+Standalone manual-plugin cases use real stdin/stdout and a small local temporary
+directory. Atomically publish controlled files and await each claim/result before
+publishing the next. Path coverage needs only two spellings of the same existing
+parent and an already-existing file; no junction or permission manipulation is
+needed. Permission-dependent faults stay behind mocked file-operation boundaries.
+
+### Execution and cost budget
+
+Run from the repository root on Windows with PowerShell 7, the module-pinned
+Go/Ginkgo dependencies and a writable local drive. The product and fixtures run
+under the same user; no elevation, second account, service credential, Codex
+installation or remote-network setup is required. Build commands once per suite
+and serialize scenarios using the single user-specific pipe. Isolate files and
+active registrations between workflows. Every process wait uses an observable
+condition and a deadline; readiness/ACK observations use fixture records, not
+fixed sleeps. The one-second idle window and one actual 30-second delivery
+timeout are deliberate observations. Ready/watch ten-second timeout branches
+use mocked-time unit tests; product deadlines remain unchanged.
+
+The caps below include each case's setup, actions and cleanup after the common
+suite build. They bound verification execution, not product latency or throughput.
+Each case owns and awaits its processes, removes only its temporary state, and
+fails when cleanup cannot confirm termination. Case process counts exclude the
+Ginkgo runner and an idle suite-owned console driver; count that driver in the
+suite peak below. Queue processes run sequentially.
+
+| Integration ID | Defect exposed and smallest necessary fixture | Runtime cap | Cost and scenario process peak |
+| --- | --- | --- | --- |
+| `MVP-V01-INVALID-CONFIG` | Public malformed file/missing executable must reject before plugin startup; two CLI invocations and process records. | 4 s | Small startup cost; daemon plus one version probe, peak 2. Input matrix stays unit. |
+| `MVP-V02-REGISTER` | ACK/activation wiring or rejection could create a premature watch; one gated non-Go protocol child and one rejected watch. | 5 s | Real streams and control required; daemon, child, client, sequential queue, peak 4. |
+| `MVP-V03-ROUTE` | Startup, idle, file claim or recipient/envelope wiring could fail; real manual plugin plus one atomic trigger and ordinary repeat. | 4 s | Includes 1 s idle; one daemon/plugin/client/queue route, peak 4. |
+| `MVP-V04-INVALID-EVENT` | Malformed stream or source ownership could corrupt another plugin's state; two instances of the same script, small frame sequence and one exit. | 5 s | No broad conformance matrix; daemon, two children, client/queue, peak 5. |
+| `MVP-V04-DELIVERY-OUTCOME` | Launched failure/cancellation could claim success, retry or leave a process alive; nonzero and one held endpoint with recorded PID. | 35 s | Includes exactly one actual 30 s deadline; daemon, protocol child, client/queue, peak 4. |
+| `MVP-V05-RESTART` | Memory-only state could leak across runs; healthy child, old ID and fresh registration over two daemon runs. | 4 s | No forced-grace wait; each run uses daemon/child/client/queue, peak 4. |
+| `MVP-V10-DUPLICATE` | Lost response/concurrent repeats could add a watch or reorder delivery; one gated child, raw close, two pending repeats, public repeat and two frames. | 6 s | Two concurrent control connections rather than mass CLI starts; peak 5 including daemon, child, two clients and sequential queue. |
+| `MVP-V04-MANUAL-INVALID-CONTENT` | Actual file ingestion could truncate or emit invalid bytes; 8,192-byte valid, 8,193-byte invalid and invalid-UTF-8 files. | 5 s | One plugin, bounded files, immediate healthy shutdown; no permission races. |
+| `MVP-V02-MANUAL-PATHS` | Path identity could create duplicate watches; dot/slash spelling and existing file followed by one valid trigger. | 5 s | One plugin and small directory; no junction/account setup. |
+| `MVP-V01-SHUTDOWN` | Console signal or Job Object cleanup could leave owned processes alive; isolated-console driver, protocol child and descendant. | 15 s | Includes exactly one 5 s forced grace; driver/daemon/child/descendant, peak 4. |
+| `MVP-V08-SAME-USER` | Installed ACL/server identity or first-instance reservation could be wrong; actual pipe inspection and second daemon while the first remains usable. | 8 s | Same-user processes only; first daemon/child, second daemon, client/queue, peak 4. |
+
+The runner's two-minute bound applies to each inventory-selected suite execution.
+The budget also accounts for tagged suite registration/compilation, which the
+Go/Ginkgo command performs before executing cases. Reserve 40 seconds per suite
+for that compilation and its single common product/fixture build and
+setup, five seconds for final process/file cleanup, and ten seconds of scheduling
+contingency. The resulting ledger is explicit:
+
+| Suite execution | Case caps | Common build/setup | Final cleanup | Contingency | Total cap |
+| --- | --- | --- | --- | --- | --- |
+| General hub: seven cases | 63 s | 40 s | 5 s | 10 s | 118 s |
+| General manual plugin: two cases | 10 s | 40 s | 5 s | 10 s | 65 s |
+| Windows hub: two cases | 23 s | 40 s | 5 s | 10 s | 78 s |
+
+During scenarios, peak suite-owned processes are at most six for the general hub
+when its console driver is counted, one for the standalone manual plugin, and
+five for the Windows hub. The Ginkgo runner and its outer Go/Ginkgo command are
+additional infrastructure processes; compiler subprocesses belong to the common
+build interval. Keep input/record/output files bounded, use the existing frame,
+context and captured-output limits, and avoid queue floods or capacity-sized
+fixtures. These costs justify real boundary observations while retaining input
+matrices in fast in-memory unit tests.
+
+Measure common build/setup, per-case elapsed time, process peaks and cleanup in
+implementation evidence. Before design approval, demonstrate the minimal route,
+actual delivery deadline/termination, semantic pipe inspection and isolated
+Ctrl+C/process-tree setup using the case-owned fixtures; retain the measured
+feasibility evidence in the design PR. These demonstrations qualify the chosen
+fixture construction and budget; they do not pass static Pending acceptance
+cases. If an implemented suite cannot meet its cap, investigate the fixture or
+seek a reviewed verification-budget revision; do not shorten product deadlines,
+filter required IDs or introduce an unapproved infrastructure prerequisite.
 
 ```powershell
 go run build/mage.go -d build -w . test
@@ -560,42 +684,16 @@ go run build/mage.go -d build -w . integration cmd/agent-pulse-hub/testdata/mvp-
 go run build/mage.go -d build -w . integration cmd/agent-pulse-hub/testdata/mvp-windows-cases.json <new-windows-report-directory>
 ```
 
-Unit and both integration invocations require separate CI results. A product
-CI job must execute both inventories and retain JSON reports and console logs
-on success and failure. The existing `integrationTooling` qualification proves
-only the runner; it cannot substitute for either inventory. The runner compares
-every required stable ID with its report; Pending, skipped, missing, filtered,
-focused or failed cases prevent completion. Use new report directories outside
-the checkout. Compile and list the tagged design cases separately; a default
-unit run excludes them and proves neither compilation nor registration.
-
-Build commands once per suite, isolate fixture state in temporary directories,
-and serialize scenarios using the single user-specific control pipe. Each
-process wait has an observable condition and a deadline; fixed sleeps must not
-stand in for readiness or completion. Record child/descendant PIDs and terminate
-and await all fixture processes before removing temporary state. Fail cleanup
-checks when a process survives.
-
-The runner's two-minute limit applies to each suite invocation. General hub
-cases reserve at most 30 seconds for one actual delivery timeout, 10 seconds
-each for readiness and watch timeout, one second for idle observation, and the
-remaining budget for ordinary startup/protocol cases and cleanup. Manual-plugin
-cases target at most 30 seconds in total. Windows lifecycle/security cases target
-at most 45 seconds after separately provisioned infrastructure; normal shutdown
-retains the five-second product grace. Build/setup cost and peak process count
-must also be measured and retained. Share built binaries without sharing active
-registrations or event state. Do not shorten product deadlines to make tests fit.
-
-Before design approval, demonstrate the smallest assembled Windows route with
-real daemon/client/manual-plugin binaries and a controlled Codex endpoint:
-register, atomically publish context, observe exactly one correctly targeted
-queue invocation and result, and confirm cleanup. Separately demonstrate Ctrl+C
-and the different-user/remote security setup. Record measured setup, runtime,
-peak processes and cleanup outcomes in the design PR. A compiling Pending suite
-does not prove feasibility. Unproven security setup or a suite budget remains a
-design-readiness blocker; do not silently move it to delivery or skip its case.
+Unit and both integration invocations require separate CI results. Product CI
+executes both inventories and retains JSON reports and console logs on success
+and failure. Existing `integrationTooling` qualification proves only the runner.
+Its report gate compares every required ID and rejects Pending, skipped, missing,
+filtered, focused or failed cases. Use new report directories outside the
+checkout. Compile and list the tagged design cases separately; a default unit
+run proves neither compilation nor registration of these cases.
 
 ### Delivery verification
+
 
 The maintainer owns execution and evidence evaluation for the following checks
 on the merged implementation revision. Prerequisites are a clean Windows build,
@@ -654,8 +752,8 @@ merge under the [AIDD playbook](../aidd/README.md).
 | --- | --- | --- | --- | --- |
 | Codex queue response and current-session identity contract | Incorrect interpretation could misreport acceptance or select the wrong conversation. | Implementer / maintainer | CI mechanics before implementation approval; actual behavior during delivery | Strict fixture recognition is required in CI; D02/D03 establish actual identity and acknowledgement. |
 | CLI changes after the tested version | Delivery may become unavailable or unknown. | Maintainer | Delivery verification | Strict adapter recognition and D03/D10 are required; no fallback or retry. Version differences alone do not block implementation completion. |
-| Windows security and Ctrl+C fixture feasibility | An unavailable account/network/console setup could prevent required service-free verification. | Design author / maintainer | Design approval | Demonstrate setup, denial and cleanup within the scoped budget before readiness. Missing evidence blocks design approval; it is not a delivery reclassification. |
-| General and Windows integration suite cost | Fixed deadlines and process setup may exceed the runner's two-minute bound. | Design author | Design approval | Measure the minimal route and each required setup; demonstrate the suite budget or obtain a separately reviewed tooling change. |
+| Windows security and lifecycle boundaries | Policy installation or console/process containment could differ from the intended contract. | Design author / implementer | Fixture feasibility before design approval; acceptance before implementation approval | Use semantic actual-pipe inspection, pinned dependency review and the isolated Ctrl+C/process-tree fixture; no account/network harness prerequisite. |
+| Integration execution cost | Common build or uncontrolled fixture waiting could consume the two-minute suite bound. | Design author / implementer | Budget feasibility before design approval; complete results before implementation approval | Apply the per-case and common-cost ledger, retain measurements, and use mocked time for ready/watch branches. Required IDs and product deadlines remain fixed. |
 | Memory-only state and once-only delivery | Crash or shutdown can lose accepted events; unknown delivery can already have reached Codex. | Maintainer | Design approval | Accepted MVP tradeoff for human review. |
 
 The product contracts remain fixed. Verification feasibility and budget must be

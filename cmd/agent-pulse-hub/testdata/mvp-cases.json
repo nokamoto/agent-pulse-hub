@@ -3,31 +3,20 @@
     {
       "package": "./cmd/agent-pulse-hub",
       "cases": [
-        "MVP-V01-STARTUP",
         "MVP-V01-INVALID-CONFIG",
         "MVP-V02-REGISTER",
-        "MVP-V02-REGISTER-REJECTION",
-        "MVP-V02-UNCERTAIN-REPEAT",
         "MVP-V03-ROUTE",
         "MVP-V04-INVALID-EVENT",
         "MVP-V04-DELIVERY-OUTCOME",
-        "MVP-V04-PLUGIN-ISOLATION",
         "MVP-V05-RESTART",
-        "MVP-V06-IDLE",
-        "MVP-V07-INDEPENDENT-PLUGIN",
-        "MVP-V07-PROTOCOL-BOUNDARIES",
-        "MVP-V09-CLI",
-        "MVP-V10-DUPLICATE",
-        "MVP-V10-ADMISSION-BOUNDS"
+        "MVP-V10-DUPLICATE"
       ]
     },
     {
       "package": "./cmd/manual-plugin",
       "cases": [
-        "MVP-V03-MANUAL-TRIGGER",
         "MVP-V04-MANUAL-INVALID-CONTENT",
-        "MVP-V02-MANUAL-PATHS",
-        "MVP-V04-MANUAL-CLAIM-FAILURE"
+        "MVP-V02-MANUAL-PATHS"
       ]
     }
   ]

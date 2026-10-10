@@ -219,8 +219,8 @@ if (-not [IO.Path]::IsPathFullyQualified($daemonLog) -or -not (Test-Path -Litera
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
 ```
 
-For AC-006, the maintainer captures the following declared 60-second idle
-interval in terminal T before creating any trigger. Do not trigger another
+For AC-006, the maintainer records a declared idle interval in terminal T before
+creating any trigger. The following example uses 60 seconds. Do not trigger another
 subscription during that interval. The acceptance check covers this daemon
 and the manual plugin, excluding unrelated activity inside Codex. The script
 below counts only the daemon's calls. Before evaluating AC-006, retain the
@@ -242,8 +242,10 @@ request. Log layout and wording remain implementation choices. A different
 profile needs equivalent evidence of daemon identity, the observation interval,
 zero work requests and correlated event/attempt times. Retain the entire stderr
 file, the interval record below and A's later response time. Visual silence
-alone is insufficient; the separate CI case `MVP-V06-IDLE` also instruments its
-controlled queue endpoint. There is no required latency threshold.
+alone is insufficient. CI case `MVP-V03-ROUTE` observes one declared second of
+idle behavior through its controlled queue endpoint and retains the bundled
+plugin's source evidence. That local check does not replace this real-service
+observation. There is no required latency threshold.
 
 ```powershell
 $daemonBeforeIdle = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $hub })
@@ -398,8 +400,8 @@ A reused PID with a different creation time is not the saved process. Retain
 both snapshots and the daemon log. This minimal manual-plugin walkthrough checks
 the recorded live tree only: a snapshot can miss short-lived descendants or
 processes created after capture. If that affects the evaluated run, report the
-shutdown evidence as incomplete. The automated `MVP-V01-SHUTDOWN` containment
-and descendant tests remain required; this snapshot does not replace them.
+shutdown evidence as incomplete. The automated `MVP-V01-SHUTDOWN` case checks
+normal interruption and owned-process cleanup; this snapshot does not replace it.
 
 All registrations and undelivered events are lost on stop, crash, or restart.
 An interrupted in-flight delivery is unknown. Work already accepted by Codex
@@ -411,7 +413,7 @@ files deliberately; a trigger must be absent for a new registration. In terminal
 D, run step 3 again using the same configuration. Repeat step 4 in A and record
 the new subscription ID before publishing a new trigger. The previous ID is no
 longer valid. The manual plugin does not accept IDs from an operator's file;
-rejection of a forged old ID is checked by the V05 protocol fixture, not by
+rejection of a forged old ID is checked by `MVP-V05-RESTART`, not by
 editing `watch.json`.
 
 Delivery is attempted once per admitted event. No outcome causes an automatic
@@ -457,16 +459,26 @@ identifiers out of public records unless appropriate for the test environment.
 
 | Requirements/mvp IDs | Procedure / verification | Coverage boundary |
 | --- | --- | --- |
-| NFR-004; AC-009 | Steps 1-7, exact version and clean build transcript; MVP V09 / D09 | Full real operating walkthrough during delivery; CI CLI checks cover only its service-free parts. |
-| FR-001, FR-004; AC-001 | Steps 2-3 and 7; MVP V01 | Normal lifecycle here; invalid configuration, missing executable and descendant cleanup require process fixtures. |
-| FR-002, FR-005; AC-002 | Step 4 and failure reference; MVP V02 / D02 | Actual skill and top-level identity checks here; negative/race cases also require CI evidence. |
-| FR-003, FR-004, FR-005; AC-003 | Steps 4-6; MVP V03 / D03 | Real A acknowledgement, B isolation, and no new conversation; a simulated recipient cannot complete this criterion. |
-| FR-006; AC-004, AC-005 | Steps 6-7; MVP V04-V05 | Loss/no-retry and recovery instructions; malformed/cross-plugin/old-ID events and uncertain failures require fixtures. |
-| NFR-001; AC-006 | Declared idle interval and trigger in step 5, timing evidence in step 6; MVP V06 / D06 | Real work/response trace plus separate CI zero-work assertion. |
-| NFR-003; AC-008 | Same-user setup, permission-limited acknowledgement and retention; MVP V08 | Operator guidance only; other-user/remote denial checks remain required. |
-| FR-007; AC-010 | Duplicate registration in step 4 and busy run in step 6; MVP V10 / D10 | Real busy outcome plus required CI equivalence/concurrency checks; an idle run does not establish busy behavior. |
+| NFR-004; AC-009 | Steps 1-7, exact version and clean build transcript; D09 | Full real operating walkthrough during delivery. `MVP-V01-INVALID-CONFIG`, `MVP-V02-REGISTER`, `MVP-V03-ROUTE`, and `MVP-V01-SHUTDOWN` cover representative local command paths in CI; input permutations use unit tests. |
+| FR-001, FR-004; AC-001 | Steps 2-3 and 7; `MVP-V01-INVALID-CONFIG`, `MVP-V03-ROUTE`, `MVP-V01-SHUTDOWN` | Startup and normal lifecycle here; CI uses real product processes with controlled external substitutes for startup rejection, readiness and owned-process cleanup. |
+| FR-002, FR-005; AC-002 | Step 4 and failure reference; `MVP-V02-REGISTER`, `MVP-V02-MANUAL-PATHS`; D02 | Actual skill and top-level identity checks here; CI establishes watch acceptance and representative path rejection through public commands or protocol. Unit tests cover input and path permutations. |
+| FR-003, FR-004, FR-005; AC-003 | Steps 4-6; `MVP-V03-ROUTE`; D03 | Real A acknowledgement, B isolation, and no new conversation. CI verifies atomic manual-trigger consumption and exact context routing to a controlled queue endpoint; it cannot establish the real acknowledgement. |
+| FR-006; AC-004, AC-005 | Steps 6-7; `MVP-V04-INVALID-EVENT`, `MVP-V04-DELIVERY-OUTCOME`, `MVP-V05-RESTART`, `MVP-V04-MANUAL-INVALID-CONTENT` | Loss/no-retry and recovery instructions here. CI covers representative event/content rejection, one launched nonzero result, one actual delivery timeout and loss of old subscriptions after restart. Remaining decision and encoding permutations use unit tests. |
+| NFR-001; AC-006 | Declared idle interval and trigger in step 5, timing evidence in step 6; `MVP-V03-ROUTE`; D06 | Real work/response trace and source evidence here; CI combines one-second idle endpoint observation with the bundled plugin's source evidence. |
+| NFR-003; AC-008 | Same-user setup, permission-limited acknowledgement and retention; `MVP-V08-SAME-USER` | CI checks the actual restricted same-user pipe, daemon identity and first-instance protection; retain the security evidence below. |
+| FR-007; AC-010 | Duplicate registration in step 4 and busy run in step 6; `MVP-V10-DUPLICATE`; D10 | Real busy outcome here; CI checks a representative duplicate registration and event attempt count. Unit tests cover equivalence and concurrency decisions; an idle run does not establish busy behavior. |
 
-NFR-002 and AC-007 are covered by the authoritative plugin specification and
-MVP V07, not by this operator walkthrough. All remaining automated and manual
+For AC-008, retain CI evidence that the real pipe has a present, non-null,
+protected DACL granting allow access only to the current user SID, that the
+server process has the same SID, and that a second daemon is rejected before
+starting its plugins. Retain server-configuration unit results and review of
+the pinned `go-winio` remote rejection setting under the
+[governing security design](mvp.md#local-security-verification-boundary). Actual different-user
+and remote-connection experiments are required by neither CI nor this delivery
+walkthrough; this evidence does not claim that such experiments passed.
+
+NFR-002 and AC-007 are covered by the authoritative plugin specification,
+unit conformance checks, and the independent PowerShell plugin smoke in
+`MVP-V02-REGISTER`, not by this operator walkthrough. All remaining automated and manual
 checks are defined in the [MVP verification strategy](mvp.md#verification-strategy).
 Passing this walkthrough alone does not complete every acceptance criterion.

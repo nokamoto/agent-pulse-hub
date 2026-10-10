@@ -4,31 +4,20 @@ package main
 
 import . "github.com/onsi/ginkgo/v2"
 
-// Static Pending preserves design acceptance scope until implementation wires
-// these cases to the public product commands and controlled external processes.
-// These concrete plans do not establish product behavior or harness feasibility.
+// Static Pending defers product wiring; the design fixes these small real-file
+// workflows and assigns other content, path and I/O branches to unit tests.
 var _ = Describe("MVP manual plugin public protocol", func() {
-	It("claims an atomic trigger and emits preserved external context", Label("case:MVP-V03-MANUAL-TRIGGER"), Pending, func() {
-		By("Inputs: real manual-plugin.exe over stdin/stdout; accepted absolute absent trigger_file in a writable local directory; UTF-8 context 'probe\\nquoted \"data\"'.")
-		By("Action: read the plugin's ready frame, write a watch frame and read its matching accepted watch_result, then write a temporary file and atomically rename it to trigger_file; observe JSON-line event, claimed-file removal and shutdown.")
-		By("Expected: exactly one event with the accepted subscription ID and unchanged decoded context; target/claimed file is removed; no Codex identity or executable is used by the plugin.")
+	It("preserves the context bound and rejects representative invalid files", Label("case:MVP-V04-MANUAL-INVALID-CONTENT"), Pending, func() {
+		By("Inputs: real manual-plugin.exe over stdin/stdout, accepted absolute absent trigger_file in a writable local directory, and separate UTF-8 file contents: an exactly 8192-byte valid multibyte context, 8193 bytes, and invalid UTF-8.")
+		By("Action: observe ready and accepted watch_result, atomically publish each file, and collect event frames, bounded stderr and target/claimed file state. Await each consumption observation before publishing the next input; send shutdown and await exit.")
+		By("Expected: exact valid bound emits once with unchanged decoded context and removes the consumed file; oversized/invalid encoding emits no event, reports bounded diagnostics with the claimed path, and never truncates or retries the claimed file. Empty content and claim/read/removal failure branches use mocked filesystem unit tests.")
+		By("Budget: 5 seconds including setup and cleanup after suite-level build, one real plugin and bounded temporary files; no ACL mutation or race-dependent failure injection.")
 	})
 
-	It("rejects invalid trigger content without emitting an event", Label("case:MVP-V04-MANUAL-INVALID-CONTENT"), Pending, func() {
-		By("Inputs: accepted real manual-plugin watch; trigger files with empty content, invalid UTF-8, 8193 UTF-8 bytes, and an 8192-byte valid multibyte-boundary control.")
-		By("Action: atomically create each trigger file and collect stdout/stderr and claimed-path state.")
-		By("Expected: exact valid bound produces unchanged context; empty/invalid/oversized input produces bounded stderr with claimed path and zero event; no truncation, overwrite or retry.")
-	})
-
-	It("normalizes equivalent paths and rejects unsafe trigger locations", Label("case:MVP-V02-MANUAL-PATHS"), Pending, func() {
-		By("Inputs: absent file under real writable parent; separator/dot variants, case variants and parent aliases referring to the same parent identity; existing file, already-watched path, UNC/device/alternate-stream/trailing-dot-or-space path, and parent identity lookup failure.")
-		By("Action: send public protocol watch frames with each path and distinct request/subscription IDs; trigger the accepted location once.")
-		By("Expected: equivalent normalized path cannot obtain a second watch; safe first watch accepts and emits to its original ID; unsupported/existing/unidentifiable paths return accepted:false with nonempty error and never emit.")
-	})
-
-	It("reports failed claim read or removal without delivering", Label("case:MVP-V04-MANUAL-CLAIM-FAILURE"), Pending, func() {
-		By("Inputs: accepted real manual-plugin watch; controlled filesystem conditions causing rename/claim failure, read failure, or removal failure at a recorded claimed path.")
-		By("Action: create the trigger under each condition and observe stdout/stderr/file lifecycle before restoring permissions and shutdown.")
-		By("Expected: failure reports bounded stderr and claimed path where established, zero event for failed read/removal, no overwrite or repeated emission. Failure setup must be deterministic within the suite budget; unavailable permission manipulation is a prerequisite failure.")
+	It("rejects an equivalent watched path and an existing trigger", Label("case:MVP-V02-MANUAL-PATHS"), Pending, func() {
+		By("Inputs: real manual-plugin.exe, an absent absolute file under a writable existing local parent, a slash/dot spelling referring to that same parent/file, and a second already-existing trigger file.")
+		By("Action: accept the first watch, submit distinct request/subscription IDs for its equivalent spelling and the existing file, then atomically publish one recognizable valid context to the accepted location and shut down.")
+		By("Expected: both later watch_result frames have accepted:false and a nonempty error; one event belongs only to the first accepted ID. Parent-identity lookup, junction aliases, ordinal case and unsupported path-form permutations use unit tests.")
+		By("Budget: 5 seconds including setup and cleanup, one real plugin and a small temporary directory; no junction, account, network or permission setup.")
 	})
 })
