@@ -196,13 +196,64 @@ case results in the implementation PR. Real-service final quality checks use
 the separately documented delivery procedure; do not skip them inside the
 required service-free CI suite or claim them as passed.
 
-These are required capabilities for design acceptance testing, not a claim
-that the current Mage test target supplies the tagged integration runner or
-report check. The current `go test ./...` target supplies the default unit
-run; a separate integration command and CI gate are prerequisite tooling. Until
-the needed support is installed and verified, report that prerequisite as
-incomplete; do not claim a design using unavailable dependencies or an
-implementation lacking its completion gate is ready.
+### Acceptance runner and case inventory
+
+The Mage `test` target runs default Go tests and the build tooling's in-memory
+unit tests. It excludes the `integration` tag. To run an approved integration
+scope, use the separate target from the repository root:
+
+```sh
+go run build/mage.go -d build -w . integration cmd/<command>/testdata/cases.json <new-report-directory>
+```
+
+The governing design owns the inventory path and its suite packages and case
+IDs. Include the inventory with the design's verification fixtures and review
+changes to its scope against the approved design. Each suite package is an
+explicit repository-relative directory; product suites remain directly in
+`cmd/<command>/`. The inventory is one JSON object with a nonempty `suites`
+array. Each suite has a unique `package` and nonempty `cases` array. Case IDs
+are unique across the inventory and use letters, digits, dots, underscores,
+and hyphens, starting with a letter or digit. For example:
+
+```json
+{
+  "suites": [
+    {"package": "./cmd/example", "cases": ["EXAMPLE-V01", "EXAMPLE-V02"]}
+  ]
+}
+```
+
+This example defines the format, not a product acceptance scope. Give each
+Ginkgo `It` exactly one matching `Label("case:<ID>")`. Name the suite's Go
+test entry point `TestIntegration...`; the runner uses `-test.run=^TestIntegration`
+so ordinary Go unit tests in the same package are not executed again.
+
+The runner uses the module-pinned Ginkgo CLI, enables `integration`, selects
+the inventory's case labels, and bounds each suite's execution to two minutes.
+Design must demonstrate that its setup and cases fit this budget or obtain a
+reviewed tooling budget change before relying on a longer run. The report
+directory must be new. The runner rejects an existing report directory to
+prevent stale success reports from satisfying a failed invocation. Keep reports outside the
+checkout when checking for a clean Git tree.
+
+After execution, the runner reads `report.json` and requires exactly one suite
+report per inventory package and exactly one passed `It` per required ID.
+It rejects failed invocations, missing or malformed reports, missing cases,
+duplicate cases, Pending, runtime Skip, filter exclusions, failed specs,
+programmatic focus, and dry runs. Missing or empty inventories fail. Future
+cases outside this inventory do not satisfy or disable the current gate.
+Retain the JSON report and console logs as separate integration evidence.
+CI that gates a product scope must invoke this target with that scope's
+approved inventory and upload reports on success and failure.
+
+The separate `integrationTooling` target qualifies the runner using real
+Ginkgo reports for passed, Pending, skipped, missing, and failed fixture cases.
+These fixtures contain no product behavior. CI runs this qualification on
+Linux and Windows and retains its reports independently of the default test
+job. Its success establishes tooling behavior only. It does not establish
+MVP acceptance, Windows product behavior, or delivery quality. An approved
+product inventory and a CI invocation of `integration` are still required for
+implementation completion.
 
 ### Interface mocks
 

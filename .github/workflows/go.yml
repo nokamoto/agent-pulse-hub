@@ -38,8 +38,38 @@ jobs:
             exit 1
           fi
 
-      - name: Run Go tests
+      - name: Run default Go tests and tooling unit tests
         run: go run build/mage.go -d build -w . test
 
       - name: Run Go lint
         run: go run build/mage.go -d build -w . lint
+
+  integration-tooling:
+    name: Integration tooling (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Qualify tagged runner and acceptance report gate
+        env:
+          APH_TOOLING_REPORT_DIR: ${{ runner.temp }}/integration-tooling
+        run: go run build/mage.go -d build -w . integrationTooling
+
+      - name: Upload tooling qualification reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-tooling-${{ matrix.os }}
+          path: ${{ runner.temp }}/integration-tooling
+          if-no-files-found: error
