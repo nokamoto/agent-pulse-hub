@@ -63,7 +63,7 @@ Define how to fulfill the approved requirements and how to verify the result.
 
 | Item | Description |
 | --- | --- |
-| Deliverables | Design documents in `docs/design/` and any separate specification documents governed by them, including related requirements, architecture and responsibilities, interfaces and data, normal and failure scenarios, extensibility and safety considerations, verification strategy, and rationale for important decisions |
+| Deliverables | Design documents and any separate specifications governed by them in `docs/design/`, including architecture and responsibilities, interfaces and data, normal and failure scenarios, extensibility and safety considerations, verification strategy, and rationale for important decisions |
 | PR | A design PR linking to the merged requirements PR and presenting the design changes and significant tradeoffs |
 | Human role | Evaluate significant tradeoffs, including maintainability, compatibility, and operational risks |
 | Agent role | Investigate the existing architecture and constraints, compare relevant alternatives, draft the design, and check requirement coverage and verifiability |
@@ -89,14 +89,13 @@ The governing design in `docs/design/` must record:
   Delegating code details does not delegate creation of a specification document.
 
 A design PR that creates or changes a separate specification includes that
-specification itself and the governing design
-changes needed to establish that relationship. A plan to create the document
-later does not satisfy this requirement. Separate specifications may live under
-`docs/` outside `docs/design/`, for example in `docs/protocol/`. Design PRs may
-change `docs/design/` and these specification documents when their relationship
-is recorded in the governing design; code, tooling, and unrelated documents
-remain outside the design PR. Apply this boundary to deletions and both sides
-of renames, using the base revision for removed paths.
+specification itself and the governing design changes needed to establish that
+relationship. A plan to create the document later does not satisfy this
+requirement. Store design documents and separate specifications under
+`docs/design/`. Design PRs may change files under `docs/design/` when their
+relationship is recorded in the governing design; code, tooling, and unrelated
+documents remain outside the design PR. Apply this boundary to deletions and
+both sides of renames, using the base revision for removed paths.
 
 Each separate specification uses `type: Design`, links to its governing design,
 identifies the authoritative source for its contracts, and records derivation
@@ -229,6 +228,12 @@ and approval rules before claiming implementation completion. This boundary
 does not define the final end-user offering or change approved product scope.
 
 ## Approval and traceability
+
+### Documentation layout
+
+The only permitted immediate subdirectories of `docs/` are `aidd/`, `design/`,
+and `requirements/`. The `docs-layout` guardrail enforces this list. Changing
+the permitted categories requires updating this rule and the guardrail.
 
 Write documentation under `docs/` as an Open Knowledge Format (OKF) v0.2 bundle rooted at `docs/`. Each concept document uses UTF-8 Markdown with YAML frontmatter containing `type`. Its concept ID is its path relative to `docs/` without `.md`; this document's ID is `aidd/README`. Use standard relative Markdown links between documents, with surrounding text explaining the relationship.[^okf]
 
