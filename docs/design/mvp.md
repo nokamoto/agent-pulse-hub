@@ -489,8 +489,8 @@ controlled local executable; its records cannot prove a real conversation reply.
 | --- | --- | --- |
 | V01 / AC-001; FR-001, FR-004 | `MVP-V03-ROUTE` observes real startup/readiness. `MVP-V01-INVALID-CONFIG` rejects representative malformed input and a missing executable before plugin startup. `MVP-V01-SHUTDOWN` observes genuine Ctrl+C and owned process-tree cleanup. Unit tests cover configuration, version-probe and partial-startup branches. | D09 repeats normal startup and shutdown in the actual operating walkthrough. |
 | V02 / AC-002; FR-002, FR-005 | `MVP-V02-REGISTER` gates activation on accepted watch acknowledgement and exercises one rejected watch. `MVP-V10-DUPLICATE` preserves committed identity after response loss and concurrent repeats. `MVP-V02-MANUAL-PATHS` rejects an equivalent watched path and existing file. Unit tests cover missing/conflicting identity, unknown/unavailable daemon/plugin, response classification and watch deadlines. | D02 establishes actual skill discovery, top-level identity and registration. |
-| V03 / AC-003; FR-003, FR-004, FR-005 | `MVP-V03-ROUTE` atomically publishes a real manual-plugin trigger, observes claim/read/remove, preserves recognizable context and invokes queue only for registered A. | D03 requires A's actual acknowledgement, B's silence and no new conversation. |
-| V04 / AC-004; FR-003, FR-006 | `MVP-V04-INVALID-EVENT` recovers one malformed frame, rejects unknown/foreign IDs and keeps B usable after A exits. `MVP-V04-DELIVERY-OUTCOME` observes nonzero and actual timeout outcomes with one attempt and process termination. `MVP-V04-MANUAL-INVALID-CONTENT` observes real invalid-file rejection. Unit tests cover remaining invalid events, failures and outcome permutations. | D03/D09 retain actual queue result and conversation outcome separately. |
+| V03 / AC-003; FR-003, FR-004, FR-005 | `MVP-V03-ROUTE` atomically publishes a real manual-plugin trigger, observes claim/read/remove, preserves recognizable context and invokes queue only for registered conversation A. | D03 requires conversation A's actual acknowledgement, conversation B's silence and no new conversation. |
+| V04 / AC-004; FR-003, FR-006 | `MVP-V04-INVALID-EVENT` recovers one malformed frame, rejects unknown/foreign IDs and keeps plugin instance B usable after plugin instance A exits. `MVP-V04-DELIVERY-OUTCOME` observes nonzero and actual timeout outcomes with one attempt and process termination. `MVP-V04-MANUAL-INVALID-CONTENT` observes real invalid-file rejection. Unit tests cover remaining invalid events, failures and outcome permutations. | D03/D09 retain actual queue result and conversation outcome separately. |
 | V05 / AC-005; FR-006, NFR-004 | `MVP-V05-RESTART` rejects an old ID and requires a fresh registration. Review the instructions for lost registrations/pending events and no retries. | D09 follows shutdown and registration recovery instructions. |
 | V06 / AC-006; NFR-001 | `MVP-V03-ROUTE` declares one second of idle time, records zero work requests, then one event-receipt/delivery-attempt trace. Distinguish version probes and review the evaluated manual-plugin source for independent Codex request capability. | D06 adds actual conversation response time to the receipt/attempt trace; no latency target is introduced. |
 | V07 / AC-007; NFR-002 | `MVP-V02-REGISTER` uses an independent PowerShell plugin speaking only plugin-v1 JSON lines. `MVP-V04-INVALID-EVENT` observes actual framed-stream recovery. Unit tests cover wire/schema/encoding bounds and lifecycle combinations; review the authoritative specification for absence of agent APIs or GitHub schema requirements. | No live service is needed to establish the language-neutral interface. |
@@ -680,17 +680,27 @@ filter required IDs or introduce an unapproved infrastructure prerequisite.
 
 ```powershell
 go run build/mage.go -d build -w . test
+go run build/mage.go -d build -w . integrationAll
+```
+
+For the implementation PR's scoped completion evidence, run both inventories:
+
+```powershell
 go run build/mage.go -d build -w . integration cmd/agent-pulse-hub/testdata/mvp-cases.json <new-general-report-directory>
 go run build/mage.go -d build -w . integration cmd/agent-pulse-hub/testdata/mvp-windows-cases.json <new-windows-report-directory>
 ```
 
-Unit and both integration invocations require separate CI results. Product CI
-executes both inventories and retains JSON reports and console logs on success
-and failure. Existing `integrationTooling` qualification proves only the runner.
-Its report gate compares every required ID and rejects Pending, skipped, missing,
-filtered, focused or failed cases. Use new report directories outside the
-checkout. Compile and list the tagged design cases separately; a default unit
-run proves neither compilation nor registration of these cases.
+Unit and integration require separate CI results. Regular product CI runs all
+tagged command suites through `integrationAll` and retains JSON reports and
+console logs on success and failure under the
+[repository execution conventions](../aidd/go-development.md#acceptance-runner-and-case-inventory).
+This run permits static Pending and does not establish implementation completion.
+The implementation PR records the two scoped inventory runs above; their report
+gate compares every required ID and rejects Pending, skipped, missing, filtered,
+focused or failed cases. Use new report directories outside the checkout.
+Existing `integrationTooling` qualification proves only the runner. Compile and
+list the tagged design cases separately; a default unit run proves neither
+compilation nor registration of these cases.
 
 ### Delivery verification
 

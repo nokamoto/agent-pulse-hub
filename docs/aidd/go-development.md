@@ -194,21 +194,50 @@ Do not substitute runtime `Skip()`. Exercise the command's public
 contracts rather than internal application entry points in these scenarios.
 Fakes must drive or observe actual product behavior when the case is enabled.
 
-The implementation completion check must compare approved case IDs with a
+The implementation PR's completion check must compare approved case IDs with a
 machine-readable execution report and require all cases in scope to pass.
 Neither the standard test exit code nor `--fail-on-pending` alone detects every
 missing or skipped case: runtime Skip and filter exclusions require explicit
-report checking. Scope suites and reports so future-design Pending cases do
-not disable the current completion gate. Record commands, environment, and
-case results in the implementation PR. Real-service final quality checks use
+report checking. The regular CI integration run permits static Pending;
+record the separate scoped completion check's commands, environment, and
+case results in the implementation PR. Future-design Pending outside that
+scope does not prevent this check from passing. Real-service final quality checks use
 the separately documented delivery procedure; do not skip them inside the
 required service-free CI suite or claim them as passed.
 
 ### Acceptance runner and case inventory
 
 The Mage `test` target runs default Go tests and the build tooling's in-memory
-unit tests. It excludes the `integration` tag. To run an approved integration
-scope, use the separate target from the repository root:
+unit tests. It excludes the `integration` tag. For normal local verification,
+run both unit and integration checks from the repository root:
+
+```sh
+go run build/mage.go -d build -w . check
+```
+
+The `check` target runs `test` and `integrationAll`, keeping their output and
+results separate. Run just the integration checks with:
+
+```sh
+go run build/mage.go -d build -w . integrationAll
+```
+
+The `integrationAll` target runs uncached Go tests in every package under
+`cmd/` with the `integration` tag and `-run=^TestIntegration`. New command suites
+and cases are included without an inventory selection or workflow change.
+Static Pending is allowed; failing tests and compilation failures still fail
+the run. Each package has a five-minute execution timeout for the combined
+run; the scoped acceptance runner's two-minute suite budget below is unchanged.
+Run Windows scenarios on Windows; success on another OS cannot verify them.
+CI runs this target in a fixed Windows job, separately from unit tests.
+
+Reports go to a new directory outside the checkout by default. Set
+`APH_INTEGRATION_REPORT_DIR` to choose a new report directory. Retain
+`test-results.json` (Go test JSON events) and `console.log` on success and
+failure. These general reports include Pending and do not themselves establish
+that an implementation scope is complete.
+
+For the implementation PR's separate completion check, run its approved scope:
 
 ```sh
 go run build/mage.go -d build -w . integration cmd/<command>/testdata/cases.json <new-report-directory>
@@ -251,8 +280,9 @@ duplicate cases, Pending, runtime Skip, filter exclusions, failed specs,
 programmatic focus, and dry runs. Missing or empty inventories fail. Future
 cases outside this inventory do not satisfy or disable the current gate.
 Retain the JSON report and console logs as separate integration evidence.
-CI that gates a product scope must invoke this target with that scope's
-approved inventory and upload reports on success and failure.
+Record this scoped target's results in the implementation PR and compare
+them with the approved inventory. Regular CI uses `integrationAll`; it does
+not need an inventory-specific invocation or a new job for each scope.
 
 The separate `integrationTooling` target qualifies the runner using real
 Ginkgo reports for passed, Pending, skipped, missing, and failed fixture cases.
@@ -260,8 +290,8 @@ These fixtures contain no product behavior. CI runs this qualification on
 Linux and Windows and retains its reports independently of the default test
 job. Its success establishes tooling behavior only. It does not establish
 MVP acceptance, Windows product behavior, or delivery quality. An approved
-product inventory and a CI invocation of `integration` are still required for
-implementation completion.
+product inventory, passing product cases in CI, and the implementation PR's
+scoped report comparison are still required for implementation completion.
 
 ### Interface mocks
 
@@ -307,7 +337,7 @@ than duplicated in this document.
 ```sh
 go run build/mage.go -d build -w . generate
 go run build/mage.go -d build -w . format
-go run build/mage.go -d build -w . test
+go run build/mage.go -d build -w . check
 go run build/mage.go -d build -w . lint
 go run build/mage.go -d build -w . guardrails
 ```

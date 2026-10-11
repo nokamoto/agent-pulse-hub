@@ -44,6 +44,32 @@ jobs:
       - name: Run Go lint
         run: go run build/mage.go -d build -w . lint
 
+  product-integration:
+    name: Product integration (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run all product integration suites
+        env:
+          APH_INTEGRATION_REPORT_DIR: ${{ runner.temp }}/product-integration
+        run: go run build/mage.go -d build -w . integrationAll
+
+      - name: Upload product integration reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: product-integration-windows
+          path: ${{ runner.temp }}/product-integration
+          if-no-files-found: error
+
   integration-tooling:
     name: Integration tooling (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

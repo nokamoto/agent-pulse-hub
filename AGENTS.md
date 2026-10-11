@@ -70,15 +70,28 @@ Run the Mage targets from the repository root. Format Go code and tidy modules b
 go run build/mage.go -d build -w . format
 ```
 
-Run the default unit tests with:
+Run unit and all tagged command integration tests locally with:
+
+```sh
+go run build/mage.go -d build -w . check
+```
+
+For separate results, run the unit tests with:
 
 ```sh
 go run build/mage.go -d build -w . test
 ```
 
-Run the approved integration command separately with the `integration` tag
-enabled, following the [acceptance test conventions](docs/aidd/go-development.md#design-acceptance-tests).
-The default test target alone does not establish integration completion.
+Run all command integration tests with:
+
+```sh
+go run build/mage.go -d build -w . integrationAll
+```
+
+New tagged command suites are included automatically in local checks and CI.
+Static Pending is allowed in this run. Verify the implementation PR's approved
+scope separately under the [acceptance test conventions](docs/aidd/go-development.md#design-acceptance-tests);
+a successful general run alone does not establish implementation completion.
 
 Run `vet` and `staticcheck` together with the lint check:
 
