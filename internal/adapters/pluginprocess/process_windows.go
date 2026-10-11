@@ -9,20 +9,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
-	"unsafe"
 
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprotocol"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
 	"github.com/nokamoto/agent-pulse-hub/internal/application/hub"
-	"golang.org/x/sys/windows"
 )
 
 const (
@@ -46,11 +41,12 @@ type Process struct {
 	pending   map[string]*watchPending
 	handlers  hub.PluginHandlers
 
-	cmd        *exec.Cmd
-	stdin      *os.File
-	stdout     *os.File
-	stderr     *os.File
-	job        windows.Handle
+	child      childProcess
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	stderr     io.ReadCloser
+	launcher   processLauncher
+	clock      clock
 	started    bool
 	ready      bool
 	stopping   bool
@@ -79,6 +75,8 @@ func New(config Config, logger *slog.Logger) *Process {
 	}
 	return &Process{
 		config:    config,
+		launcher:  systemLauncher{},
+		clock:     systemClock{},
 		logger:    logger,
 		writeGate: make(chan struct{}, 1),
 		pending:   make(map[string]*watchPending),
@@ -96,78 +94,25 @@ func (p *Process) Start(ctx context.Context, handlers hub.PluginHandlers) error 
 	p.handlers = handlers
 	p.mu.Unlock()
 
-	job, err := createKillOnCloseJob()
+	child, err := p.launcher.Start(p.config)
 	if err != nil {
-		return fmt.Errorf("create plugin job object: %w", err)
+		return err
 	}
-	stdinRead, stdinWrite, err := os.Pipe()
-	if err != nil {
-		windows.CloseHandle(job)
-		return fmt.Errorf("create plugin stdin pipe: %w", err)
-	}
-	stdoutRead, stdoutWrite, err := os.Pipe()
-	if err != nil {
-		closeFiles(stdinRead, stdinWrite)
-		windows.CloseHandle(job)
-		return fmt.Errorf("create plugin stdout pipe: %w", err)
-	}
-	stderrRead, stderrWrite, err := os.Pipe()
-	if err != nil {
-		closeFiles(stdinRead, stdinWrite, stdoutRead, stdoutWrite)
-		windows.CloseHandle(job)
-		return fmt.Errorf("create plugin stderr pipe: %w", err)
-	}
-
-	command := exec.Command(p.config.Executable, p.config.Args...)
-	command.Stdin = stdinRead
-	command.Stdout = stdoutWrite
-	command.Stderr = stderrWrite
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_SUSPENDED}
-	if err := command.Start(); err != nil {
-		closeFiles(stdinRead, stdinWrite, stdoutRead, stdoutWrite, stderrRead, stderrWrite)
-		windows.CloseHandle(job)
-		return fmt.Errorf("start plugin process: %w", err)
-	}
-	_ = stdinRead.Close()
-	_ = stdoutWrite.Close()
-	_ = stderrWrite.Close()
-
-	if err := assignProcessToJob(job, uint32(command.Process.Pid)); err != nil {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		closeFiles(stdinWrite, stdoutRead, stderrRead)
-		windows.CloseHandle(job)
-		return fmt.Errorf("contain plugin process: %w", err)
-	}
-	if err := resumeInitialThread(uint32(command.Process.Pid)); err != nil {
-		_ = windows.TerminateJobObject(job, 1)
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		closeFiles(stdinWrite, stdoutRead, stderrRead)
-		windows.CloseHandle(job)
-		return fmt.Errorf("resume plugin process: %w", err)
-	}
-
+	stdin, stdout, stderr := child.Stdin(), child.Stdout(), child.Stderr()
 	p.mu.Lock()
-	p.cmd = command
-	p.stdin = stdinWrite
-	p.stdout = stdoutRead
-	p.stderr = stderrRead
-	p.job = job
-	p.started = true
+	p.child, p.stdin, p.stdout, p.stderr, p.started = child, stdin, stdout, stderr, true
 	p.mu.Unlock()
-
-	go p.drainStderr(stderrRead)
-	go p.readStdout(stdoutRead)
-	go p.waitProcess(command)
-	readiness := time.NewTimer(readyTimeout)
+	go p.drainStderr(stderr)
+	go p.readStdout(stdout)
+	go p.waitProcess(child)
+	readiness := p.clock.NewTimer(readyTimeout)
 	defer readiness.Stop()
 	select {
 	case <-p.readyCh:
 		return nil
 	case <-p.doneCh:
 		return fmt.Errorf("plugin exited before readiness: %s", p.failureText())
-	case <-readiness.C:
+	case <-readiness.C():
 		p.fail(errors.New("plugin readiness deadline expired"))
 		return errors.New("plugin readiness deadline expired")
 	case <-ctx.Done():
@@ -193,7 +138,7 @@ func (p *Process) Watch(ctx context.Context, request hub.WatchRequest, activate 
 		return &hub.WatchError{Code: "plugin_unavailable", Message: "Plugin is unavailable.", Unavailable: true, Cause: err}
 	}
 	defer p.releaseWrite()
-	deadline := time.Now().Add(watchTimeout)
+	deadline := p.clock.Now().Add(watchTimeout)
 	pending := &watchPending{deadline: deadline, activate: activate, result: make(chan watchOutcome, 1)}
 	p.mu.Lock()
 	if !p.ready || p.failed || p.stopping {
@@ -211,12 +156,12 @@ func (p *Process) Watch(ctx context.Context, request hub.WatchRequest, activate 
 		return p.interruptWatch(request.RequestID, pending, err, "Plugin could not receive the watch request.")
 	}
 
-	timer := time.NewTimer(time.Until(deadline))
+	timer := p.clock.NewTimer(deadline.Sub(p.clock.Now()))
 	defer timer.Stop()
 	select {
 	case result := <-pending.result:
 		return result.err
-	case <-timer.C:
+	case <-timer.C():
 		err := errors.New("plugin watch acknowledgement deadline expired")
 		return p.interruptWatch(request.RequestID, pending, err, "Plugin did not acknowledge the watch in time.")
 	case <-ctx.Done():
@@ -252,7 +197,7 @@ func (p *Process) interruptWatch(requestID string, pending *watchPending, cause 
 }
 
 func (p *Process) Stop(ctx context.Context) error {
-	startedAt := time.Now()
+	startedAt := p.clock.Now()
 	deadline := startedAt.Add(shutdownGrace)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
@@ -280,23 +225,23 @@ func (p *Process) Stop(ctx context.Context) error {
 			}
 		}
 	}
-	remaining := time.Until(deadline)
+	remaining := deadline.Sub(p.clock.Now())
 	if remaining > 0 {
-		timer := time.NewTimer(remaining)
+		timer := p.clock.NewTimer(remaining)
 		select {
 		case <-p.doneCh:
 			timer.Stop()
 			return nil
 		case <-ctx.Done():
 			timer.Stop()
-		case <-timer.C:
+		case <-timer.C():
 		}
 	}
 	p.terminate()
 	select {
 	case <-p.doneCh:
 		return nil
-	case <-time.After(time.Second):
+	case <-p.clock.NewTimer(time.Second).C():
 		return errors.New("plugin process did not exit after termination")
 	}
 }
@@ -312,7 +257,7 @@ func (p *Process) acquireWrite(ctx context.Context, deadline time.Time) error {
 		}
 		return nil
 	}
-	timer := time.NewTimer(time.Until(deadline))
+	timer := p.clock.NewTimer(deadline.Sub(p.clock.Now()))
 	defer timer.Stop()
 	select {
 	case p.writeGate <- struct{}{}:
@@ -321,7 +266,7 @@ func (p *Process) acquireWrite(ctx context.Context, deadline time.Time) error {
 		return ctx.Err()
 	case <-p.doneCh:
 		return errors.New("plugin process has exited")
-	case <-timer.C:
+	case <-timer.C():
 		return errors.New("plugin write deadline expired")
 	}
 }
@@ -351,16 +296,16 @@ func (p *Process) writeUntil(ctx context.Context, frame []byte, deadline time.Ti
 		}
 		result <- nil
 	}()
-	remaining := time.Until(deadline)
+	remaining := deadline.Sub(p.clock.Now())
 	if remaining <= 0 {
 		return errors.New("plugin write deadline expired")
 	}
-	timer := time.NewTimer(remaining)
+	timer := p.clock.NewTimer(remaining)
 	defer timer.Stop()
 	select {
 	case err := <-result:
 		return err
-	case <-timer.C:
+	case <-timer.C():
 		return errors.New("plugin write deadline expired")
 	case <-ctx.Done():
 		return ctx.Err()
@@ -369,7 +314,7 @@ func (p *Process) writeUntil(ctx context.Context, frame []byte, deadline time.Ti
 	}
 }
 
-func (p *Process) readStdout(stdout *os.File) {
+func (p *Process) readStdout(stdout io.Reader) {
 	reader := bufio.NewReaderSize(stdout, 4096)
 	for {
 		line, err := protocol.ReadFrame(reader, protocol.MaxFrameBytes)
@@ -394,7 +339,11 @@ func (p *Process) readStdout(stdout *os.File) {
 func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 	p.mu.Lock()
 	ready := p.ready
+	unavailable := p.failed || p.stopping
 	p.mu.Unlock()
+	if unavailable {
+		return
+	}
 	if frame.Type == "ready" {
 		if ready {
 			p.logger.Warn("plugin_frame_rejected", "plugin", p.config.Name, "reason", "duplicate readiness")
@@ -442,7 +391,7 @@ func (p *Process) handleWatchResult(frame pluginprotocol.Frame) {
 		return
 	}
 	delete(p.pending, frame.RequestID)
-	if time.Now().After(pending.deadline) {
+	if p.clock.Now().After(pending.deadline) {
 		p.mu.Unlock()
 		p.fail(errors.New("plugin watch result arrived after its deadline"))
 		pending.result <- watchOutcome{err: &hub.WatchError{Code: "plugin_unavailable", Message: "Plugin did not acknowledge the watch in time.", Unavailable: true}}
@@ -461,7 +410,7 @@ func (p *Process) handleWatchResult(frame pluginprotocol.Frame) {
 	pending.result <- watchOutcome{accepted: true}
 }
 
-func (p *Process) waitProcess(command *exec.Cmd) {
+func (p *Process) waitProcess(command childProcess) {
 	err := command.Wait()
 	p.mu.Lock()
 	if err != nil && !p.stopping && !p.failed {
@@ -471,20 +420,20 @@ func (p *Process) waitProcess(command *exec.Cmd) {
 	if unexpected && p.failure == nil {
 		p.failure = errors.New("plugin process exited")
 	}
-	job := p.job
-	p.job = 0
-	stdin, stdout, stderr := p.stdin, p.stdout, p.stderr
+	if unexpected {
+		p.failed = true
+	}
+	child := p.child
+	p.child = nil
 	p.stdin, p.stdout, p.stderr = nil, nil, nil
 	closePending := p.pending
 	p.pending = make(map[string]*watchPending)
 	failure := p.failure
 	handler := p.handlers.Unavailable
 	p.mu.Unlock()
-	if job != 0 {
-		_ = windows.TerminateJobObject(job, 1)
-		_ = windows.CloseHandle(job)
+	if child != nil {
+		child.Close()
 	}
-	closeFiles(stdin, stdout, stderr)
 	for _, pending := range closePending {
 		pending.result <- watchOutcome{err: &hub.WatchError{Code: "plugin_unavailable", Message: "Plugin exited before acknowledging the watch.", Unavailable: true, Cause: failure}}
 	}
@@ -498,7 +447,7 @@ func (p *Process) waitProcess(command *exec.Cmd) {
 	}
 }
 
-func (p *Process) drainStderr(stderr *os.File) {
+func (p *Process) drainStderr(stderr io.Reader) {
 	reader := bufio.NewReader(stderr)
 	var line strings.Builder
 	truncated := false
@@ -559,19 +508,16 @@ func (p *Process) fail(cause error) {
 	}
 	p.failed = true
 	p.failure = cause
-	job := p.job
-	process := p.cmd
+	child := p.child
+
 	stdin := p.stdin
 	handler := p.handlers.Unavailable
 	p.mu.Unlock()
 	if stdin != nil {
 		_ = stdin.Close()
 	}
-	if job != 0 {
-		_ = windows.TerminateJobObject(job, 1)
-	}
-	if process != nil && process.Process != nil {
-		_ = process.Process.Kill()
+	if child != nil {
+		child.Terminate()
 	}
 	p.failOnce.Do(func() {
 		if handler != nil {
@@ -582,14 +528,10 @@ func (p *Process) fail(cause error) {
 
 func (p *Process) terminate() {
 	p.mu.Lock()
-	job := p.job
-	process := p.cmd
+	child := p.child
 	p.mu.Unlock()
-	if job != 0 {
-		_ = windows.TerminateJobObject(job, 1)
-	}
-	if process != nil && process.Process != nil {
-		_ = process.Process.Kill()
+	if child != nil {
+		child.Terminate()
 	}
 }
 
@@ -602,7 +544,15 @@ func (p *Process) removePending(requestID string, expected *watchPending) {
 }
 
 func (p *Process) processRunningLocked() bool {
-	return p.started && !p.failed && p.cmd != nil && p.cmd.Process != nil
+	if !p.started {
+		return false
+	}
+	select {
+	case <-p.doneCh:
+		return false
+	default:
+		return true
+	}
 }
 
 func (p *Process) failureText() string {
@@ -612,66 +562,6 @@ func (p *Process) failureText() string {
 		return "unknown process failure"
 	}
 	return safeText(p.failure.Error(), 256)
-}
-
-func createKillOnCloseJob() (windows.Handle, error) {
-	job, err := windows.CreateJobObject(nil, nil)
-	if err != nil {
-		return 0, err
-	}
-	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
-		_ = windows.CloseHandle(job)
-		return 0, err
-	}
-	return job, nil
-}
-
-func assignProcessToJob(job windows.Handle, processID uint32) error {
-	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, processID)
-	if err != nil {
-		return err
-	}
-	defer windows.CloseHandle(process)
-	return windows.AssignProcessToJobObject(job, process)
-}
-
-func resumeInitialThread(processID uint32) error {
-	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
-	if err != nil {
-		return err
-	}
-	defer windows.CloseHandle(snapshot)
-	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
-	err = windows.Thread32First(snapshot, &entry)
-	for err == nil {
-		if entry.OwnerProcessID == processID {
-			thread, openErr := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
-			if openErr != nil {
-				return openErr
-			}
-			defer windows.CloseHandle(thread)
-			previous, resumeErr := windows.ResumeThread(thread)
-			if resumeErr != nil {
-				return resumeErr
-			}
-			if previous == 0 {
-				return errors.New("initial plugin thread was not suspended")
-			}
-			return nil
-		}
-		err = windows.Thread32Next(snapshot, &entry)
-	}
-	return fmt.Errorf("find suspended plugin thread: %w", err)
-}
-
-func closeFiles(files ...*os.File) {
-	for _, file := range files {
-		if file != nil {
-			_ = file.Close()
-		}
-	}
 }
 
 func safeText(value string, max int) string {

@@ -10,8 +10,12 @@ on:
 
 jobs:
   go:
-    name: Go CI
-    runs-on: ubuntu-latest
+    name: Go CI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -43,6 +47,38 @@ jobs:
 
       - name: Run Go lint
         run: go run build/mage.go -d build -w . lint
+
+  mvp-integration:
+    name: MVP integration (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run general MVP acceptance inventory
+        shell: pwsh
+        run: go run build/mage.go -d build -w . integration cmd/agent-pulse-hub/testdata/mvp-cases.json "${{ runner.temp }}/mvp-general"
+
+      - name: Run Windows MVP acceptance inventory
+        if: success() || failure()
+        shell: pwsh
+        run: go run build/mage.go -d build -w . integration cmd/agent-pulse-hub/testdata/mvp-windows-cases.json "${{ runner.temp }}/mvp-windows"
+
+      - name: Upload product acceptance reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mvp-integration-windows
+          path: |
+            ${{ runner.temp }}/mvp-general
+            ${{ runner.temp }}/mvp-windows
+          if-no-files-found: error
 
   integration-tooling:
     name: Integration tooling (${{ matrix.os }})
