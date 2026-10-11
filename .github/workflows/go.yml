@@ -115,6 +115,27 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set up Python for plugin tooling qualification
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned plugin tooling dependencies
+        run: python -m pip install -r build/testdata/plugin-tooling/requirements.txt
+
+      - name: Qualify go-plugin gRPC and non-Go interoperability
+        env:
+          APH_PLUGIN_TOOLING_REPORT_DIR: ${{ runner.temp }}/plugin-tooling
+        run: go run build/mage.go -d build -w . pluginTooling
+
+      - name: Upload plugin tooling qualification reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: plugin-tooling-${{ matrix.os }}
+          path: ${{ runner.temp }}/plugin-tooling
+          if-no-files-found: error
+
       - name: Qualify tagged runner and acceptance report gate
         env:
           APH_TOOLING_REPORT_DIR: ${{ runner.temp }}/integration-tooling

@@ -293,6 +293,56 @@ MVP acceptance, Windows product behavior, or delivery quality. An approved
 product inventory, passing product cases in CI, and the implementation PR's
 scoped report comparison are still required for implementation completion.
 
+### Plugin tooling qualification
+
+The `pluginTooling` target checks the dependencies and local process/RPC
+capabilities needed to design go-plugin integration cases. It launches small Go
+and Python fixtures through `hashicorp/go-plugin`, exercises the standard gRPC
+health service, and checks lifecycle behavior. These are tooling checks, not
+product acceptance cases: they define no application protocol and do not verify
+registration, event routing, Codex delivery, or an implemented MVP.
+
+Go dependencies are pinned in the root `go.mod`. The Python fixture uses Python
+3.12 and the exact package versions in
+`build/testdata/plugin-tooling/requirements.txt`. It uses standard health and
+empty protobuf messages; no protobuf compiler or generated product bindings
+are required. Keep Python packages out of the repository and out of a shared
+Python installation by preparing a virtual environment outside the checkout:
+
+First run `python --version` and confirm it is Python 3.12; otherwise use the
+path to a Python 3.12 executable in place of `python` in the setup command.
+
+```sh
+python -m venv <directory-outside-checkout>
+<venv-python> -m pip install -r build/testdata/plugin-tooling/requirements.txt
+```
+
+Replace `<venv-python>` with the absolute path to that environment's Python
+executable. Set `APH_PLUGIN_PYTHON` to that path in the shell that runs the target;
+the value is a single executable path, not a shell command or argument list.
+If unset, the target uses `python` from `PATH`. Missing Python or packages fail
+qualification rather than skip it. Run from the repository root:
+
+```sh
+go run build/mage.go -d build -w . pluginTooling
+```
+
+The target retains `test-results.json` and `console.log` in a fresh directory
+outside the checkout, printed at startup. `APH_PLUGIN_TOOLING_REPORT_DIR` may
+specify that directory explicitly; an existing directory is rejected. Retain
+these reports separately from unit tests, product integration results, and
+acceptance inventories. A failure requires inspecting the fixture output and
+dependency setup, then rerunning with a new report directory.
+
+The existing integration-tooling CI job installs these pinned Python packages
+and runs `pluginTooling` separately from `integrationTooling`. Both results feed
+the existing Go CI gate; no additional product support matrix is implied.
+Local `check` continues to run unit tests and product integration suites only.
+Run `pluginTooling` as an additional check when changing its dependencies,
+fixtures, target, or CI setup. Passing this qualification supplies prerequisite
+evidence; a dependent design still owns its application interface, concrete
+acceptance cases, feasibility measurements, and verification budget.
+
 ### Interface mocks
 
 Use [Uber GoMock](https://github.com/uber-go/mock) for interface mocks in unit
