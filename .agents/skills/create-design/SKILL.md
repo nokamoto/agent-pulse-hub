@@ -65,9 +65,9 @@ approved requirements will be fulfilled and verified.
    required case needs the applicable upstream approval and merge.
    Resolve each selected case's concrete implementation method and CI
    feasibility. Simplify or replace uncertain verification first; demonstrate
-   the smallest useful setup if uncertainty remains, respecting the separate
-   prerequisite PR boundary below. Listing unproven cases and stopping at a
-   blocker is not completion of selection. If a necessary case remains
+   the smallest useful setup if uncertainty remains, respecting the fixture
+   preparation and separate prerequisite PR boundary below. Listing unproven
+   cases and stopping at a blocker is not completion of selection. If a necessary case remains
    infeasible, report its unresolved decision and coverage impact as a blocker.
    Deliver the selected Ginkgo acceptance cases initially static `Pending`,
    meaning test code completion and product wiring can follow in implementation,
@@ -83,9 +83,16 @@ approved requirements will be fulfilled and verified.
    components and substituted external boundaries, and its setup, runtime,
    resource, and cleanup budget. Record separate unit and integration CI
    commands and environment, and feasibility evidence for the minimal harness.
-   Resolve missing framework,
-   dependency, build, CI, tooling, or shared harness prerequisites in a separate
-   PR before preparing dependent cases; do not introduce them in a design PR.
+   Classify preparation under the playbook's
+   [design fixture boundary](../../../docs/aidd/README.md#design-verification-deliverables).
+   Only mechanical same-version direct/indirect module reclassification for
+   fixture imports and reuse of approved environment pins in existing CI jobs
+   may accompany cases. Review the complete base-to-head diff for every allowance
+   condition, including effects on other job steps. Record case mappings,
+   approved pin sources, unchanged module selection when applicable, and
+   affected-job execution and cost evidence. Resolve other dependency, build,
+   CI, tooling, framework, or shared harness prerequisites in separately
+   approved and merged repository rules PRs before relying on them.
    Compile and register every case with the `integration` tag enabled and
    available dependencies, without
    referencing nonexistent production symbols, and record the commands and
@@ -127,11 +134,12 @@ approved requirements will be fulfilled and verified.
 Keep the complete design PR within the playbook's
 [design and specification scope](../../../docs/aidd/README.md#specification-documents-and-approved-design),
 including the narrow
-[verification artifact exception](../../../docs/aidd/README.md#design-verification-deliverables),
-deletions, and both sides of renames. The exception permits only verification
+[verification artifact and fixture preparation exception](../../../docs/aidd/README.md#design-verification-deliverables),
+deletions, and both sides of renames. The exception permits verification
 `*_integration_test.go` files directly in `cmd/<command>/` and fixtures in
-that command's `testdata/`, with paths governed by the design. It does not permit production
-code or dependency, build, CI, tooling, or shared harness changes. Prepare
-those prerequisites separately. Preserve unrelated working changes. Keep
-blocked PRs in draft. Implementation starts or resumes only after human approval and merge
+that command's `testdata/`, with paths governed by the design, plus minimal
+fixture preparation that satisfies every playbook condition. It does not permit
+production code or other dependency, build, CI, tooling, or shared harness
+changes. Prepare those prerequisites separately. Preserve unrelated working
+changes. Keep blocked PRs in draft. Implementation starts or resumes only after human approval and merge
 of the upstream PRs are verified.

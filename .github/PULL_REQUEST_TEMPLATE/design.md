@@ -1,5 +1,5 @@
 <!-- Apply phase:design explicitly; this template does not set labels. -->
-<!-- Design phase: docs/design/ and the narrow verification artifact exception
+<!-- Design phase: docs/design/ and the narrow verification artifact and fixture preparation exception
      defined by the AIDD design verification deliverables. -->
 
 ## Purpose and scope
@@ -55,9 +55,14 @@
      verification. Distinguish executed feasibility checks from Pending cases;
      listing unproven cases and a blocker report does not complete selection.
      Report any necessary case still lacking a feasible method and its coverage
-     impact as a blocker. Link separately approved and merged
-     dependency, build, CI, tooling, or shared harness prerequisites; they
-     cannot be added here. Identify delivery quality checks using actual Codex
+     impact as a blocker. For minimal fixture preparation allowed by the design
+     verification rule, record concrete case mappings, approved pin sources,
+     unchanged module selection when applicable, and affected-job execution and
+     cost evidence within the unchanged budget. Record review of the complete
+     base-to-head diff against every allowance condition, including effects on
+     other job steps. Link separately approved and merged prerequisites for other
+     dependency, build, CI, tooling, or shared harness changes.
+     Identify delivery quality checks using actual Codex
      or external services, their expected results, and planned delivery evidence.
      Report approved acceptance-phase conflicts and the required upstream PR. -->
 
@@ -76,10 +81,10 @@ and [implementation completion and delivery boundary](https://github.com/nokamot
 
 ## Phase handoff
 
-- [ ] The complete diff stays within docs/design/ and the narrow verification artifact exception, including governed specifications, deletions and both sides of renames.
-- [ ] Concrete integration cases and suites have design-governed paths and the integration build tag directly in `cmd/<command>/`, with fixtures in that command's `testdata/`; the PR contains no production code or dependency, build, CI, tooling, or shared harness changes.
+- [ ] The complete diff stays within docs/design/ and the narrow verification artifact and fixture preparation exception, including governed specifications, deletions and both sides of renames.
+- [ ] Concrete integration cases and suites have design-governed paths and the integration build tag directly in `cmd/<command>/`, with fixtures in that command's `testdata/`; the complete base-to-head diff contains no production code, and any minimal fixture preparation satisfies every playbook allowance condition, including effects on other job steps.
 - [ ] Selected cases justify their cost and have concrete feasible implementation methods; Pending defers test code completion and product wiring, with retained coverage explained for removed candidates.
-- [ ] Service-free CI feasibility and its runtime-cost budget have evidence; required prerequisites are separately approved and merged.
+- [ ] Service-free CI feasibility and its runtime-cost budget have evidence; permitted fixture preparation has the required evidence above, and other infrastructure prerequisites are separately approved and merged.
 - [ ] The phase:design label is applied.
 - [ ] Source requirements have human approval and are merged.
 - [ ] All applicable review checklist items pass with evidence above.
