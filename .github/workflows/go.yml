@@ -34,11 +34,14 @@ jobs:
       - name: Check generated code, formatting, and module files
         shell: bash
         run: |
-          status=$(git status --porcelain --untracked-files=all)
-          if [ -n "$status" ]; then
+          if ! git diff --exit-code HEAD --; then
             echo "Run the Mage generate and format targets, then commit the resulting changes."
-            printf '%s\n' "$status"
-            git diff --exit-code
+            exit 1
+          fi
+          untracked=$(git ls-files --others --exclude-standard)
+          if [ -n "$untracked" ]; then
+            echo "Commit the generated files."
+            printf '%s\n' "$untracked"
             exit 1
           fi
 
