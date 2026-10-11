@@ -113,11 +113,37 @@ verification-only `*_integration_test.go` files directly in `cmd/<command>/`
 and fixtures in that command's `testdata/`, following the
 [Go test conventions](go-development.md#design-acceptance-tests).
 New command directories within the placement policy are permitted when needed
-by the design; new placement categories are not. This exception does not permit production code, shared
-test infrastructure, dependency, build, or CI configuration changes. Prepare
-missing shared infrastructure and dependencies in a separate prerequisite PR
-under the applicable development rules, and verify its approval and merge
-before relying on it in a design PR.
+by the design; new placement categories are not. The design PR may also include
+the following minimal preparation needed to execute its command fixtures:
+
+- Mechanically reconcile direct and indirect requirements in `go.mod` to reflect
+  command fixture imports. The selected module set
+  and versions, Go and toolchain directives, and `replace` and `exclude`
+  directives must remain unchanged. Do not include unrelated `go.sum` changes.
+- Add environment setup steps to an existing CI job using runtime, package, and
+  setup-action pins already approved and merged in the repository. Reuse the
+  existing pinned dependency definitions; do not introduce new repository
+  dependencies or versions. Keep runners, OS matrices, triggers, permissions, job
+  dependencies, test commands and filters, expected results, failure handling,
+  gates, timeouts, and verification budgets unchanged.
+
+Each preparation change must be traceable to a concrete design case and contain
+no product implementation. Review the complete base-to-head diff, including
+its effect on the environment of all steps in an affected job, against these
+conditions. The design PR records the case mapping, the source of the existing
+approved pins, evidence that the module selection is unchanged when applicable,
+and affected-job execution and cost evidence within the existing budget.
+Fixture preparation and feasibility results do not establish product acceptance.
+
+Other dependency, build, CI, tooling, or shared infrastructure changes require
+a separate prerequisite PR under the
+[repository rules workflow](../../.agents/skills/edit-repository-rules/SKILL.md).
+This includes new dependencies or versions, framework or shared runner changes,
+Mage targets or validators, changes to verification judgment or budgets, and
+new OS matrices or infrastructure spanning multiple features. Verify prerequisite
+approval and merge before relying on those changes in a design PR. The narrow
+fixture allowance does not permit production code or change the
+[implementation infrastructure boundary](#ci-and-verification-infrastructure-boundary).
 
 Describe each selected case's implementation method, including how it exercises
 real product behavior through replaceable external boundaries, rather than only
@@ -126,9 +152,9 @@ integration commands, fixtures, isolation and cleanup, expected runtime and
 resource cost, and evidence to retain. Agree a verification budget during
 design review. Resolve uncertain feasibility by first simplifying or replacing
 the candidate verification, then demonstrate the smallest useful test setup
-where uncertainty remains. Keep any prerequisite changes within the separate
-PR boundary above. A compiling Pending case alone proves no behavior or
-execution feasibility. Listing unproven cases and reporting a blocker does not
+where uncertainty remains. Classify fixture preparation and separate
+prerequisites under the boundary above. A compiling Pending case alone proves
+no behavior or execution feasibility. Listing unproven cases and reporting a blocker does not
 complete the design author's selection work. If a necessary case still has no
 feasible method, report the unresolved decision and its impact as a blocker;
 do not approve the design or silently drop its required coverage. Do not
@@ -172,10 +198,12 @@ specification itself and the governing design changes needed to establish that
 relationship. A plan to create the document later does not satisfy this
 requirement. Store design documents and separate specifications under
 `docs/design/`. Design PRs may change files under `docs/design/` when their
-relationship is recorded in the governing design. The only code exception is
-the verification cases and fixtures allowed by
+relationship is recorded in the governing design. The exceptions outside
+`docs/design/` are the verification cases, fixtures, and minimal fixture
+preparation allowed by
 [design verification deliverables](#design-verification-deliverables);
-production code, tooling, and unrelated documents remain outside the design PR.
+production code, other tooling changes, and unrelated documents remain outside
+the design PR.
 Apply this boundary to deletions and
 both sides of renames, using the base revision for removed paths.
 
