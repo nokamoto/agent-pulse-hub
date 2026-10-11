@@ -399,9 +399,10 @@ func (h *Hub) acceptEvent(pluginName string, port PluginPort, subscriptionID, ev
 		Context:        eventContext,
 	}
 	h.pendingEvents++
+	receivedAt := time.Now().UTC()
 	select {
 	case h.queue <- queuedEvent{event: event}:
-		h.logger.Info("event_admitted", "plugin", pluginName, "subscription_id", subscriptionID, "delivery_id", event.ID, "received_at", time.Now().UTC())
+		h.logger.Info("event_admitted", "plugin", pluginName, "subscription_id", subscriptionID, "delivery_id", event.ID, "received_at", receivedAt)
 	default:
 		h.pendingEvents--
 		h.logger.Warn("event_rejected", "plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery queue is full")

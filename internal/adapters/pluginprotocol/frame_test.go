@@ -33,7 +33,7 @@ func TestDecodeRejectsUnknownFrameFieldsAndWrongDirection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := jsonvalue.Parse(ready[:len(ready)-1], 0)
+	parsed, err := jsonvalue.Parse(ready, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestDecodeRejectsInvalidFrameSchemaVariants(t *testing.T) {
 		{name: "event empty context", frame: `{"version":1,"type":"event","subscription_id":"s1","context":""}`, direction: PluginToDaemon},
 		{name: "watch missing arguments", frame: `{"version":1,"type":"watch","request_id":"r1","subscription_id":"s1"}`, direction: DaemonToPlugin},
 		{name: "watch array arguments", frame: `{"version":1,"type":"watch","request_id":"r1","subscription_id":"s1","watch_args":[]}`, direction: DaemonToPlugin},
-		{name: "shutdown extra field", frame: `{"version":1,"type":"shutdown","extra":true}`, direction: DaemonToPlugin},
+		{name: "shutdown is not an application message", frame: `{"version":1,"type":"shutdown"}`, direction: DaemonToPlugin},
 		{name: "watch in plugin direction", frame: `{"version":1,"type":"watch","request_id":"r1","subscription_id":"s1","watch_args":{}}`, direction: PluginToDaemon},
 		{name: "event in daemon direction", frame: `{"version":1,"type":"event","subscription_id":"s1","context":"event"}`, direction: DaemonToPlugin},
 	} {

@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
 
@@ -18,7 +17,6 @@ func TestEveryFrameRequiredFieldRejectsMissingNullAndWrongType(t *testing.T) {
 		{name: "rejected", input: `{"version":1,"type":"watch_result","request_id":"opaque request","accepted":false,"error":"reject"}`, direction: PluginToDaemon},
 		{name: "event", input: `{"version":1,"type":"event","subscription_id":"opaque subscription","context":"line\nnext"}`, direction: PluginToDaemon},
 		{name: "watch", input: `{"version":1,"type":"watch","request_id":"opaque request","subscription_id":"opaque subscription","watch_args":{"n":9007199254740993}}`, direction: DaemonToPlugin},
-		{name: "shutdown", input: `{"version":1,"type":"shutdown"}`, direction: DaemonToPlugin},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			base, err := jsonvalue.Parse([]byte(test.input), 0)
@@ -84,10 +82,10 @@ func TestWatchFrameExactWireBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, size := range []int{protocol.MaxFrameBytes, protocol.MaxFrameBytes + 1} {
+	for _, size := range []int{MaxPayloadBytes, MaxPayloadBytes + 1} {
 		base.WatchArgs = jsonvalue.NewObject(map[string]*jsonvalue.Value{"data": jsonvalue.NewString(strings.Repeat("x", size-len(frame)))})
 		got, err := Encode(base)
-		if size == protocol.MaxFrameBytes {
+		if size == MaxPayloadBytes {
 			if err != nil || len(got) != size {
 				t.Fatalf("exact bound len %d err %v", len(got), err)
 			}

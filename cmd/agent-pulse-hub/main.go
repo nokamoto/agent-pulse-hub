@@ -1,5 +1,3 @@
-//go:build windows
-
 package main
 
 import (
@@ -18,7 +16,7 @@ import (
 
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/codex"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/config"
-	"github.com/nokamoto/agent-pulse-hub/internal/adapters/controlpipe"
+	"github.com/nokamoto/agent-pulse-hub/internal/adapters/control"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprocess"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
 	"github.com/nokamoto/agent-pulse-hub/internal/application/hub"
@@ -28,24 +26,29 @@ import (
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
-//go:generate go run go.uber.org/mock/mockgen -source=main_windows.go -destination=command_mock_windows_test.go -package=main
 type commandOperations interface {
-	Daemon(string, io.Writer) error
-	LookupEnv(string) (string, bool)
-	WatchArguments(string) (*jsonvalue.Value, error)
-	Register(context.Context, string, string, *jsonvalue.Value) (controlpipe.RegistrationResponse, []byte, error)
+	Daemon(configPath, address string, stderr io.Writer) error
+	WatchArguments(path string) (*jsonvalue.Value, error)
+	Register(context.Context, string, string, string, *jsonvalue.Value) (control.RegistrationResponse, []byte, error)
+	Stop(context.Context, string) error
 }
 
 type localOperations struct{}
 
-func (localOperations) Daemon(path string, stderr io.Writer) error { return runDaemon(path, stderr) }
-func (localOperations) LookupEnv(key string) (string, bool)        { return os.LookupEnv(key) }
+func (localOperations) Daemon(path, address string, stderr io.Writer) error {
+	return runDaemon(path, address, stderr)
+}
+
 func (localOperations) WatchArguments(path string) (*jsonvalue.Value, error) {
 	return loadWatchArguments(path)
 }
 
-func (localOperations) Register(ctx context.Context, plugin, session string, args *jsonvalue.Value) (controlpipe.RegistrationResponse, []byte, error) {
-	return controlpipe.Register(ctx, plugin, session, args)
+func (localOperations) Register(ctx context.Context, address, pluginName, sessionID string, arguments *jsonvalue.Value) (control.RegistrationResponse, []byte, error) {
+	return control.Register(ctx, address, pluginName, sessionID, arguments)
+}
+
+func (localOperations) Stop(ctx context.Context, address string) error {
+	return control.Stop(ctx, address)
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -54,109 +57,131 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func runWith(args []string, stdout, stderr io.Writer, operations commandOperations) int {
 	if len(args) == 0 {
-		return report(stderr, "usage: agent-pulse-hub <daemon|register> ...")
+		return report(stderr, "usage: agent-pulse-hub <daemon|register|stop> ...")
 	}
 	switch args[0] {
 	case "daemon":
-		flags, err := parseFlags(args[1:], "--config")
+		flags, err := parseFlags(args[1:], []string{"--config"}, []string{"--address"})
 		if err != nil {
 			return report(stderr, "daemon: "+err.Error())
 		}
-		if err := operations.Daemon(flags["--config"], stderr); err != nil {
+		if err := operations.Daemon(flags["--config"], addressOrDefault(flags["--address"]), stderr); err != nil {
 			return report(stderr, "daemon: "+err.Error())
 		}
 		return 0
 	case "register":
-		flags, err := parseFlags(args[1:], "--plugin", "--session-id", "--watch-args-file")
+		flags, err := parseFlags(args[1:], []string{"--plugin", "--session-id", "--watch-args-file"}, []string{"--address"})
 		if err != nil {
 			return report(stderr, "register: "+err.Error())
-		}
-		threadID, err := sessionIDFromEnvironment(operations.LookupEnv)
-		if err != nil {
-			return report(stderr, "register: "+err.Error())
-		}
-		if !strings.EqualFold(flags["--session-id"], threadID) {
-			return report(stderr, "register: --session-id must match the current Codex conversation.")
 		}
 		if flags["--plugin"] == "" {
 			return report(stderr, "register: --plugin must be nonempty.")
+		}
+		if !domain.IsUUID(flags["--session-id"]) {
+			return report(stderr, "register: --session-id must be a UUID.")
 		}
 		watchArgs, err := operations.WatchArguments(flags["--watch-args-file"])
 		if err != nil {
 			return report(stderr, "register: "+err.Error())
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), controlDeadline)
 		defer cancel()
-		response, wire, err := operations.Register(ctx, flags["--plugin"], threadID, watchArgs)
+		_, wire, err := operations.Register(ctx, addressOrDefault(flags["--address"]), flags["--plugin"], flags["--session-id"], watchArgs)
 		if err != nil {
-			var daemonError *controlpipe.DaemonError
+			var daemonError *control.DaemonError
 			if errors.As(err, &daemonError) {
 				if writeErr := writeAll(stdout, daemonError.Wire); writeErr != nil {
 					return report(stderr, "register: could not write the daemon response to stdout.")
 				}
 				return 1
 			}
-			var uncertain *controlpipe.UncertainError
-			if errors.As(err, &uncertain) {
-				return report(stderr, uncertain.Error())
-			}
-			return report(stderr, err.Error())
-		}
-		if !response.Success {
-			return report(stderr, "register: daemon returned an invalid result.")
+			return report(stderr, "register: "+err.Error())
 		}
 		if err := writeAll(stdout, wire); err != nil {
 			return report(stderr, "register: registration succeeded but its response could not be written to stdout.")
 		}
 		return 0
+	case "stop":
+		flags, err := parseFlags(args[1:], nil, []string{"--address"})
+		if err != nil {
+			return report(stderr, "stop: "+err.Error())
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), controlDeadline)
+		defer cancel()
+		if err := operations.Stop(ctx, addressOrDefault(flags["--address"])); err != nil {
+			return report(stderr, "stop: "+err.Error())
+		}
+		if err := writeAll(stdout, []byte("{\"ok\":true}\n")); err != nil {
+			return report(stderr, "stop succeeded but its response could not be written to stdout.")
+		}
+		return 0
 	default:
-		return report(stderr, "usage: agent-pulse-hub <daemon|register> ...")
+		return report(stderr, "usage: agent-pulse-hub <daemon|register|stop> ...")
 	}
 }
 
-func runDaemon(configPath string, stderr io.Writer) error {
+const controlDeadline = 15 * time.Second
+
+func addressOrDefault(address string) string {
+	if address == "" {
+		return control.DefaultAddress
+	}
+	return address
+}
+
+func runDaemon(configPath, address string, stderr io.Writer) error {
 	settings, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}
 	logger := daemonLogger(stderr)
-	probeCtx, probeCancel := context.WithTimeout(context.Background(), 6*time.Second)
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	version, err := codex.ReadVersion(probeCtx, settings.CodexExecutable)
 	probeCancel()
 	if err != nil {
 		return err
 	}
 	logger.Info("codex_cli_version", "version", version)
+
 	service := hub.New(codex.New(settings.CodexExecutable), logger)
+	server, err := control.NewServer(address, service, logger)
+	if err != nil {
+		service.Shutdown()
+		return err
+	}
+	defer server.Close()
+
 	for _, configured := range settings.Plugins {
 		process := pluginprocess.New(pluginprocess.Config{
 			Name: configured.Name, Executable: configured.Executable, Args: configured.Args,
 		}, logger)
 		if err := service.AddPlugin(configured.Name, process); err != nil {
 			service.Shutdown()
+			service.StopPlugins(context.Background())
 			return err
 		}
 	}
 
-	server, err := controlpipe.NewServer(service, logger)
-	if err != nil {
-		service.Shutdown()
-		return err
-	}
 	ctx, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopSignal()
-	service.StartPlugins(ctx)
-	logger.Info("registration_available", "available", true)
-	serveErr := server.Serve(ctx)
-	_ = server.Close()
-	service.Shutdown()
-	stopCtx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	service.StopPlugins(stopCtx)
+	serveErr := runDaemonLifecycle(ctx, service.StartPlugins, func(ctx context.Context) error {
+		logger.Info("registration_available", "available", true)
+		return server.Serve(ctx)
+	}, func() {
+		service.Shutdown()
+		service.StopPlugins(context.Background())
+	})
 	if serveErr != nil {
 		return serveErr
 	}
 	return nil
+}
+
+func runDaemonLifecycle(ctx context.Context, start func(context.Context), serve func(context.Context) error, shutdown func()) error {
+	start(ctx)
+	serveErr := serve(ctx)
+	shutdown()
+	return serveErr
 }
 
 func daemonLogger(stderr io.Writer) *slog.Logger {
@@ -171,10 +196,13 @@ func daemonLogger(stderr io.Writer) *slog.Logger {
 	}))
 }
 
-func parseFlags(args []string, names ...string) (map[string]string, error) {
-	allowed := make(map[string]struct{}, len(names))
-	values := make(map[string]string, len(names))
-	for _, name := range names {
+func parseFlags(args, required, optional []string) (map[string]string, error) {
+	allowed := make(map[string]struct{}, len(required)+len(optional))
+	values := make(map[string]string, len(required)+len(optional))
+	for _, name := range required {
+		allowed[name] = struct{}{}
+	}
+	for _, name := range optional {
 		allowed[name] = struct{}{}
 	}
 	for index := 0; index < len(args); {
@@ -192,7 +220,7 @@ func parseFlags(args []string, names ...string) (map[string]string, error) {
 		values[name] = args[index]
 		index++
 	}
-	for _, name := range names {
+	for _, name := range required {
 		if _, ok := values[name]; !ok {
 			return nil, fmt.Errorf("required flag %s is missing", name)
 		}
@@ -200,44 +228,18 @@ func parseFlags(args []string, names ...string) (map[string]string, error) {
 	return values, nil
 }
 
-func sessionIDFromEnvironment(lookup func(string) (string, bool)) (string, error) {
-	threadID, threadOK := lookup("CODEX_THREAD_ID")
-	sessionID, sessionOK := lookup("CODEX_SESSION_ID")
-	if !threadOK || !sessionOK || !domain.IsUUID(threadID) || !domain.IsUUID(sessionID) || !strings.EqualFold(threadID, sessionID) {
-		return "", errors.New("CODEX_THREAD_ID and CODEX_SESSION_ID must both be matching UUIDs")
-	}
-	return threadID, nil
-}
-
 func loadWatchArguments(path string) (*jsonvalue.Value, error) {
-	return readWatchArguments(path, localWatchFiles{})
-}
-
-type watchFiles interface {
-	Stat(string) (os.FileInfo, error)
-	Open(string) (io.ReadCloser, error)
-}
-
-type localWatchFiles struct{}
-
-func (localWatchFiles) Stat(path string) (os.FileInfo, error)   { return os.Stat(path) }
-func (localWatchFiles) Open(path string) (io.ReadCloser, error) { return os.Open(path) }
-
-func readWatchArguments(path string, files watchFiles) (*jsonvalue.Value, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("watch arguments path must be absolute")
 	}
-	info, err := files.Stat(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("open watch arguments file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("watch arguments path must name a regular file")
 	}
-	if info.Size() >= protocol.MaxFrameBytes {
-		return nil, protocol.ErrFrameTooLarge
-	}
-	file, err := files.Open(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open watch arguments file: %w", err)
 	}

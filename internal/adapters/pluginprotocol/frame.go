@@ -1,10 +1,8 @@
 package pluginprotocol
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"unicode/utf8"
 
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
@@ -107,10 +105,6 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 			frame.RequestID = requestID
 			frame.SubscriptionID = subscriptionID
 			frame.WatchArgs = watchArgs
-		case "shutdown":
-			if err := protocol.ValidateFields(value, []string{"version", "type"}, "version", "type"); err != nil {
-				return Frame{}, err
-			}
 		default:
 			return Frame{}, fmt.Errorf("invalid daemon-to-plugin frame type %q", typeName)
 		}
@@ -126,7 +120,7 @@ func Encode(frame Frame) ([]byte, error) {
 		"type":    jsonvalue.NewString(frame.Type),
 	}
 	switch frame.Type {
-	case "ready", "shutdown":
+	case "ready":
 	case "watch":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
@@ -149,7 +143,11 @@ func Encode(frame Frame) ([]byte, error) {
 	if _, err := Decode(value, directionFor(frame.Type)); err != nil {
 		return nil, err
 	}
-	return protocol.EncodeFrame(value)
+	payload := value.Marshal()
+	if err := validatePayloadSize(payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
 }
 
 func directionFor(typeName string) Direction {
@@ -161,32 +159,15 @@ func directionFor(typeName string) Direction {
 	}
 }
 
-func Read(reader *bufio.Reader) (Frame, error) {
-	line, err := protocol.ReadFrame(reader, protocol.MaxFrameBytes)
+// ParsePayload validates one complete JSON payload received through Session.
+// Callers may discard a malformed bounded payload and receive the next message.
+func ParsePayload(payload []byte, direction Direction) (Frame, error) {
+	if err := validatePayloadSize(payload); err != nil {
+		return Frame{}, err
+	}
+	value, err := jsonvalue.Parse(payload, MaxPayloadBytes)
 	if err != nil {
 		return Frame{}, err
 	}
-	value, err := protocol.ParseFrame(line)
-	if err != nil {
-		return Frame{}, err
-	}
-	return Decode(value, PluginToDaemon)
-}
-
-func Write(writer io.Writer, frame Frame) error {
-	bytes, err := Encode(frame)
-	if err != nil {
-		return err
-	}
-	for len(bytes) > 0 {
-		written, err := writer.Write(bytes)
-		if err != nil {
-			return err
-		}
-		if written == 0 {
-			return io.ErrShortWrite
-		}
-		bytes = bytes[written:]
-	}
-	return nil
+	return Decode(value, direction)
 }

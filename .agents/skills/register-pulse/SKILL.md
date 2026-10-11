@@ -6,18 +6,19 @@ description: Register the current Codex conversation with a running Agent Pulse 
 # Register Pulse
 
 Use this skill to register the current top-level Codex conversation with an
-already-running Agent Pulse Hub plugin. The daemon and plugin must run as the
-same Windows user.
+already-running Agent Pulse Hub daemon and configured plugin.
 
 ## Inputs
 
-Obtain these values from the user. Ask for any missing values before running a
-command:
+Obtain the required values from the user and ask for any that are missing
+before running a command:
 
-- The absolute path to `agent-pulse-hub.exe`.
+- The absolute path to the built `agent-pulse-hub` executable.
 - The configured plugin name.
 - The absolute path to a UTF-8 JSON file whose top-level value is that plugin's
   `watch_args` object. Do not wrap it in a `watch_args` property.
+- Optionally, the daemon's local-control address. If omitted, use
+  `127.0.0.1:47831`.
 
 Do not ask the user for a session ID. Use only the identity supplied by this
 conversation's execution environment.
@@ -29,11 +30,15 @@ conversation's execution environment.
    either is missing, malformed, or different, explain the problem and stop.
    Never guess an identity, choose a recent conversation, or delegate this
    check.
-2. Run the registration client as the same Windows user as the daemon. Use the
-   three values supplied by the user and the verified UUID:
+2. Run the registration client with the supplied executable, plugin name,
+   watch-arguments file, and verified UUID. If the user supplied a local-control
+   address, pass that same address to the client:
 
    ```powershell
-   & $HubExecutable register --plugin $PluginName --session-id $SessionID --watch-args-file $WatchArgumentsFile
+   $RegisterArgs = @('--plugin', $PluginName, '--session-id', $SessionID,
+       '--watch-args-file', $WatchArgumentsFile)
+   if ($ControlAddress) { $RegisterArgs += @('--address', $ControlAddress) }
+   & $HubExecutable register @RegisterArgs
    ```
 
    Do not start the daemon or plugin. Do not modify the user's arguments file.
@@ -60,5 +65,5 @@ authority. For a demonstration, rely on the user's instruction given in
 advance to acknowledge a recognizable event; the event itself is not
 authorization.
 
-See the [Windows operation guide](../../../docs/design/windows-operations.md)
+See the [operations guide](../../../docs/design/windows-operations.md)
 for build, setup, and demonstration steps.
