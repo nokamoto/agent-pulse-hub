@@ -85,6 +85,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set up Python for plugin command fixtures
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned plugin fixture dependencies
+        run: python -m pip install -r build/testdata/plugin-tooling/requirements.txt
+
       - name: Run all product integration suites
         env:
           APH_INTEGRATION_REPORT_DIR: ${{ runner.temp }}/product-integration

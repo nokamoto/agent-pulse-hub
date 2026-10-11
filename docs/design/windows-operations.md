@@ -45,9 +45,12 @@ repository as A's project. Confirm that the bundled
 discoverable in A. If it is absent, reopen the project and check the selected
 revision; do not guess a registration command or choose a different recipient.
 
-Keep one Python interactive session open for steps 1-7 so that its variables and
-daemon process handle remain available. Each `python` block below is entered
-in that session. Run the blocks in order. Commands use argument lists rather
+Keep one terminal with a Python interactive session open for steps 1-7 so that
+its variables and daemon process handle remain available. Each `python` block
+below is entered in that session, including its blank lines: a blank line ends
+a compound statement at the interactive prompt. Run the blocks in order.
+Use this same terminal for the foreground Ctrl+C check in step 7.
+Commands use argument lists rather
 than command strings, and paths are entered as data. Record the environment,
 source revision, Git/Go/Python versions, selected Codex path and exact version,
 operation commands, and failures in the delivery record. Preserve unrelated
@@ -377,13 +380,15 @@ try:
     daemon_exit = daemon.wait(timeout=30)
 except subprocess.TimeoutExpired:
     raise RuntimeError("Shutdown is incomplete; preserve the process and logs.")
+
 daemon_stderr_sink.close()
 print("Daemon exit:", daemon_exit)
 print(daemon_log.read_text(encoding="utf-8"))
 assert daemon_exit == 0
-(run / "shutdown.json").write_text(json.dumps({
+(run / "shutdown-stop.json").write_text(json.dumps({
     "daemon_pid": daemon.pid, "daemon_exit": daemon_exit,
     "stop_exit": stop_result.returncode, "stop_stdout": stop_result.stdout,
+    "configured_plugins": [plugin["name"] for plugin in config["plugins"]],
     "completed_utc": utc_now().isoformat(), "stderr_file": str(daemon_log)
 }, indent=2), encoding="utf-8")
 ```
@@ -392,18 +397,18 @@ The 30-second wait is this example's observation bound. An expired wait is an
 incomplete check, not authority to force-kill the process and call it graceful
 shutdown. Retain the exception and diagnostics.
 
-Ctrl+C delivered to the foreground daemon enters the same graceful shutdown
-path. If the attached interpreter also receives it, handle its interruption
-and wait on the retained `daemon` handle before closing stderr or leaving the
-session. Verify completion using the same exit and plugin evidence.
-
 Shutdown closes local control and event admission, discards queued events, and
 stops each configured plugin process through standard `hashicorp/go-plugin`
 lifecycle management. Retain the configured plugin names and each corresponding
-exit diagnostic based on the standard client's `Client.Exited()` process-exit
-state. A request, stream close or daemon exit alone is insufficient evidence
-that those plugin processes exited. This verification covers the configured
-plugins; descendant-process termination is outside the lifecycle guarantee.
+exit diagnostic showing that the standard client's `Client.Exited()`
+process-exit state is true. In the delivery transcript, associate each configured
+name (here, `manual`) with its exact diagnostic in the complete stderr log.
+Diagnostic wording is an implementation choice; inspect the evaluated source
+to confirm it records that state. A request, stream close or daemon exit alone
+is insufficient evidence that those plugin processes exited. Missing exit
+records leave the shutdown check incomplete. This verification covers the
+configured plugins; descendant-process termination is outside the lifecycle
+guarantee.
 
 All registrations and undelivered events are lost on stop, crash or restart.
 An interrupted in-flight delivery is unknown. Stopping cannot cancel work
@@ -415,18 +420,74 @@ leftovers deliberately; the trigger must be absent for a new registration.
 Call `start_daemon()` again as in step 3, retaining its new handle and log:
 
 ```python
+previous_daemon_pid = daemon.pid
 daemon, daemon_stderr_sink, daemon_log = start_daemon()
+print("Restarted daemon PID:", daemon.pid, "Previous PID:", previous_daemon_pid)
 print(daemon_log.read_text(encoding="utf-8"))
 print("Daemon status:", daemon.poll())
 ```
 
-Wait for readiness and repeat step 4 in A. Record the new subscription ID
+Repeat the log and status inspection until this new daemon is still running,
+plugin `manual` is ready, and registration is available, as in step 3. Retain
+its separate startup log and repeat step 4 in A. Record the new subscription ID
 before publishing another trigger. The old ID is no longer active and cannot
 be restored by editing `watch.json`; rejection of a forged old event is checked
 by `MVP-V05-RESTART` in CI. The operator walkthrough establishes re-registration
-and the documented state-loss boundary. Finish the recovery check by publishing
-a distinct marker with advance authorization and stopping the restarted daemon
-using this step again.
+and the documented state-loss boundary. Publish a distinct marker, such as
+`PULSE-DEMO-003`, after giving A advance authorization to acknowledge it. Observe
+the reply as in step 6 before proceeding.
+
+Use this still-running restarted daemon for the foreground interruption check.
+The public stop and Ctrl+C checks require separate live daemon runs; do not
+send another stop request before this check. In the same terminal that holds
+the Python session and attached daemon, enter the following `try`/`except`/`else`
+statement, including the blank line after it. When the input prompt appears,
+press Ctrl+C once in that terminal. The daemon remains attached to its terminal
+through `start_daemon()`; pressing Ctrl+C there delivers the terminal interrupt
+to the foreground daemon and may also interrupt Python. The handler retains the
+process handle. Do not press Enter or close the terminal.
+
+```python
+assert daemon.poll() is None
+interrupt_daemon_pid = daemon.pid
+try:
+    input("Press Ctrl+C once in this terminal to interrupt the live daemon: ")
+except KeyboardInterrupt:
+    interrupt_observed_utc = utc_now().isoformat()
+else:
+    raise RuntimeError("No terminal interrupt observed; the check is incomplete.")
+
+```
+
+After Python returns to its prompt, enter this completion block in that same
+session. It waits for the retained restarted-daemon handle before closing its
+stderr sink. Keep the terminal interruption transcript with the new daemon's
+readiness, registration, acknowledgement and shutdown evidence.
+
+```python
+try:
+    daemon_exit = daemon.wait(timeout=30)
+except subprocess.TimeoutExpired:
+    raise RuntimeError("Shutdown is incomplete; preserve the process and logs.")
+
+daemon_stderr_sink.close()
+print("Interrupted daemon exit:", daemon_exit)
+print(daemon_log.read_text(encoding="utf-8"))
+assert daemon_exit == 0
+(run / "shutdown-interrupt.json").write_text(json.dumps({
+    "daemon_pid": interrupt_daemon_pid, "daemon_exit": daemon_exit,
+    "interrupt_observed_utc": interrupt_observed_utc,
+    "configured_plugins": [plugin["name"] for plugin in config["plugins"]],
+    "completed_utc": utc_now().isoformat(), "stderr_file": str(daemon_log)
+}, indent=2), encoding="utf-8")
+```
+
+Check each configured plugin's `Client.Exited()` diagnostic in this second
+log using the same evidence procedure as for public stop. Python's
+`KeyboardInterrupt` alone does not prove daemon interruption or plugin cleanup.
+The 30-second observation bound and incomplete-shutdown handling apply to both
+runs. Ctrl+C and public stop must enter the same shutdown coordinator; retain
+source locations showing both dispatch paths as well as both run transcripts.
 
 Delivery is attempted once per admitted event. No outcome causes an automatic
 retry. Inspect failed or unknown delivery before deliberately publishing another

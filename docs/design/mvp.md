@@ -260,7 +260,7 @@ can lose consumed events. No plugin path polls or invokes Codex.
 ## Requirement coverage
 
 All IDs below belong to `requirements/mvp`. V01–V10 are coverage groups; `MVP-*`
-IDs identify integration cases. V07 covers NFR-002/AC-007 interoperability: `MVP-V02-REGISTER`, `MVP-V04-INVALID-EVENT`, and the plugin unit conformance and structural inspection below. V06 is idle behavior and V09 the operating walkthrough; their evidence is V03/D06 and D09 respectively. D02–D10 are separate delivery checks.
+IDs identify integration cases. V07 covers NFR-002/AC-007 interoperability: `MVP-V02-REGISTER`, `MVP-V04-INVALID-EVENT`, and the plugin unit conformance and structural inspection below. V06 is idle behavior and V09 the operating walkthrough; their evidence is V03/D06 and D09 respectively. D02, D03, D06, D09 and D10 are separate delivery checks.
 
 | Requirement | Acceptance | Design and verification |
 | --- | --- | --- |
@@ -290,12 +290,19 @@ requirements, not silently dropped to make implementation pass.
 
 Replace old acceptance bodies and obsolete case-owned fixtures with static
 Pending for the revised contract. Pending never means passed behavior. Governed
-paths are `cmd/agent-pulse-hub/{mvp,suite,plugin_feasibility}_integration_test.go`,
+paths are `cmd/agent-pulse-hub/{mvp,suite,plugin_feasibility,budget_feasibility}_integration_test.go`,
 `cmd/manual-plugin/{mvp,suite}_integration_test.go` and hub `testdata/` fixtures.
 Retire obsolete `harness_integration_test.go` and its case-owned console/script
 fixtures, not the shared Mage runner. Consolidate all eleven cases into
-`cmd/agent-pulse-hub/testdata/mvp-cases.json`, retiring the additional old inventory.
-No dependency, build, CI or shared-runner change belongs in this design.
+`cmd/agent-pulse-hub/testdata/mvp-cases.json`, retiring
+`cmd/agent-pulse-hub/testdata/mvp-windows-cases.json`.
+The [design fixture preparation allowance](../aidd/README.md#design-verification-deliverables)
+permits only the same-version protobuf direct-dependency classification needed
+by the Session fixture and reuse of the approved Python setup and package pins
+in the existing product integration job. No product code, new dependency
+version, test-command/filter, runner, gate, timeout or shared-harness change is
+needed. The design PR records the case mapping, unchanged module selection,
+effects on other job steps and measured job cost.
 
 Implementation builds hub/manual once per suite. Use the compiled suite test
 binary as a controlled Codex child: record arguments/time, return exact success
@@ -306,8 +313,10 @@ injection API is added.
 
 ### Selected command workflows
 
-Each Pending case refers to this concrete contract. A/B are distinct fixed UUIDs,
-only A registered unless stated. Use unique temporary directories and a selected
+Each Pending case refers to this concrete contract. Conversations A and B have
+distinct fixed UUIDs; only A is registered unless stated. Plugin instances P and
+Q are separate configured sources, not conversation identities. Use unique
+temporary directories and a selected
 free loopback port. Release the selection listener before daemon bind; only an
 observed setup bind collision permits reselection, before any registration, at
 most three times. All other errors fail the case.
@@ -317,7 +326,7 @@ most three times. All other errors fail the case.
 | `MVP-V01-INVALID-CONFIG` | Invoke truncated config, then missing executable. Both exit one with diagnostics, no plugin start or work request. | File/CLI startup wiring; matrix stays unit. 4 s / 2. |
 | `MVP-V02-REGISTER` | Configure independent Python executable/args. Hold positive result for A: client pending, no delivery. Release result then immediate event: one ID and exact A delivery. Rejected arguments produce error/no active subscription. | Non-Go replacement, gRPC ordering/activation. 8 s / 4. |
 | `MVP-V03-ROUTE` | Real manual plugin, register A twice: same ID. Declare 1 s idle/zero work. Publish `PULSE-ROUTE` by sibling rename. One A attempt with exact source/ID/context/data wrapper, trigger/claim removed, receipt/attempt times, no B call. Inspect plugin idle path for independent work capability. | Complete file-to-adapter path. 5 s / 4. |
-| `MVP-V04-INVALID-EVENT` | Two fixture instances. A emits malformed JSON, unknown ID, B's ID, then valid event: only valid delivers. End A stream/process; log A/IDs unavailable, reject new A registration and unread post-exit events. B still registers/emits. | Message recovery, source binding and process isolation. Transport corruption matrix stays unit. 6 s / 5. |
+| `MVP-V04-INVALID-EVENT` | Configure plugin instances P and Q; register one watch on each for conversation A, retaining their distinct subscription IDs. P emits malformed JSON, an unknown subscription ID, Q's subscription ID, then its own valid event: only the valid event delivers. End P's stream/process; log P and its IDs unavailable, reject new P registration and unread post-exit events. Register a fresh Q watch and deliver its event to A successfully. | Message recovery, source binding and process isolation. Transport corruption matrix stays unit. 6 s / 5. |
 | `MVP-V04-DELIVERY-OUTCOME` | One event to nonzero child, another to child held past actual 30 s deadline. Both unknown, one attempt each; held child exits on cancellation, no retry. | Real timeout/adapter classification. 35 s / 4. |
 | `MVP-V05-RESTART` | Register, stop, restart same config. Emit old ID then fresh ID: old rejected, fresh delivered once, IDs differ. | Process/state lifetime. 5 s / 4. |
 | `MVP-V10-DUPLICATE` | Close first control response before gated result. Two concurrent equivalent requests, release one result, repeat publicly: one watch, same returned IDs. Emit identical event twice: two delivery IDs, admission order, one attempt each. | Connection loss/concurrency. Canonicalization matrix stays unit. 6 s / 5. |
@@ -358,7 +367,11 @@ implementation evidence. This is not an additional execution matrix.
 
 The selected cases require module-pinned tooling, writable temporary storage and the
 Python 3.12 environment from [Plugin tooling qualification](../aidd/go-development.md#plugin-tooling-qualification).
-Provision that environment in the product integration job before enabling the dependent cases; a tooling job does not share its environment with the product job. This setup is a separate approved prerequisite under the AIDD verification boundary. No real Codex, credentials, elevation or live service is needed. Record actual
+The product integration job provisions that environment using the approved
+setup action and existing pinned requirements file. A tooling job does not
+share its environment with this job. This is bounded fixture preparation under
+the AIDD allowance above, supporting `MVP-V02-REGISTER` and other Python-driven
+plugin scenarios. No real Codex, credentials, elevation or live service is needed. Record actual
 tool versions without prescribing an OS. Health qualification proves dependencies
 only, not application behavior.
 
@@ -366,15 +379,25 @@ Case-owned `plugin_feasibility_integration_test.go` and `testdata/plugin-session
 exercise real Go/Python application Session processes: ready, watch/result,
 immediate event order, rejection and standard shutdown. A standard-library
 loopback roundtrip/bind-conflict probe qualifies local control construction.
-These executable design probes are separate from Pending `MVP-*` acceptance.
-Record commands, elapsed time and cleanup in the design PR. Pending declarations
-compile without nonexistent production symbols.
+`budget_feasibility_integration_test.go` measures command build and tagged suite
+compilation, a controlled nonzero child, a real 30-second child cancellation and
+wait, and the temporary-file publish/claim/read/remove sequence. These qualify
+the selected fixture mechanisms and cost assumptions, not the product adapter
+or manual plugin. No probe implements product registration or delivery.
+These executable design probes are separate from Pending `MVP-*` acceptance
+and the existing `TestIntegration` runner filter. Run them explicitly for design
+evidence; the affected CI job's setup and execution provide separate environment
+and job-cost evidence. Record commands, elapsed time and cleanup in the design
+PR. Pending declarations compile without nonexistent production symbols.
 
 Reserve 20 s common build/setup, 5 s final cleanup and 10 s contingency per suite.
 Hub case caps total 82 s, yielding 117 s inside the existing two-minute scoped
 budget; manual cases total 10 s, yielding 45 s. Peak product/fixture children are
 five, excluding compiler/runner infrastructure. Use bounded files and no queue
-flood. Report warm-cache dependency preparation separately from execution.
+flood. Run the normal unit and general integration commands first, then the
+scoped inventory on the same revision with their populated module/build caches.
+Report that preparation separately from the scoped execution, whose compilation
+and common product builds still count toward its 20-second setup allowance.
 A missed budget requires investigation or reviewed revision, never reduced
 product deadlines or dropped cases. Ten-second timeout branches use mocked time;
 only delivery tests retain one real 30-second deadline. Feasibility probes run
@@ -384,8 +407,9 @@ separately with their own measured budget.
 go run build/mage.go -d build -w . test
 go run build/mage.go -d build -w . integrationAll
 go test -tags=integration ./cmd/agent-pulse-hub ./cmd/manual-plugin -run=^$ -count=1
-go test -tags=integration ./cmd/agent-pulse-hub ./cmd/manual-plugin -run=^TestIntegration -ginkgo.dry-run -ginkgo.v
+go test -tags=integration ./cmd/agent-pulse-hub ./cmd/manual-plugin -run=^TestIntegration -v "-ginkgo.dry-run" "-ginkgo.v"
 go test -tags=integration ./cmd/agent-pulse-hub -run="^TestPluginSessionFeasibility$|^TestLoopbackControlFeasibility$" -count=1 -v
+go test -tags=integration ./cmd/agent-pulse-hub -run=^TestDesignBudget -count=1 -timeout=2m -v
 go run build/mage.go -d build -w . integration cmd/agent-pulse-hub/testdata/mvp-cases.json <new-report-directory>
 ```
 
@@ -433,8 +457,10 @@ distinct event.
 
 The product decisions proposed for human review are local-caller trust,
 exact-path limitations, memory-only loss and once-only unknown outcomes.
-The design author must verify the required product-CI Python environment and
-measured complete-suite budget before readiness. Implementers pass scoped cases
-and source inspection; the maintainer owns real-service checks. Implementation
+The design author verifies fixture preparation, measures the smallest useful
+setup and justifies the complete cost ledger before readiness. Implementation
+then measures the fully wired suites against those unchanged caps, passes every
+scoped case and completes source inspection. Minimal probes and Pending runs
+cannot substitute for those results. The maintainer owns real-service checks. Implementation
 begins only after human approval and merge under the
 [AIDD playbook](../aidd/README.md).

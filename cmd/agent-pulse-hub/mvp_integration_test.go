@@ -21,8 +21,9 @@ var _ = Describe("MVP daemon and registration public behavior", Serial, func() {
 		By("retaining receipt/attempt times, permission wrapper and manual-plugin idle source inspection")
 	})
 	It("rejects invalid events and isolates an exited emitter", Pending, Label("case:MVP-V04-INVALID-EVENT"), func() {
-		By("rejecting malformed JSON, unknown ID and B-owned ID from A while admitting a later valid event")
-		By("ending A, rejecting subsequent A registration/events, and retaining B registration and delivery")
+		By("registering plugin instances P and Q separately for conversation A and retaining their distinct subscription IDs")
+		By("rejecting malformed JSON, unknown ID and Q-owned subscription ID from P while admitting P's later valid event")
+		By("ending P, rejecting subsequent P registration/events, and registering and delivering a fresh Q watch to conversation A")
 	})
 	It("reports launched nonzero and actual deadline outcomes without retry", Pending, Label("case:MVP-V04-DELIVERY-OUTCOME"), func() {
 		By("emitting to a nonzero child then one held past 30 seconds; observing unknown, one attempt each and terminated held child")
