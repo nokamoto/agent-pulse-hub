@@ -86,10 +86,25 @@ reserve integration scenarios for behavior of the assembled product. Design
 specifies the integration cases; implementation supplies the supporting unit
 tests. Explain why each integration scenario needs that level of verification.
 
-Use static `Pending` for cases awaiting implementation. The cases and their
-fixtures must compile with the available test dependencies without referencing
-nonexistent production symbols. Specify the inputs and expected results even
-when the connection to the product is deferred. Follow the
+The design author owns test selection before enumerating cases. Compare the
+defects each candidate would detect and the value of that coverage against
+the complexity and cost of implementing, maintaining, and running it. Choose
+the least costly sufficient verification: use unit coverage where appropriate,
+combine overlapping scenarios, and remove unnecessary or impractical candidate
+cases when adequate alternatives preserve requirement and acceptance coverage.
+Propose only necessary cases with a concrete, feasible implementation method.
+Explain the retained coverage and material selection tradeoffs; removing a test
+candidate does not remove a product requirement. Changing approved required
+behavior or removing an approved required case needs approval and merge in the
+applicable upstream phase before dependent work.
+
+Use static `Pending` for selected cases whose test code can be completed and
+connected to the product during implementation. Pending means the design has
+resolved the case's necessity, concrete implementation method, and CI execution
+feasibility; it does not defer those decisions. The cases and their fixtures
+must compile with the available test dependencies without referencing
+nonexistent production symbols. Specify inputs and expected results even when
+test code completion or the connection to the product is deferred. Follow the
 [Go test conventions](go-development.md#design-acceptance-tests).
 
 The governing design identifies test and fixture paths, the approved case IDs,
@@ -104,14 +119,20 @@ missing shared infrastructure and dependencies in a separate prerequisite PR
 under the applicable development rules, and verify its approval and merge
 before relying on it in a design PR.
 
-Describe how the tests exercise real product behavior through replaceable
-external boundaries, not just interactions among test doubles. Record the CI
-environment, separate unit and integration commands, fixtures, isolation and cleanup, expected runtime and
+Describe each selected case's implementation method, including how it exercises
+real product behavior through replaceable external boundaries, rather than only
+interactions among test doubles. Record the CI environment, separate unit and
+integration commands, fixtures, isolation and cleanup, expected runtime and
 resource cost, and evidence to retain. Agree a verification budget during
-design review. Where feasibility is uncertain, demonstrate the smallest useful
-test setup before approval; a compiling Pending case alone proves no behavior
-or execution feasibility. Do not approve a design with unresolved CI feasibility
-or verification cost.
+design review. Resolve uncertain feasibility by first simplifying or replacing
+the candidate verification, then demonstrate the smallest useful test setup
+where uncertainty remains. Keep any prerequisite changes within the separate
+PR boundary above. A compiling Pending case alone proves no behavior or
+execution feasibility. Listing unproven cases and reporting a blocker does not
+complete the design author's selection work. If a necessary case still has no
+feasible method, report the unresolved decision and its impact as a blocker;
+do not approve the design or silently drop its required coverage. Do not
+approve unresolved verification cost.
 
 Prefer observable contracts over transport internals so that changing an
 adapter does not require rewriting unrelated acceptance cases. Keep checks of

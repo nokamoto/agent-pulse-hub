@@ -14,9 +14,18 @@ Read affected design and separate specification documents, concrete acceptance
 cases and fixtures, source requirements and acceptance criteria, and relevant
 existing design and code. Apply the
 [design verification deliverables](../../../docs/aidd/README.md#design-verification-deliverables)
-to case coverage, static `Pending` status, compile and registration evidence,
+to case selection, retained coverage, static `Pending` status, compile and registration evidence,
 governed paths, service-free CI feasibility, and separately resolved
-prerequisites. Check command-level Ginkgo placement, build tags, test-level
+prerequisites. Verify that the author weighed defect-detection value against
+implementation complexity and maintenance and execution costs before proposing
+cases, considered sufficient cheaper verification or consolidation, and resolved
+each selected case's concrete method and CI feasibility. Pending may defer test
+code completion and product wiring, not selection or feasibility. Check that
+unnecessary or impractical candidates were removed with retained coverage
+explained; product requirements and approved required cases cannot be silently
+dropped. A list of unproven cases and a blocker report do not complete selection;
+necessary cases still lacking a feasible method remain blockers. Check
+command-level Ginkgo placement, build tags, test-level
 choices, real product components and substituted boundaries, verification
 cost, and separate unit and integration evidence under the
 [Go test conventions](../../../docs/aidd/go-development.md#test-levels-and-cost).

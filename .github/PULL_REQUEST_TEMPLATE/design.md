@@ -33,17 +33,29 @@
      not run and their impact.
      Distinguish planned verification from executed checks. -->
 
-<!-- Link the concrete command-level Ginkgo integration acceptance cases initially static Pending, their stable
+<!-- Link selection rationale comparing defect-detection value with implementation
+     complexity and maintenance and execution costs, including sufficient cheaper
+     verification, consolidation, and removed candidates with retained coverage.
+     Removal of a candidate does not remove a product requirement. Link upstream
+     approval and merge for changes to approved required behavior or cases.
+     Link the selected concrete command-level Ginkgo integration acceptance cases
+     initially static Pending, their stable
      IDs, requirement/acceptance mappings, inputs, actions, expected observable
      results and failure boundaries, and governed paths directly in
      cmd/<command>/*_integration_test.go with //go:build integration for all
      case and suite files, and fixtures in that command's testdata/.
+     Record each case's concrete implementation method and resolved CI feasibility;
+     Pending defers test code completion and product wiring only.
      Explain why integration is needed, real product components and substituted
      external boundaries, and setup, runtime, resource, and cleanup budgets.
      Record compile and registration commands and results with the integration
      tag enabled, separate service-free unit and integration CI commands,
      environment, and evidence
-     for minimal harness feasibility. Link separately approved and merged
+     for minimal harness feasibility after simplifying or replacing uncertain
+     verification. Distinguish executed feasibility checks from Pending cases;
+     listing unproven cases and a blocker report does not complete selection.
+     Report any necessary case still lacking a feasible method and its coverage
+     impact as a blocker. Link separately approved and merged
      dependency, build, CI, tooling, or shared harness prerequisites; they
      cannot be added here. Identify delivery quality checks using actual Codex
      or external services, their expected results, and planned delivery evidence.
@@ -66,6 +78,7 @@ and [implementation completion and delivery boundary](https://github.com/nokamot
 
 - [ ] The complete diff stays within docs/design/ and the narrow verification artifact exception, including governed specifications, deletions and both sides of renames.
 - [ ] Concrete integration cases and suites have design-governed paths and the integration build tag directly in `cmd/<command>/`, with fixtures in that command's `testdata/`; the PR contains no production code or dependency, build, CI, tooling, or shared harness changes.
+- [ ] Selected cases justify their cost and have concrete feasible implementation methods; Pending defers test code completion and product wiring, with retained coverage explained for removed candidates.
 - [ ] Service-free CI feasibility and its runtime-cost budget have evidence; required prerequisites are separately approved and merged.
 - [ ] The phase:design label is applied.
 - [ ] Source requirements have human approval and are merged.

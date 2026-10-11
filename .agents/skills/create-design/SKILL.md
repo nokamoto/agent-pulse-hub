@@ -56,14 +56,30 @@ approved requirements will be fulfilled and verified.
    Apply the [test levels and cost guide](../../../docs/aidd/go-development.md#test-levels-and-cost):
    reserve Ginkgo for command-level integration of assembled product behavior;
    implementation supplies unit tests with mocked external capabilities.
-   Deliver concrete Ginkgo acceptance cases initially static `Pending`, with stable case
+   Before enumerating cases, select necessary verification by comparing the
+   defects detected and coverage value with implementation complexity and
+   maintenance and execution costs. Choose sufficient cheaper verification,
+   combine overlapping cases, and remove unnecessary or impractical candidates
+   while explaining retained coverage. Removing a candidate does not remove a
+   requirement; changing approved required behavior or deleting an approved
+   required case needs the applicable upstream approval and merge.
+   Resolve each selected case's concrete implementation method and CI
+   feasibility. Simplify or replace uncertain verification first; demonstrate
+   the smallest useful setup if uncertainty remains, respecting the separate
+   prerequisite PR boundary below. Listing unproven cases and stopping at a
+   blocker is not completion of selection. If a necessary case remains
+   infeasible, report its unresolved decision and coverage impact as a blocker.
+   Deliver the selected Ginkgo acceptance cases initially static `Pending`,
+   meaning test code completion and product wiring can follow in implementation,
+   with necessity, method, and feasibility already resolved. Use stable case
    IDs mapped to source requirements and acceptance criteria, concrete inputs,
    actions, observable expected results, and relevant failure boundaries. Do
    not substitute dynamic `Skip` for Pending cases. Record their governed
    paths under the [acceptance test conventions](../../../docs/aidd/go-development.md#design-acceptance-tests):
    `cmd/<command>/*_integration_test.go` with `//go:build integration` for
    every case and suite file, and that command's `testdata/` for fixtures.
-   Explain why each integration case needs that level, its real product
+   Record the selection tradeoffs and why each integration case needs that
+   level, its concrete implementation method, its real product
    components and substituted external boundaries, and its setup, runtime,
    resource, and cleanup budget. Record separate unit and integration CI
    commands and environment, and feasibility evidence for the minimal harness.
