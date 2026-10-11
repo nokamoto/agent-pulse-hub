@@ -21,18 +21,33 @@ type Config struct {
 	Plugins         []Plugin
 }
 
+//go:generate go run go.uber.org/mock/mockgen -source=config.go -destination=config_mock_test.go -package=config
+type fileSystem interface {
+	Stat(string) (os.FileInfo, error)
+	ReadFile(string) ([]byte, error)
+}
+
+type localFiles struct{}
+
+func (localFiles) Stat(path string) (os.FileInfo, error) { return os.Stat(path) }
+func (localFiles) ReadFile(path string) ([]byte, error)  { return os.ReadFile(path) }
+
 func Load(path string) (Config, error) {
+	return load(path, localFiles{})
+}
+
+func load(path string, files fileSystem) (Config, error) {
 	if !isAbsoluteFile(path) {
 		return Config{}, errors.New("configuration path must be absolute")
 	}
-	info, err := os.Stat(path)
+	info, err := files.Stat(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("open daemon configuration: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		return Config{}, errors.New("daemon configuration must be a regular file")
 	}
-	data, err := os.ReadFile(path)
+	data, err := files.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read daemon configuration: %w", err)
 	}
@@ -64,11 +79,11 @@ func Load(path string) (Config, error) {
 		seen[plugin.Name] = struct{}{}
 		plugins = append(plugins, plugin)
 	}
-	if err := validateProgramPath(codexPath, "codex_executable"); err != nil {
+	if err := validateProgramPath(files, codexPath, "codex_executable"); err != nil {
 		return Config{}, err
 	}
 	for index, plugin := range plugins {
-		if err := validateProgramPath(plugin.Executable, fmt.Sprintf("plugin entry %d executable", index)); err != nil {
+		if err := validateProgramPath(files, plugin.Executable, fmt.Sprintf("plugin entry %d executable", index)); err != nil {
 			return Config{}, err
 		}
 	}
@@ -103,8 +118,8 @@ func isAbsoluteFile(path string) bool {
 	return filepath.IsAbs(path)
 }
 
-func validateProgramPath(path, field string) error {
-	info, err := os.Stat(path)
+func validateProgramPath(files fileSystem, path, field string) error {
+	info, err := files.Stat(path)
 	if err != nil {
 		return fmt.Errorf("%s is unavailable: %w", field, err)
 	}

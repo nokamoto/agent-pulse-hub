@@ -26,21 +26,19 @@ type watchTarget struct {
 	key       targetKey
 }
 
-func parseWatchTarget(input string) (watchTarget, error) {
+func parseWatchTargetWithFiles(input string, files triggerFiles) (watchTarget, error) {
 	path, parent, name, err := normalizeTriggerPath(input)
 	if err != nil {
 		return watchTarget{}, err
 	}
-	driveRoot, _ := windows.UTF16PtrFromString(path[:3])
-	driveType := windows.GetDriveType(driveRoot)
-	if driveType != windows.DRIVE_FIXED && driveType != windows.DRIVE_REMOVABLE && driveType != windows.DRIVE_RAMDISK {
+	if !files.LocalDrive(path[:3]) {
 		return watchTarget{}, errors.New("trigger path must be on a local drive")
 	}
-	key, err := directoryKey(parent, name)
+	key, err := files.DirectoryKey(parent, name)
 	if err != nil {
 		return watchTarget{}, err
 	}
-	if _, err := os.Lstat(path); err == nil {
+	if err := files.Exists(path); err == nil {
 		return watchTarget{}, errors.New("trigger file must not already exist")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return watchTarget{}, errors.New("trigger file path is unavailable")

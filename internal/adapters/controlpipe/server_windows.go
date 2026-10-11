@@ -14,9 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Microsoft/go-winio"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
-	"github.com/nokamoto/agent-pulse-hub/internal/adapters/windowsidentity"
 	"github.com/nokamoto/agent-pulse-hub/internal/application/hub"
 )
 
@@ -24,7 +22,7 @@ const controlPipePrefix = `\\.\pipe\agent-pulse-hub-v1-`
 
 type Server struct {
 	listener net.Listener
-	service  *hub.Hub
+	service  registrar
 	logger   *slog.Logger
 
 	mu     sync.Mutex
@@ -33,7 +31,11 @@ type Server struct {
 }
 
 func NewServer(service *hub.Hub, logger *slog.Logger) (*Server, error) {
-	sid, err := windowsidentity.CurrentUserSID()
+	return newServer(service, logger, windowsPipes{})
+}
+
+func newServer(service registrar, logger *slog.Logger, pipes pipeSystem) (*Server, error) {
+	sid, err := pipes.CurrentUserSID()
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +44,7 @@ func NewServer(service *hub.Hub, logger *slog.Logger) (*Server, error) {
 	}
 	name := PipeName(sid)
 	descriptor := "D:P(A;;GA;;;" + sid + ")"
-	listener, err := winio.ListenPipe(name, &winio.PipeConfig{SecurityDescriptor: descriptor})
+	listener, err := pipes.Listen(name, descriptor)
 	if err != nil {
 		return nil, fmt.Errorf("reserve user control pipe: %w", err)
 	}

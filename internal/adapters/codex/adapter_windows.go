@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
@@ -27,18 +26,26 @@ const (
 	deliveryTimeout        = 30 * time.Second
 )
 
-type Adapter struct{ executable string }
+type Adapter struct {
+	executable string
+	launcher   commandLauncher
+	timeouts   timeoutSource
+}
 
-func New(executable string) *Adapter { return &Adapter{executable: executable} }
+func New(executable string) *Adapter {
+	return &Adapter{executable: executable, launcher: systemLauncher{}, timeouts: systemTimeouts{}}
+}
 
 func ReadVersion(ctx context.Context, executable string) (string, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	return readVersion(ctx, executable, systemLauncher{}, systemTimeouts{})
+}
+
+func readVersion(ctx context.Context, executable string, launcher commandLauncher, timeouts timeoutSource) (string, error) {
+	probeCtx, cancel := timeouts.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	command := exec.CommandContext(probeCtx, executable, "--version")
 	stdout := &limitedBuffer{limit: 256}
-	command.Stdout = stdout
-	command.Stderr = io.Discard
-	if err := command.Start(); err != nil {
+	command, err := launcher.Start(probeCtx, executable, []string{"--version"}, stdout, io.Discard)
+	if err != nil {
 		return "", fmt.Errorf("start configured Codex executable: %w", err)
 	}
 	if err := command.Wait(); err != nil {
@@ -72,14 +79,12 @@ func (a *Adapter) Deliver(parent context.Context, event domain.Event) hub.Delive
 	if utf16CodeUnits(commandLine) > MaxCommandLineUTF16 {
 		return hub.DeliveryResult{Outcome: domain.DeliveryFailed, Detail: "Codex command line exceeds the configured limit."}
 	}
-	ctx, cancel := context.WithTimeout(parent, deliveryTimeout)
+	ctx, cancel := a.timeouts.WithTimeout(parent, deliveryTimeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, a.executable, arguments...)
 	stdout := &limitedBuffer{limit: MaxCapturedOutputBytes}
 	stderr := &limitedBuffer{limit: MaxCapturedOutputBytes}
-	command.Stdout = stdout
-	command.Stderr = stderr
-	if err := command.Start(); err != nil {
+	command, err := a.launcher.Start(ctx, a.executable, arguments, stdout, stderr)
+	if err != nil {
 		return hub.DeliveryResult{Outcome: domain.DeliveryFailed, Detail: "Codex queue command could not be started."}
 	}
 	waitErr := command.Wait()

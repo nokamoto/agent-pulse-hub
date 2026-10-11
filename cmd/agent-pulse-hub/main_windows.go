@@ -28,7 +28,31 @@ import (
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
+//go:generate go run go.uber.org/mock/mockgen -source=main_windows.go -destination=command_mock_windows_test.go -package=main
+type commandOperations interface {
+	Daemon(string, io.Writer) error
+	LookupEnv(string) (string, bool)
+	WatchArguments(string) (*jsonvalue.Value, error)
+	Register(context.Context, string, string, *jsonvalue.Value) (controlpipe.RegistrationResponse, []byte, error)
+}
+
+type localOperations struct{}
+
+func (localOperations) Daemon(path string, stderr io.Writer) error { return runDaemon(path, stderr) }
+func (localOperations) LookupEnv(key string) (string, bool)        { return os.LookupEnv(key) }
+func (localOperations) WatchArguments(path string) (*jsonvalue.Value, error) {
+	return loadWatchArguments(path)
+}
+
+func (localOperations) Register(ctx context.Context, plugin, session string, args *jsonvalue.Value) (controlpipe.RegistrationResponse, []byte, error) {
+	return controlpipe.Register(ctx, plugin, session, args)
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWith(args, stdout, stderr, localOperations{})
+}
+
+func runWith(args []string, stdout, stderr io.Writer, operations commandOperations) int {
 	if len(args) == 0 {
 		return report(stderr, "usage: agent-pulse-hub <daemon|register> ...")
 	}
@@ -38,7 +62,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return report(stderr, "daemon: "+err.Error())
 		}
-		if err := runDaemon(flags["--config"], stderr); err != nil {
+		if err := operations.Daemon(flags["--config"], stderr); err != nil {
 			return report(stderr, "daemon: "+err.Error())
 		}
 		return 0
@@ -47,7 +71,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return report(stderr, "register: "+err.Error())
 		}
-		threadID, err := sessionIDFromEnvironment(os.LookupEnv)
+		threadID, err := sessionIDFromEnvironment(operations.LookupEnv)
 		if err != nil {
 			return report(stderr, "register: "+err.Error())
 		}
@@ -57,13 +81,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if flags["--plugin"] == "" {
 			return report(stderr, "register: --plugin must be nonempty.")
 		}
-		watchArgs, err := loadWatchArguments(flags["--watch-args-file"])
+		watchArgs, err := operations.WatchArguments(flags["--watch-args-file"])
 		if err != nil {
 			return report(stderr, "register: "+err.Error())
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		response, wire, err := controlpipe.Register(ctx, flags["--plugin"], threadID, watchArgs)
+		response, wire, err := operations.Register(ctx, flags["--plugin"], threadID, watchArgs)
 		if err != nil {
 			var daemonError *controlpipe.DaemonError
 			if errors.As(err, &daemonError) {
@@ -95,7 +119,7 @@ func runDaemon(configPath string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := daemonLogger(stderr)
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), 6*time.Second)
 	version, err := codex.ReadVersion(probeCtx, settings.CodexExecutable)
 	probeCancel()
@@ -133,6 +157,18 @@ func runDaemon(configPath string, stderr io.Writer) error {
 		return serveErr
 	}
 	return nil
+}
+
+func daemonLogger(stderr io.Writer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+		ReplaceAttr: func(_ []string, attribute slog.Attr) slog.Attr {
+			if attribute.Key == slog.TimeKey && attribute.Value.Kind() == slog.KindTime {
+				attribute.Value = slog.TimeValue(attribute.Value.Time().UTC())
+			}
+			return attribute
+		},
+	}))
 }
 
 func parseFlags(args []string, names ...string) (map[string]string, error) {
@@ -174,10 +210,24 @@ func sessionIDFromEnvironment(lookup func(string) (string, bool)) (string, error
 }
 
 func loadWatchArguments(path string) (*jsonvalue.Value, error) {
+	return readWatchArguments(path, localWatchFiles{})
+}
+
+type watchFiles interface {
+	Stat(string) (os.FileInfo, error)
+	Open(string) (io.ReadCloser, error)
+}
+
+type localWatchFiles struct{}
+
+func (localWatchFiles) Stat(path string) (os.FileInfo, error)   { return os.Stat(path) }
+func (localWatchFiles) Open(path string) (io.ReadCloser, error) { return os.Open(path) }
+
+func readWatchArguments(path string, files watchFiles) (*jsonvalue.Value, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("watch arguments path must be absolute")
 	}
-	info, err := os.Stat(path)
+	info, err := files.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("open watch arguments file: %w", err)
 	}
@@ -187,7 +237,7 @@ func loadWatchArguments(path string) (*jsonvalue.Value, error) {
 	if info.Size() >= protocol.MaxFrameBytes {
 		return nil, protocol.ErrFrameTooLarge
 	}
-	file, err := os.Open(path)
+	file, err := files.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open watch arguments file: %w", err)
 	}

@@ -54,3 +54,34 @@ func TestEncodeFrameEnforcesLimitIncludingLF(t *testing.T) {
 		t.Fatalf("EncodeFrame() error = %v, want frame-too-large", err)
 	}
 }
+
+func TestReadFrameExactFullWireBoundsAndMalformedRecovery(t *testing.T) {
+	for _, ending := range []string{"\n", "\r\n"} {
+		for _, size := range []int{MaxFrameBytes, MaxFrameBytes + 1} {
+			input := strings.Repeat("x", size-len(ending)) + ending
+			frame, err := ReadFrame(bufio.NewReader(strings.NewReader(input)), MaxFrameBytes)
+			if size == MaxFrameBytes {
+				if err != nil || len(frame) != size-len(ending) {
+					t.Fatalf("size %d ending %q len %d err %v", size, ending, len(frame), err)
+				}
+			} else if !errors.Is(err, ErrFrameTooLarge) {
+				t.Fatalf("oversize error %v", err)
+			}
+		}
+	}
+	reader := bufio.NewReader(bytes.NewReader([]byte{0xff, '\n', '{', '}', '\n'}))
+	first, err := ReadFrame(reader, MaxFrameBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseFrame(first); err == nil {
+		t.Fatal("invalid encoding accepted")
+	}
+	second, err := ReadFrame(reader, MaxFrameBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseFrame(second); err != nil {
+		t.Fatalf("valid frame after invalid frame: %v", err)
+	}
+}

@@ -9,9 +9,34 @@ on:
       - main
 
 jobs:
-  go:
+  go-ci:
     name: Go CI
+    if: ${{ always() }}
+    needs: [go, product-integration, integration-tooling]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all Go checks to succeed
+        env:
+          GO_RESULT: ${{ needs.go.result }}
+          PRODUCT_INTEGRATION_RESULT: ${{ needs.product-integration.result }}
+          INTEGRATION_TOOLING_RESULT: ${{ needs.integration-tooling.result }}
+        run: |
+          printf 'Go: %s\nProduct integration: %s\nIntegration tooling: %s\n' \
+            "$GO_RESULT" "$PRODUCT_INTEGRATION_RESULT" "$INTEGRATION_TOOLING_RESULT"
+          if [ "$GO_RESULT" != success ] || \
+             [ "$PRODUCT_INTEGRATION_RESULT" != success ] || \
+             [ "$INTEGRATION_TOOLING_RESULT" != success ]; then
+            exit 1
+          fi
+
+  go:
+    name: Go CI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -30,11 +55,14 @@ jobs:
       - name: Check generated code, formatting, and module files
         shell: bash
         run: |
-          status=$(git status --porcelain --untracked-files=all)
-          if [ -n "$status" ]; then
+          if ! git diff --exit-code HEAD --; then
             echo "Run the Mage generate and format targets, then commit the resulting changes."
-            printf '%s\n' "$status"
-            git diff --exit-code
+            exit 1
+          fi
+          untracked=$(git ls-files --others --exclude-standard)
+          if [ -n "$untracked" ]; then
+            echo "Commit the generated files."
+            printf '%s\n' "$untracked"
             exit 1
           fi
 

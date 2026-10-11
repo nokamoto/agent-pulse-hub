@@ -39,6 +39,8 @@ type PluginHandlers struct {
 }
 
 // PluginPort owns one configured child process and its protocol stream.
+//
+//go:generate go run go.uber.org/mock/mockgen -source=service.go -destination=service_mock_test.go -package=hub
 type PluginPort interface {
 	Start(context.Context, PluginHandlers) error
 	Watch(context.Context, WatchRequest, func() error) error

@@ -22,6 +22,10 @@ func TestParseRejectsInvalidInput(t *testing.T) {
 		{name: "empty exponent", data: []byte(`1e`)},
 		{name: "trailing data", data: []byte(`true false`)},
 		{name: "unescaped control", data: []byte{'"', '\n', '"'}},
+		{name: "BOM", data: []byte("\xef\xbb\xbf{}")},
+		{name: "trailing array comma", data: []byte(`[1,]`)},
+		{name: "trailing object comma", data: []byte(`{"a":1,}`)},
+		{name: "invalid surrogate pair", data: []byte(`"\ud800\u0041"`)},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -30,6 +34,30 @@ func TestParseRejectsInvalidInput(t *testing.T) {
 				t.Fatal("Parse accepted invalid JSON")
 			}
 		})
+	}
+}
+
+func TestCanonicalPreservesExactDecimalDistinctions(t *testing.T) {
+	for _, test := range []struct {
+		left, right string
+		equivalent  bool
+	}{
+		{left: `9007199254740992`, right: `9007199254740993`},
+		{left: `1e100000000000000000000`, right: `10e99999999999999999999`, equivalent: true},
+		{left: `1.00000000000000000001`, right: `1`},
+		{left: `-0e99999999999999999999`, right: `0`, equivalent: true},
+	} {
+		left, err := Parse([]byte(test.left), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		right, err := Parse([]byte(test.right), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if left.Equivalent(right) != test.equivalent {
+			t.Errorf("%s and %s equivalence", test.left, test.right)
+		}
 	}
 }
 
