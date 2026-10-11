@@ -252,13 +252,51 @@ Translate the approved requirements and design into working code and reproducibl
 
 | Item | Description |
 | --- | --- |
-| Deliverables | A repository revision containing code, necessary tests and CI changes, and permitted updates to existing documentation under the developer documentation rule; PR evidence mapping those changes to acceptance criteria and recording verification results |
+| Deliverables | A repository revision containing product code, necessary tests within the approved verification framework, and permitted updates to existing documentation under the developer documentation rule; PR evidence mapping those changes to acceptance criteria and recording verification results |
 | PR | An implementation PR linking to the merged requirements and design PRs and presenting the implementation changes and verification evidence |
 | Human role | Confirm implementation verification, the remaining delivery checks and risks, and decide whether to merge |
 | Agent role | Implement, self-review, verify, and fix defects; automate necessary verification and present reviewable diffs and evidence |
 | Approval criteria | All approved cases allocated to the implementation scope pass in service-free CI, required repository checks pass, and delivery checks, known limitations, and remaining risks are explicit |
 
 Agents investigate and correct verification failures. Checks that could not be run must not be reported as passing; report the reason, impact, and actions needed to resolve the issue. Do not present work as ready to merge while required verification remains incomplete.
+
+#### CI and verification infrastructure boundary
+
+Keep changes to CI and shared verification infrastructure out of implementation
+PRs. Reviewing product changes together with changes to the checks that judge
+them makes it harder to determine whether verification has been bypassed.
+This boundary applies even to changes described as fixes, stricter checks, or
+necessary to complete the approved implementation.
+
+The protected scope includes workflow definitions under `.github/workflows/`,
+local or reusable actions, and the scripts, Mage targets, shared test runners,
+guardrail validators, and configuration that control required checks. It
+includes check selection, triggers, platforms, failure handling, and acceptance
+enforcement, regardless of file location. Apply the boundary to additions,
+modifications, deletions, and both sides of renames.
+
+Implementation may add unit tests and complete approved integration cases,
+fixtures, and product connections within the existing framework. It may not
+change shared execution or pass/fail rules, or weaken approved expected
+behavior. The existing upstream approval rules still govern changes to
+acceptance cases and expected behavior.
+
+If implementation needs a protected change, stop the implementation session.
+Preserve work and report the reason, affected infrastructure, unfinished
+implementation and acceptance checks, and the prerequisite change needed.
+Do not make the protected change or automatically start another session.
+A human starts a separate session to prepare a focused prerequisite PR using
+the [repository rules workflow](../../.agents/skills/edit-repository-rules/SKILL.md).
+Keep product implementation out of that PR. If product requirements or design
+decisions must also change, use the applicable upstream phases separately.
+Resume implementation only after human approval and merge of the prerequisite
+PRs are verified under the [handoff rules](#agent-verification-and-handoff-evidence).
+Inherit those merged changes through the implementation PR's base; do not
+bundle them into its implementation diff.
+
+The implementation PR records that its complete base-to-head diff was checked
+for protected changes and links any prerequisite approval and merge evidence.
+Passing CI alone does not establish compliance with this boundary.
 
 #### Implementation completion and delivery boundary
 

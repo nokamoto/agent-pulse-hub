@@ -3,7 +3,7 @@
 
 ## Purpose and implementation result
 
-<!-- Describe the resulting behavior and identify the code, tests, CI, and
+<!-- Describe the resulting behavior and identify the product code, tests, and
      permitted updates to existing documentation delivered by this revision. Map changes to approved
      requirement IDs and design sections. Explain why included documentation
      preserves the approved procedures, contracts, and document relationships. Do not create
@@ -30,6 +30,16 @@ and [developer documentation feedback](https://github.com/nokamoto/agent-pulse-h
 and [specification feedback](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#specification-documents-and-approved-design).
 
 ## Verification and remaining implementation work
+
+<!-- Record the base and head revisions checked and confirm that the complete
+     PR diff contains no CI or shared verification infrastructure changes under
+     the linked boundary, including additions, deletions, and renames. Link
+     approval and merge evidence for any prerequisite infrastructure PRs. If
+     such a change is still needed, preserve work, report the blocker and
+     unfinished checks, and end the implementation session. A human starts
+     the separate prerequisite session. -->
+
+[CI and verification infrastructure boundary](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#ci-and-verification-infrastructure-boundary).
 
 <!-- Record required repository check results, separate unit and tagged
      integration commands and results, and the full scoped set of

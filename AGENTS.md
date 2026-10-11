@@ -29,6 +29,16 @@ approved expected behavior require upstream approval and merge. Final quality
 checks using actual Codex or external services are designed upstream and
 executed during delivery under the completion boundary above.
 
+## CI feedback during implementation
+
+Follow the [CI and verification infrastructure boundary](docs/aidd/README.md#ci-and-verification-infrastructure-boundary).
+Do not change CI or shared verification infrastructure during implementation.
+If a change is needed, preserve work, report the blocker and unfinished checks,
+and end the session. A human starts a separate repository rules session;
+resume implementation only after the prerequisite approval and merge are
+verified. Check the implementation PR's complete base-to-head diff against
+this boundary and record the result in its PR description.
+
 ## Documentation feedback during implementation
 
 Create operating instructions and specifications that developers will continue
