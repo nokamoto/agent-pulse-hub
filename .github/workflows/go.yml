@@ -51,8 +51,8 @@ jobs:
       - name: Run Go lint
         run: go run build/mage.go -d build -w . lint
 
-  mvp-integration:
-    name: MVP integration (Windows)
+  product-integration:
+    name: Product integration (Windows)
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -64,23 +64,17 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run general MVP acceptance inventory
-        shell: pwsh
-        run: go run build/mage.go -d build -w . integration cmd/agent-pulse-hub/testdata/mvp-cases.json "${{ runner.temp }}/mvp-general"
+      - name: Run all product integration suites
+        env:
+          APH_INTEGRATION_REPORT_DIR: ${{ runner.temp }}/product-integration
+        run: go run build/mage.go -d build -w . integrationAll
 
-      - name: Run Windows MVP acceptance inventory
-        if: success() || failure()
-        shell: pwsh
-        run: go run build/mage.go -d build -w . integration cmd/agent-pulse-hub/testdata/mvp-windows-cases.json "${{ runner.temp }}/mvp-windows"
-
-      - name: Upload product acceptance reports
+      - name: Upload product integration reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: mvp-integration-windows
-          path: |
-            ${{ runner.temp }}/mvp-general
-            ${{ runner.temp }}/mvp-windows
+          name: product-integration-windows
+          path: ${{ runner.temp }}/product-integration
           if-no-files-found: error
 
   integration-tooling:

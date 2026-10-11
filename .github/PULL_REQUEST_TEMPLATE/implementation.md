@@ -35,7 +35,10 @@ and [specification feedback](https://github.com/nokamoto/agent-pulse-hub/blob/ma
      integration commands and results, and the full scoped set of
      approved CI acceptance case IDs and each
      result against the design's expected behavior, compared with the
-     machine-readable execution report. Include commands, environment,
+     scoped acceptance runner's machine-readable execution report. The
+     regular integrationAll CI run allows design Pending and cannot alone
+     establish scope completion. Run the approved inventory separately;
+     new integration suites do not need workflow changes. Include commands, environment,
      tested revision, and runtime-cost evidence. Every case must pass; Pending,
      skipped, missing, filtered, or deleted cases do not satisfy completion.
      Report failures, checks not run, defects, and risks; incomplete required
