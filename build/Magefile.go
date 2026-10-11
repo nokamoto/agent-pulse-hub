@@ -3,11 +3,21 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 )
+
+var Default = Check
+
+// Check runs unit and product integration tests, preserving both results on failure.
+func Check() error {
+	unitErr := Test()
+	integrationErr := IntegrationAll()
+	return errors.Join(unitErr, integrationErr)
+}
 
 func Guardrails() error {
 	return runGoCommands([][]string{

@@ -273,9 +273,14 @@ verification results, and any work left for delivery.
 Compare the approved case IDs for the implementation scope with the execution
 report. Every required case must be present and passed. Pending, runtime Skip,
 deleted cases, and cases excluded by filters do not satisfy completion. Keep
-future-scope Pending cases separate from the current completion gate; do not
-disable the gate to accommodate them. Infrastructure changes needed to enforce
-this check must be in place before claiming implementation readiness.
+future-scope Pending cases outside the implementation PR's completion scope.
+The regular integration run discovers all tagged command suites and allows
+static Pending, including cases added during design. Its successful CI result
+alone does not establish implementation completion. Record the scoped case
+comparison in the implementation PR, using the
+[acceptance runner](go-development.md#acceptance-runner-and-case-inventory)
+to obtain reports and check the approved inventory. Do not add a workflow job
+or change CI configuration for each new suite or implementation scope.
 
 An implementation PR is ready for human review only when the implementation
 approval criteria above are met. The phase ends when human approval and merge

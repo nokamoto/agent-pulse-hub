@@ -85,4 +85,7 @@ func TestIntegrationTooling(t *testing.T) {
 			}
 		})
 	}
+	t.Run("automatic runner", func(t *testing.T) {
+		qualifyIntegrationAll(t, root, filepath.Join(outputDir, "automatic-runner"))
+	})
 }
