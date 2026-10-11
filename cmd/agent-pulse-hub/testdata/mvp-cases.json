@@ -9,7 +9,9 @@
         "MVP-V04-INVALID-EVENT",
         "MVP-V04-DELIVERY-OUTCOME",
         "MVP-V05-RESTART",
-        "MVP-V10-DUPLICATE"
+        "MVP-V10-DUPLICATE",
+        "MVP-V01-SHUTDOWN",
+        "MVP-V08-LOCAL-CONTROL"
       ]
     },
     {
