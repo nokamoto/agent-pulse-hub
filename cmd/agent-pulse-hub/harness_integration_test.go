@@ -261,6 +261,7 @@ func (h *acceptanceHarness) driverRequest(value transcript) transcript {
 type caseRun struct {
 	root          string
 	started       time.Time
+	deadline      time.Time
 	peak          int
 	monitorStop   chan struct{}
 	monitorDone   chan struct{}
@@ -275,6 +276,7 @@ func newCaseRun(cap time.Duration, maxPeak int) *caseRun {
 	root, err := os.MkdirTemp(harness.directory, "case-")
 	Expect(err).NotTo(HaveOccurred())
 	c := &caseRun{root: root, started: time.Now(), monitorStop: make(chan struct{}), monitorDone: make(chan struct{}), raceStart: len(harness.observationRaces)}
+	c.deadline = c.started.Add(cap)
 	go func() {
 		defer close(c.monitorDone)
 		ticker := time.NewTicker(10 * time.Millisecond)
@@ -662,8 +664,12 @@ func (c *caseRun) start(plugins ...transcript) {
 	environment := childEnvironment("APH_FIXTURE_ROOT="+c.root, "APH_FIXTURE_CONSOLE_DLL="+harness.fixtureDLL)
 	row := harness.driverRequest(transcript{"op": "start", "executable": harness.daemon, "config": config, "root": c.root, "env": environment})
 	harness.ownedDaemon = number(row, "pid")
-	Eventually(func() int { return countMessage(c.logs(), "registration_available") }, 2*time.Second, 5*time.Millisecond).Should(Equal(1))
-	Eventually(func() int { return countMessage(c.logs(), "plugin_ready") }, 2*time.Second, 5*time.Millisecond).Should(Equal(len(plugins)))
+	remaining := time.Until(c.deadline)
+	Expect(remaining).To(BeNumerically(">", 0), "case deadline expired before readiness")
+	Eventually(func() []int {
+		logs := c.logs()
+		return []int{countMessage(logs, "registration_available"), countMessage(logs, "plugin_ready")}
+	}, remaining, 5*time.Millisecond).Should(Equal([]int{1, len(plugins)}))
 }
 
 func (h *acceptanceHarness) stop() transcript {
