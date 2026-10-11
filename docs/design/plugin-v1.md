@@ -177,11 +177,20 @@ operational deadlines, not throughput or end-to-end latency promises.
 
 ## Conformance verification
 
-These are planned implementation checks, not completed test results. A fixture
-written without daemon packages must exercise the following cases; the maintainer
-reviews its transcripts and assertions under
-[MVP verification](mvp.md#verification-strategy). At least one replacement
-fixture must use another language to demonstrate the contract is independent of Go.
+These are planned implementation checks, not completed test results. Every row
+below remains required conformance coverage across unit and integration tests.
+[MVP verification](mvp.md#verification-strategy) assigns observations to test
+levels and selects the public command-level integration cases. The complete
+schema, encoding, limit, deadline and state-decision matrices belong in unit
+tests with mocked external capabilities; they need not be repeated through
+child processes.
+
+The selected public-protocol cases use a replacement fixture written without
+daemon packages and in another language. It verifies the ready, watch-result,
+event and shutdown exchange through real child stdio, demonstrating that the
+contract is independent of Go. The maintainer reviews those selected cases'
+transcripts and assertions alongside the unit results. The table's expected
+results and all wire limits and deadlines remain mandatory.
 
 | Cases | Decisive result | Design verification |
 | --- | --- | --- |

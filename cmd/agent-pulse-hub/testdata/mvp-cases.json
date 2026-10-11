@@ -1,0 +1,23 @@
+{
+  "suites": [
+    {
+      "package": "./cmd/agent-pulse-hub",
+      "cases": [
+        "MVP-V01-INVALID-CONFIG",
+        "MVP-V02-REGISTER",
+        "MVP-V03-ROUTE",
+        "MVP-V04-INVALID-EVENT",
+        "MVP-V04-DELIVERY-OUTCOME",
+        "MVP-V05-RESTART",
+        "MVP-V10-DUPLICATE"
+      ]
+    },
+    {
+      "package": "./cmd/manual-plugin",
+      "cases": [
+        "MVP-V04-MANUAL-INVALID-CONTENT",
+        "MVP-V02-MANUAL-PATHS"
+      ]
+    }
+  ]
+}
