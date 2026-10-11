@@ -11,12 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Microsoft/go-winio"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
-	"github.com/nokamoto/agent-pulse-hub/internal/adapters/windowsidentity"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
-	"golang.org/x/sys/windows"
 )
 
 type DaemonError struct {
@@ -42,7 +39,7 @@ func Register(ctx context.Context, pluginName, sessionID string, watchArgs *json
 	if !domain.IsUUID(sessionID) {
 		return RegistrationResponse{}, nil, errors.New("session identity must be a UUID")
 	}
-	currentSID, err := windowsidentity.CurrentUserSID()
+	currentSID, err := (windowsPipes{}).CurrentUserSID()
 	if err != nil {
 		return RegistrationResponse{}, nil, err
 	}
@@ -50,6 +47,10 @@ func Register(ctx context.Context, pluginName, sessionID string, watchArgs *json
 }
 
 func register(ctx context.Context, pluginName, sessionID string, watchArgs *jsonvalue.Value, pipeName, currentSID string) (RegistrationResponse, []byte, error) {
+	return registerWith(ctx, pluginName, sessionID, watchArgs, pipeName, currentSID, windowsPipes{})
+}
+
+func registerWith(ctx context.Context, pluginName, sessionID string, watchArgs *jsonvalue.Value, pipeName, currentSID string, pipes pipeSystem) (RegistrationResponse, []byte, error) {
 	request := jsonvalue.NewObject(map[string]*jsonvalue.Value{
 		"version":    jsonvalue.NewNumber("1"),
 		"op":         jsonvalue.NewString("register"),
@@ -61,7 +62,7 @@ func register(ctx context.Context, pluginName, sessionID string, watchArgs *json
 	if err != nil {
 		return RegistrationResponse{}, nil, fmt.Errorf("encode registration request: %w", err)
 	}
-	connection, err := winio.DialPipeContext(ctx, pipeName)
+	connection, err := pipes.Dial(ctx, pipeName)
 	if err != nil {
 		return RegistrationResponse{}, nil, fmt.Errorf("connect to daemon: %w", err)
 	}
@@ -79,16 +80,7 @@ func register(ctx context.Context, pluginName, sessionID string, watchArgs *json
 		return RegistrationResponse{}, nil, fmt.Errorf("registration canceled before request: %w", err)
 	}
 
-	handleProvider, ok := connection.(interface{ Fd() uintptr })
-	if !ok {
-		return RegistrationResponse{}, nil, errors.New("control pipe does not expose its process handle")
-	}
-	pipeHandle := windows.Handle(handleProvider.Fd())
-	var serverPID uint32
-	if err := windows.GetNamedPipeServerProcessId(pipeHandle, &serverPID); err != nil {
-		return RegistrationResponse{}, nil, fmt.Errorf("verify daemon process identity: %w", err)
-	}
-	serverSID, err := windowsidentity.ProcessUserSID(serverPID)
+	serverSID, err := pipes.ServerUserSID(connection)
 	if err != nil {
 		return RegistrationResponse{}, nil, fmt.Errorf("verify daemon user identity: %w", err)
 	}

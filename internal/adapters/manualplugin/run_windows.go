@@ -30,6 +30,7 @@ type runner struct {
 	input      *bufio.Reader
 	output     io.Writer
 	diagnostic io.Writer
+	files      triggerFiles
 
 	outMu     sync.Mutex
 	watchMu   sync.Mutex
@@ -65,6 +66,7 @@ func Run(input io.Reader, output, diagnostic io.Writer) error {
 		input:      bufio.NewReader(input),
 		output:     output,
 		diagnostic: diagnostic,
+		files:      localTriggerFiles{},
 		watches:    make(map[string]*watcher),
 		rootCtx:    root,
 		stopAll:    cancel,
@@ -149,7 +151,7 @@ func (p *runner) readFrames(results chan<- readResult) {
 }
 
 func (p *runner) acceptWatch(frame pluginprotocol.Frame) error {
-	target, err := watchTargetFromArguments(frame.WatchArgs)
+	target, err := watchTargetFromArgumentsWithFiles(frame.WatchArgs, p.files)
 	if err != nil {
 		return p.write(pluginprotocol.Frame{
 			Type:      "watch_result",
@@ -208,7 +210,7 @@ func (p *runner) runWatch(watch *watcher) {
 		case <-watch.ctx.Done():
 			return
 		case <-ticker.C:
-			contextText, claimedPath, err := consumeTrigger(watch.target)
+			contextText, claimedPath, err := consumeTriggerWithFiles(watch.target, p.files)
 			if err != nil {
 				p.log("claimed trigger failed at " + claimedPath + ": " + safeDiagnostic(err.Error()))
 				continue
@@ -227,15 +229,15 @@ func (p *runner) runWatch(watch *watcher) {
 	}
 }
 
-func consumeTrigger(target watchTarget) (string, string, error) {
-	claimPath, err := claimFile(target)
+func consumeTriggerWithFiles(target watchTarget, files triggerFiles) (string, string, error) {
+	claimPath, err := files.Claim(target)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
 			return "", "", nil
 		}
 		return "", target.path, err
 	}
-	file, err := os.Open(claimPath)
+	file, err := files.Open(claimPath)
 	if err != nil {
 		return "", claimPath, err
 	}
@@ -253,7 +255,7 @@ func consumeTrigger(target watchTarget) (string, string, error) {
 	if !utf8.Valid(data) {
 		return "", claimPath, errors.New("context is not valid UTF-8")
 	}
-	if err := os.Remove(claimPath); err != nil {
+	if err := files.Remove(claimPath); err != nil {
 		return "", claimPath, err
 	}
 	return string(data), claimPath, nil
@@ -285,7 +287,7 @@ func claimFile(target watchTarget) (string, error) {
 	return "", errors.New("could not create a unique claimed path")
 }
 
-func watchTargetFromArguments(arguments *jsonvalue.Value) (watchTarget, error) {
+func watchTargetFromArgumentsWithFiles(arguments *jsonvalue.Value, files triggerFiles) (watchTarget, error) {
 	if err := protocol.ValidateFields(arguments, []string{"trigger_file"}, "trigger_file"); err != nil {
 		return watchTarget{}, err
 	}
@@ -293,7 +295,7 @@ func watchTargetFromArguments(arguments *jsonvalue.Value) (watchTarget, error) {
 	if !ok {
 		return watchTarget{}, errors.New("trigger_file must be a string")
 	}
-	return parseWatchTarget(path)
+	return parseWatchTargetWithFiles(path, files)
 }
 
 func (p *runner) write(frame pluginprotocol.Frame) error {

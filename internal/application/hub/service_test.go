@@ -14,6 +14,7 @@ import (
 
 	"github.com/nokamoto/agent-pulse-hub/internal/domain"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
+	"go.uber.org/mock/gomock"
 )
 
 const (
@@ -337,11 +338,11 @@ func TestUnknownAndCrossPluginEventsDoNotBlockAnotherPlugin(t *testing.T) {
 	first := &fakePlugin{}
 	second := &fakePlugin{}
 	delivery := &fakeDelivery{results: make(chan domain.Event, 4)}
-	service := New(delivery, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err := service.AddPlugin("manual", first); err != nil {
+	service := newUnitService(t, delivery)
+	if err := service.AddPlugin("manual", mockPlugin(t, first)); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.AddPlugin("other", second); err != nil {
+	if err := service.AddPlugin("other", mockPlugin(t, second)); err != nil {
 		t.Fatal(err)
 	}
 	service.StartPlugins(context.Background())
@@ -420,11 +421,11 @@ func TestPluginExitLeavesOtherPluginAvailable(t *testing.T) {
 	first := &fakePlugin{}
 	second := &fakePlugin{}
 	delivery := &fakeDelivery{results: make(chan domain.Event, 1)}
-	service := New(delivery, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err := service.AddPlugin("first", first); err != nil {
+	service := newUnitService(t, delivery)
+	if err := service.AddPlugin("first", mockPlugin(t, first)); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.AddPlugin("second", second); err != nil {
+	if err := service.AddPlugin("second", mockPlugin(t, second)); err != nil {
 		t.Fatal(err)
 	}
 	service.StartPlugins(context.Background())
@@ -511,8 +512,8 @@ func TestRestartRejectsOldSubscriptionAndRequiresFreshRegistration(t *testing.T)
 
 func newTestHub(t *testing.T, plugin *fakePlugin, delivery DeliveryPort) *Hub {
 	t.Helper()
-	service := New(delivery, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err := service.AddPlugin("manual", plugin); err != nil {
+	service := newUnitService(t, delivery)
+	if err := service.AddPlugin("manual", mockPlugin(t, plugin)); err != nil {
 		t.Fatal(err)
 	}
 	service.StartPlugins(context.Background())
@@ -523,6 +524,22 @@ func newTestHub(t *testing.T, plugin *fakePlugin, delivery DeliveryPort) *Hub {
 		service.StopPlugins(ctx)
 	})
 	return service
+}
+
+func newUnitService(t *testing.T, delivery DeliveryPort) *Hub {
+	t.Helper()
+	mock := NewMockDeliveryPort(gomock.NewController(t))
+	mock.EXPECT().Deliver(gomock.Any(), gomock.Any()).DoAndReturn(delivery.Deliver).AnyTimes()
+	return New(mock, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func mockPlugin(t *testing.T, plugin *fakePlugin) *MockPluginPort {
+	t.Helper()
+	mock := NewMockPluginPort(gomock.NewController(t))
+	mock.EXPECT().Start(gomock.Any(), gomock.Any()).DoAndReturn(plugin.Start).Times(1)
+	mock.EXPECT().Watch(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(plugin.Watch).AnyTimes()
+	mock.EXPECT().Stop(gomock.Any()).DoAndReturn(plugin.Stop).AnyTimes()
+	return mock
 }
 
 type fakePlugin struct {
