@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -423,27 +424,26 @@ func (c *caseRun) runNegative(command *exec.Cmd, cap time.Duration, maxProcesses
 }
 
 func ownedProcessSnapshot() (int, []transcript, error) {
-	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	parents, names, created, err := processGenerationSnapshot()
 	if err != nil {
 		return 0, nil, err
 	}
-	defer windows.CloseHandle(snapshot)
-	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
-	parents := map[uint32]uint32{}
-	names := map[uint32]string{}
-	walkErr := windows.Process32First(snapshot, &entry)
-	for ; walkErr == nil; walkErr = windows.Process32Next(snapshot, &entry) {
-		parents[entry.ProcessID] = entry.ParentProcessID
-		names[entry.ProcessID] = windows.UTF16ToString(entry.ExeFile[:])
-	}
-	if !errors.Is(walkErr, windows.ERROR_NO_MORE_FILES) {
-		return 0, nil, walkErr
+	if created[uint32(os.Getpid())] <= 0 {
+		return 0, nil, errors.New("process snapshot is missing the observer's creation time")
 	}
 	owned := map[uint32]bool{uint32(os.Getpid()): true}
 	for changed := true; changed; {
 		changed = false
 		for pid, parent := range parents {
 			if owned[parent] && !owned[pid] {
+				if created[pid] <= 0 {
+					return 0, nil, fmt.Errorf("process snapshot is missing creation time for descendant candidate PID=%d", pid)
+				}
+				// Parent IDs survive the parent process. A newer process with
+				// that reused PID cannot have created an older child.
+				if created[parent] > created[pid] {
+					continue
+				}
 				owned[pid] = true
 				changed = true
 			}
@@ -535,6 +535,68 @@ func ownedProcessSnapshot() (int, []transcript, error) {
 		rows = append(rows, transcript{"pid": float64(pid), "parent_pid": parents[pid], "executable": path, "alive": true, "resource_role": role})
 	}
 	return live, rows, nil
+}
+
+// Obtain parent identity and creation time from one system snapshot without
+// opening unrelated protected processes. Retained observation handles below
+// prevent their process IDs from being reused until the suite closes them.
+func processGenerationSnapshot() (map[uint32]uint32, map[uint32]string, map[uint32]int64, error) {
+	var buffer []byte
+	size := uint32(1 << 20)
+	for attempt := 0; ; attempt++ {
+		if attempt == 8 || size > 64<<20 {
+			return nil, nil, nil, errors.New("process snapshot exceeded bounded allocation retries")
+		}
+		buffer = make([]byte, size)
+		err := windows.NtQuerySystemInformation(windows.SystemProcessInformation, unsafe.Pointer(&buffer[0]), size, &size)
+		if err == nil {
+			if size == 0 || uint64(size) > uint64(len(buffer)) {
+				return nil, nil, nil, errors.New("process snapshot returned an invalid length")
+			}
+			buffer = buffer[:size]
+			break
+		}
+		if err != windows.STATUS_INFO_LENGTH_MISMATCH {
+			return nil, nil, nil, fmt.Errorf("query process generations: %w", err)
+		}
+		if size > (64<<20)-(64<<10) {
+			return nil, nil, nil, errors.New("process snapshot exceeded its allocation bound")
+		}
+		size += 64 << 10
+	}
+	parents := map[uint32]uint32{}
+	names := map[uint32]string{}
+	created := map[uint32]int64{}
+	minimum := uint64(unsafe.Sizeof(windows.SYSTEM_PROCESS_INFORMATION{}))
+	base := uintptr(unsafe.Pointer(&buffer[0]))
+	for offset := uint64(0); ; {
+		if offset%uint64(unsafe.Alignof(windows.SYSTEM_PROCESS_INFORMATION{})) != 0 || offset+minimum > uint64(len(buffer)) {
+			return nil, nil, nil, errors.New("process snapshot record exceeds its buffer")
+		}
+		entry := (*windows.SYSTEM_PROCESS_INFORMATION)(unsafe.Pointer(&buffer[offset]))
+		name := entry.ImageName
+		namePointer := uintptr(unsafe.Pointer(name.Buffer))
+		if name.Length%2 != 0 || name.MaximumLength%2 != 0 || name.Length > name.MaximumLength ||
+			(name.Length > 0 && (namePointer%2 != 0 || namePointer < base || namePointer-base > uintptr(len(buffer)) || uintptr(name.Length) > uintptr(len(buffer))-(namePointer-base))) {
+			return nil, nil, nil, errors.New("process snapshot contains an invalid Unicode image name")
+		}
+		pid := uint32(entry.UniqueProcessID)
+		if _, exists := parents[pid]; exists {
+			return nil, nil, nil, errors.New("process snapshot contains duplicate process IDs")
+		}
+		parents[pid] = uint32(entry.InheritedFromUniqueProcessID)
+		names[pid] = name.String()
+		created[pid] = entry.CreateTime
+		if entry.NextEntryOffset == 0 {
+			break
+		}
+		if uint64(entry.NextEntryOffset) < minimum {
+			return nil, nil, nil, errors.New("process snapshot contains an invalid next offset")
+		}
+		offset += uint64(entry.NextEntryOffset)
+	}
+	runtime.KeepAlive(buffer)
+	return parents, names, created, nil
 }
 
 // An image path identifies the same retained process object throughout its
