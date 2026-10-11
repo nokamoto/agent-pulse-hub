@@ -15,8 +15,12 @@ cases and fixtures, source requirements and acceptance criteria, and relevant
 existing design and code. Apply the
 [design verification deliverables](../../../docs/aidd/README.md#design-verification-deliverables)
 to case selection, retained coverage, static `Pending` status, compile and registration evidence,
-governed paths, service-free CI feasibility, and separately resolved
-prerequisites. Verify that the author weighed defect-detection value against
+governed paths, service-free CI feasibility, minimal fixture preparation, and
+separately resolved infrastructure prerequisites. For fixture preparation,
+verify every allowance condition in that rule against the complete base-to-head
+diff, including effects on other job steps, case mappings, approved pin sources,
+unchanged module selection when applicable, and affected-job execution and cost
+evidence. Verify that the author weighed defect-detection value against
 implementation complexity and maintenance and execution costs before proposing
 cases, considered sufficient cheaper verification or consolidation, and resolved
 each selected case's concrete method and CI feasibility. Pending may defer test

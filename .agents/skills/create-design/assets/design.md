@@ -92,10 +92,12 @@ Give cases stable IDs and governed paths directly in
 `cmd/<command>/*_integration_test.go`, tag all case and suite files with
 `//go:build integration`, and place fixtures in that command's `testdata/`.
 Follow the [acceptance test conventions](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#design-acceptance-tests).
-Identify separately
-approved and merged prerequisites; dependency, build, CI, tooling, and shared
-harness changes belong in separate PRs. Pending cases must not use dynamic
-`Skip` to hide missing implementation. Record commands and results showing
+Identify minimal fixture preparation under the playbook boundary above and map
+it to concrete cases; record separately approved and merged prerequisites for
+other dependency, build, CI, tooling, or shared harness changes. The design PR
+records evidence for permitted preparation, including approved pins, unchanged
+module selection when applicable, and affected-job execution and cost. Pending
+cases must not use dynamic `Skip` to hide missing implementation. Record commands and results showing
 that cases compile and register with the `integration` tag enabled and available
 dependencies, without references
 to nonexistent production symbols. Requirements and this design remain

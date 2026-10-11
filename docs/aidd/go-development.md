@@ -179,8 +179,12 @@ separate while requiring both for implementation completion.
 
 Pin Ginkgo and any Gomega dependency in `go.mod`; pin a used Ginkgo CLI to the
 same module version rather than relying on a global installation. Prepare
-missing dependencies and shared runner support separately before a design PR
-uses them. A design PR must compile and register its cases with the available
+missing dependencies and shared runner support in separately approved and merged
+prerequisite PRs before a design PR uses them. Same-version direct/indirect
+module reclassification for fixture imports and reuse of approved CI environment
+pins may accompany the design cases only under the
+[minimal fixture preparation boundary](README.md#design-verification-deliverables).
+A design PR must compile and register its cases with the available
 dependencies even while product behavior is Pending. Static Pending does not
 exclude undefined Go symbols from compilation.
 
