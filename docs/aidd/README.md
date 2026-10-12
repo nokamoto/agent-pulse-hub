@@ -28,8 +28,11 @@ This document defines the principles, phases, deliverables, roles, and pull requ
 ## User-facing README
 
 The root `README.md` is the entry point for people and external AI agents
-using this OSS project. It must explain enough for those users to install,
-configure, run, and extend the product with plugins. Repository development
+using this OSS project. Write first for a human encountering the product for
+the first time: explain its purpose, then provide the minimum complete path
+from prerequisites and installation to a useful, observable result. Keep
+necessary configuration and user-visible limitations beside the relevant step.
+Support external AI agents through the same clear instructions. Repository development
 and implementation instructions belong in `AGENTS.md` and the documents it
 references, not in the root README. Writing a plugin as an external user is
 part of product usage, not repository development.
@@ -44,7 +47,7 @@ this order:
 | `Requirements` | Prerequisites for installing, running, and using the product. |
 | `Installation` | How users obtain and install the product. |
 | `Usage` | Configuration, running the product, and observable usage examples. |
-| `Writing plugins` | How external authors create and use compatible plugins, with references to the authoritative contracts where needed. |
+| `Writing plugins` | A concise entry point for external plugin authors, linking to the authoritative contracts for implementation details. |
 
 Level-three through level-six subheadings may be added freely within these
 sections. Use ATX headings (`#` prefixes) outside lists and block quotes;
@@ -52,6 +55,15 @@ Setext headings (underline syntax) and HTML headings are not allowed.
 Code examples may contain heading syntax without creating document sections.
 Do not add contributor setup, repository architecture, implementation plans,
 development checks, or agent workflow instructions under any heading.
+
+Select content by the reader's task, not by the amount of behavior verified
+during delivery. Keep the normal usage path easy to follow without reading
+plugin protocol details, internal identifiers, or acceptance scenarios. Link
+existing authoritative specifications for those plugin details instead of
+copying contract inventories into the README. Keep execution evidence in the
+delivery PR. Shortening must preserve steps and constraints needed to run the
+product; neither a line limit nor moving necessary setup behind links proves
+usability.
 
 The `readme` guardrail checks the root README's heading structure through the
 shared Mage `guardrails` target. It rejects missing, additional, duplicate,
