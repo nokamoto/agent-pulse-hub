@@ -22,7 +22,9 @@
 <!-- Record the documentation revision, product revision or acquired artifact,
      supported environment, steps followed from acquisition and installation
      through configuration and usage, observable results, and evidence links.
-     Cover plugin-author instructions applicable to this scope. -->
+     Distinguish the example shell, approved product constraints, and actual
+     verification environment; record command adaptations and unexecuted
+     published steps. Cover plugin-author instructions applicable to this scope. -->
 
 ## Delivery verification results
 

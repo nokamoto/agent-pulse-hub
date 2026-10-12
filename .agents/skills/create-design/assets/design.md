@@ -71,7 +71,10 @@ Address recovery, concurrency, retries, and idempotency when needed.>
 
 <Address relevant security, privacy, performance, reliability, observability,
 extensibility, and operational risks. Explain how approved constraints are met
-without inventing targets. Explain non-applicable concerns.>
+without inventing targets. Explain non-applicable concerns. Apply the
+[OS-neutral development policy](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#os-neutral-development-and-documentation)
+to platform choices; identify the reason, boundary, and limitations of any
+necessary OS-specific behavior.>
 
 ## Verification strategy
 

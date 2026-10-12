@@ -9,21 +9,25 @@ uses the bundled manual plugin: publish a text file and see Codex reply.
 
 ## Requirements
 
-- Git, Go (see [go.mod](go.mod)), and PowerShell 7 for this Windows walkthrough.
+- Git and Go (see [go.mod](go.mod)).
 - Codex Desktop whose bundled CLI supports `codex queue`.
+
+The examples use a POSIX shell and Python 3 to write JSON configuration files.
+These example tools do not define a product OS requirement.
 
 ## Installation
 
-In the first PowerShell terminal, obtain the source and build both programs.
+In the first terminal, obtain the source and build both programs.
 Stop if a command fails.
 
-```powershell
+```sh
 git clone https://github.com/nokamoto/agent-pulse-hub.git
-Set-Location agent-pulse-hub
-New-Item -ItemType Directory ./pulse-demo | Out-Null
-$run = (Resolve-Path ./pulse-demo).Path
-go build -o "$run\agent-pulse-hub.exe" ./cmd/agent-pulse-hub
-go build -o "$run\manual-plugin.exe" ./cmd/manual-plugin
+cd agent-pulse-hub
+mkdir ./pulse-demo
+run="$(python3 -c 'from pathlib import Path; print((Path.cwd() / "pulse-demo").as_posix())')"
+suffix="$(go env GOEXE)"
+go build -o "$run/agent-pulse-hub$suffix" ./cmd/agent-pulse-hub
+go build -o "$run/manual-plugin$suffix" ./cmd/manual-plugin
 ```
 
 Open the cloned folder as the project for your existing Codex chat.
@@ -32,49 +36,72 @@ Open the cloned folder as the project for your existing Codex chat.
 
 ### Configure and start
 
-Continue in the first terminal. With Codex running, list its executable paths
-and enter the one used by your Codex app when prompted. Keep this terminal open
+In your existing Codex chat, ask it to locate the bundled CLI first:
+
+```text
+Find the absolute path of the CLI executable bundled with the Codex app hosting
+this chat. Inspect the running process or app installation to identify it;
+do not assume the first codex on PATH belongs to this app. Report the path,
+or explain if it cannot be identified.
+```
+
+Continue only once that path is identified. In the first terminal, enter it
+when prompted. Keep this terminal open
 and note the printed run directory. Before configuring the daemon, confirm that
 the CLI help lists `--thread` and `--message`; stop if it does not.
 
-```powershell
-Get-Process codex | Select-Object -ExpandProperty Path -Unique
-$codex = Read-Host 'Absolute Codex executable path'
-& $codex queue --help
-$config = @{
-    codex_executable = $codex
-    plugins = @(@{ name = 'manual'; executable = "$run\manual-plugin.exe"; args = @() })
+```sh
+printf 'Absolute Codex executable path: '
+IFS= read -r codex
+"$codex" queue --help
+```
+
+After checking the help, write the configuration and start the daemon:
+
+```sh
+python3 - "$run" "$codex" "$suffix" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+run = Path(sys.argv[1])
+config = {
+    "codex_executable": sys.argv[2],
+    "plugins": [{"name": "manual", "executable": str(run / ("manual-plugin" + sys.argv[3])), "args": []}],
 }
-$config | ConvertTo-Json -Depth 4 | Set-Content "$run\daemon.json" -Encoding utf8NoBOM
-@{ trigger_file = "$run\next.txt" } | ConvertTo-Json | Set-Content "$run\watch.json" -Encoding utf8NoBOM
-Write-Output "Run directory: $run"
-& "$run\agent-pulse-hub.exe" daemon --config "$run\daemon.json"
+(run / "daemon.json").write_text(json.dumps(config), encoding="utf-8")
+(run / "watch.json").write_text(json.dumps({"trigger_file": str(run / "next.txt")}), encoding="utf-8")
+PY
+printf 'Run directory: %s\n' "$run"
+printf 'Hub executable: %s\n' "$run/agent-pulse-hub$suffix"
+printf 'Watch file: %s\n' "$run/watch.json"
+"$run/agent-pulse-hub$suffix" daemon --config "$run/daemon.json"
 ```
 
 Wait for `plugin_ready` (`manual`) and `registration_available` in this terminal.
 
 ### Register the conversation
 
-Send this in your Codex chat, replacing `<run directory>` with the printed path.
-Wait for Codex to confirm registration.
+Send this in your Codex chat, replacing `<hub executable>` and `<watch file>`
+with the printed paths. Wait for Codex to confirm registration.
 
 ```text
 Use $register-pulse to register this conversation with hub executable
-<run directory>\agent-pulse-hub.exe, plugin manual, and watch arguments from
-<run directory>\watch.json.
+<hub executable>, plugin manual, and watch arguments from <watch file>.
 When PULSE-DEMO-001 arrives, reply with that message.
 ```
 
 ### Trigger and stop
 
-After the registration turn finishes, open a second PowerShell terminal. Ensure
+After the registration turn finishes, open a second POSIX shell terminal. Ensure
 `next.txt` is absent and use only this terminal to publish. Write and close a
 temporary file, then rename it so the plugin reads the complete text.
 
-```powershell
-$run = Read-Host 'Run directory printed in the first terminal'
-Set-Content "$run\next.tmp" 'PULSE-DEMO-001' -Encoding utf8NoBOM -NoNewline
-[System.IO.File]::Move("$run\next.tmp", "$run\next.txt")
+```sh
+printf 'Run directory printed in the first terminal: '
+IFS= read -r run
+printf '%s' 'PULSE-DEMO-001' > "$run/next.tmp"
+mv -i "$run/next.tmp" "$run/next.txt"
 ```
 
 Your Codex chat should reply without another message from you. For problems, see the
@@ -82,8 +109,9 @@ Your Codex chat should reply without another message from you. For problems, see
 
 Stop from the second terminal, or press Ctrl+C in the first:
 
-```powershell
-& "$run\agent-pulse-hub.exe" stop
+```sh
+suffix="$(go env GOEXE)"
+"$run/agent-pulse-hub$suffix" stop
 ```
 
 Wait for the daemon to exit. Stopping loses watches and pending events; restart

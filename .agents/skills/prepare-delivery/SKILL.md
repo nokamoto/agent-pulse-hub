@@ -34,7 +34,12 @@ select the steps a first-time human user needs to reach a useful result.
 Keep those steps and necessary limitations in the README, route plugin
 implementation details to existing authoritative specifications, and put
 verification records in the PR. Draft that usage path without reproducing
-the delivery case inventory. If no README change is necessary,
+the delivery case inventory. Use the README rule's primary shell convention;
+check prerequisites against the governing requirements and design rather than
+copying the local verification environment. Record shell adaptations and
+unexecuted published commands under
+[delivery inputs and outputs](../../../docs/aidd/README.md#delivery-inputs-and-outputs).
+If no README change is necessary,
 explain why and still verify the existing instructions for this scope.
 
 Follow the documented acquisition and setup steps and execute every scoped

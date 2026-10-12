@@ -48,7 +48,10 @@ and operational needs. Explain non-applicability instead of inventing targets.>
 ## Constraints and dependencies
 
 <List mandatory constraints with their sources, external dependencies, and
-assumptions. Distinguish required constraints from design options.>
+assumptions. Distinguish required constraints from design options. For any OS
+constraint, record its source and rationale under the
+[OS-neutral development policy](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#os-neutral-development-and-documentation);
+the author's development host alone is not a source.>
 
 ## Acceptance criteria
 
