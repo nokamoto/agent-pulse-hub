@@ -34,6 +34,17 @@ approved expected behavior require upstream approval and merge. Final quality
 checks using actual Codex or external services are designed upstream and
 executed during delivery under the completion boundary above.
 
+## Delivery
+
+Follow the [delivery phase](docs/aidd/README.md#4-delivery) after verifying
+implementation approval and merge. Use
+[prepare-delivery](.agents/skills/prepare-delivery/SKILL.md),
+[review-delivery](.agents/skills/review-delivery/SKILL.md), and the
+[delivery PR template](.github/PULL_REQUEST_TEMPLATE/delivery.md).
+Deliver verified user-facing README instructions and the approved delivery
+check evidence. Follow the phase's scope and feedback rules for defects,
+missing upstream documentation, distribution, and completion.
+
 ## CI feedback during implementation
 
 Follow the [CI and verification infrastructure boundary](docs/aidd/README.md#ci-and-verification-infrastructure-boundary).

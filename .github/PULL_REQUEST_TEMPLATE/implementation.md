@@ -76,6 +76,10 @@ and [acceptance test conventions](https://github.com/nokamoto/agent-pulse-hub/bl
 
 [Implementation completion and delivery boundary](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#implementation-completion-and-delivery-boundary).
 
+Hand off these items using the separate
+[delivery phase](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#4-delivery)
+and [delivery PR template](https://github.com/nokamoto/agent-pulse-hub/blob/main/.github/PULL_REQUEST_TEMPLATE/delivery.md).
+
 ## Human approval and merge
 
 Review the final revision using the
