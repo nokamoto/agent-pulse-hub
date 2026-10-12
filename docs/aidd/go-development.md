@@ -12,6 +12,12 @@ These conventions apply to contributors and agents changing Go code in this
 repository. Use one module, `github.com/nokamoto/agent-pulse-hub`, declared in
 the root `go.mod`. Do not introduce nested modules.
 
+Apply the [OS-neutral development policy](README.md#os-neutral-development-and-documentation)
+to product code, tests, and build tooling. Use `path/filepath` for filesystem
+paths and explicit argument lists with `os/exec` for processes. Obtain an
+executable suffix from the build environment when needed, rather than assuming
+`.exe`; avoid requiring a particular shell for Go/Mage checks.
+
 ## Package placement
 
 The following table defines the allowed locations for Go source files.
@@ -43,9 +49,9 @@ rules; external protocols and platform details stay in adapters.
 
 | Layer | Responsibilities and examples from the [MVP design](../design/mvp.md) |
 | --- | --- |
-| `domain` | Subscription, event, and delivery-result concepts and pure rules such as subscription equivalence. No wire-format DTOs, process operations, or Windows or Codex integrations. |
+| `domain` | Subscription, event, and delivery-result concepts and pure rules such as subscription equivalence. No wire-format DTOs, process operations, or OS or Codex integrations. |
 | `application` | Coordinate registration, duplicate-request handling, event acceptance, registry and queue operations, and delivery. Define interfaces for external capabilities at the consuming boundary. |
-| `adapters` | Read configuration and implement named-pipe transport, plugin process communication and JSON frames, Codex CLI integration, and manual-plugin file I/O. Translate external representations into application or domain inputs and results. |
+| `adapters` | Read configuration and implement local-control transport, plugin process communication, Codex CLI integration, and manual-plugin file I/O. Translate external representations into application or domain inputs and results. |
 
 The following rules apply to imports between product layers, including their
 nested packages. Imports within the same layer must remain acyclic, as Go
@@ -156,8 +162,8 @@ facilities may be used with documented CI prerequisites and commands. Keep
 platform-specific infrastructure proportional to the behavior being verified.
 Wait for observable
 conditions with a deadline instead of relying on fixed sleeps in asynchronous
-tests. Passing tests on another operating system does not establish Windows
-behavior; follow the implementation and delivery allocation in the approved design.
+tests. Verify any approved OS-specific behavior on the applicable OS; follow
+the implementation and delivery allocation in the approved design.
 
 ### Design acceptance tests
 
@@ -232,8 +238,9 @@ and cases are included without an inventory selection or workflow change.
 Static Pending is allowed; failing tests and compilation failures still fail
 the run. Each package has a five-minute execution timeout for the combined
 run; the scoped acceptance runner's two-minute suite budget below is unchanged.
-Run Windows scenarios on Windows; success on another OS cannot verify them.
-CI runs this target in a fixed Windows job, separately from unit tests.
+CI currently runs this target in a fixed Windows job, separately from unit
+tests. That runner is verification infrastructure, not a product OS constraint
+or an instruction to add an OS support matrix.
 
 Reports go to a new directory outside the checkout by default. Set
 `APH_INTEGRATION_REPORT_DIR` to choose a new report directory. Retain
@@ -293,7 +300,7 @@ Ginkgo reports for passed, Pending, skipped, missing, and failed fixture cases.
 These fixtures contain no product behavior. CI runs this qualification on
 Linux and Windows and retains its reports independently of the default test
 job. Its success establishes tooling behavior only. It does not establish
-MVP acceptance, Windows product behavior, or delivery quality. An approved
+MVP acceptance, OS-specific product behavior, or delivery quality. An approved
 product inventory, passing product cases in CI, and the implementation PR's
 scoped report comparison are still required for implementation completion.
 

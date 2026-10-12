@@ -25,6 +25,38 @@ This document defines the principles, phases, deliverables, roles, and pull requ
 - **Turn verification into automation.** Maintain reproducible verification as tests and CI to reduce repeated manual checks. For checks that cannot be automated, explain why and identify what humans must verify.
 - **Minimize the cost of human approval.** Divide changes into reviewable units and present decisions, diffs, requirement mappings, and verification results together. Let humans focus on suitability and risk without repeating checks already covered by automation.
 
+## OS-neutral development and documentation
+
+Keep product decisions, implementation, repository tooling, tests, and
+documentation as OS neutral as practical throughout every development phase.
+The OS of a contributor's machine or a verification run is execution context,
+not a product requirement or a reason to narrow the repository's workflows.
+Derive necessary platform constraints from the task and governing requirements
+and design; do not infer them from the available host.
+
+Prefer portable APIs and the shared Go/Mage commands for development automation.
+Handle filesystem paths and process arguments with the language's APIs rather
+than hard-coded separators, executable suffixes, or shell command strings.
+Keep unavoidable platform-specific behavior at the relevant external boundary.
+Document its reason, affected scope, and limitations in the governing artifact
+for that phase. Preserve existing approval boundaries when changing a product
+decision or shared verification infrastructure.
+
+Use POSIX shell syntax for primary shell examples in documentation, including
+the root README. Identify the shell and any example-only utilities separately
+from product dependencies. An example shell does not select a supported OS.
+Where an OS-specific command is necessary, label its scope and explain why;
+provide a portable procedure when practical. Agents may adapt commands to the
+execution host without turning those adaptations into the canonical procedure.
+
+Record the actual OS, shell, adaptations, and outcomes with verification
+evidence. Distinguish executed commands from unexecuted examples; success on
+one host does not establish support on other hosts. OS neutrality does not
+promise universal compatibility or require an OS support matrix, new CI
+runners, or additional acceptance runs. Select verification under the existing
+requirements, design, and test-cost rules; report discovered portability gaps
+through the applicable phase instead of silently narrowing scope.
+
 ## User-facing README
 
 The root `README.md` is the entry point for people and external AI agents
@@ -64,6 +96,10 @@ copying contract inventories into the README. Keep execution evidence in the
 delivery PR. Shortening must preserve steps and constraints needed to run the
 product; neither a line limit nor moving necessary setup behind links proves
 usability.
+
+Apply the [OS-neutral documentation policy](#os-neutral-development-and-documentation)
+to prerequisites and command examples. Keep necessary platform-specific
+alternatives clearly labeled and limited to approved behavior.
 
 The `readme` guardrail checks the root README's heading structure through the
 shared Mage `guardrails` target. It rejects missing, additional, duplicate,
@@ -477,6 +513,14 @@ supported environment. Record the revision or artifact used and the outcome
 in the delivery PR. If existing instructions already cover the entire scope,
 record the verification and explain why no README edit is needed.
 
+Keep the README's example shell, approved product constraints, and actual
+verification environment distinct. Follow the primary shell convention in the
+[OS-neutral documentation policy](#os-neutral-development-and-documentation).
+Record any command adaptations and which documented steps were actually run;
+an equivalent command in another shell does not verify the published commands.
+Unexecuted documented steps remain unverified under the existing delivery
+criteria.
+
 Keep the following evidence in the delivery PR rather than creating a new
 documentation category or putting execution logs in the README:
 
@@ -644,6 +688,9 @@ matching wording is not required.
   readers must consult for one decision or maintain for one rule change. Keep
   repetition only where its role requires it and its meaning remains consistent
   with the authoritative rule; otherwise consolidate it or use a reference.
+- Check changed development procedures, tooling guidance, and examples against
+  the [OS-neutral policy](#os-neutral-development-and-documentation), including
+  the reasons and scope of any necessary platform-specific exceptions.
 - Record the authoritative source, inspected use paths, findings, corrections,
   and any unresolved uncertainty in the PR description. If no rule or use changes,
   record this review as not applicable with a reason.

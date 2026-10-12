@@ -4,6 +4,10 @@ Implementation language: Go.
 
 Write all documentation in English.
 
+Apply the [OS-neutral development and documentation policy](docs/aidd/README.md#os-neutral-development-and-documentation)
+to every phase, including repository tooling and tests. Do not derive product
+constraints or canonical procedures from the development host's OS.
+
 Keep the root README focused on OSS users, including external AI agents and
 plugin authors. Follow the [README content and structure rule](docs/aidd/README.md#user-facing-readme).
 Repository development and implementation instructions belong here or in the

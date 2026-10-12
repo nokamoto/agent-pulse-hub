@@ -34,11 +34,18 @@ conversation's execution environment.
    watch-arguments file, and verified UUID. If the user supplied a local-control
    address, pass that same address to the client:
 
-   ```powershell
-   $RegisterArgs = @('--plugin', $PluginName, '--session-id', $SessionID,
-       '--watch-args-file', $WatchArgumentsFile)
-   if ($ControlAddress) { $RegisterArgs += @('--address', $ControlAddress) }
-   & $HubExecutable register @RegisterArgs
+   The following POSIX shell example uses the supplied inputs and verified
+   identity as variables. Adapt argument passing to the execution host under
+   the [OS-neutral development policy](../../../docs/aidd/README.md#os-neutral-development-and-documentation),
+   preserving each value as one argument.
+
+   ```sh
+   set -- --plugin "$PluginName" --session-id "$SessionID" \
+       --watch-args-file "$WatchArgumentsFile"
+   if [ -n "${ControlAddress:-}" ]; then
+       set -- "$@" --address "$ControlAddress"
+   fi
+   "$HubExecutable" register "$@"
    ```
 
    Do not start the daemon or plugin. Do not modify the user's arguments file.
