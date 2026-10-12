@@ -29,10 +29,12 @@ is part of every delivery.
 ## Prepare instructions and evidence
 
 Update the root README under the
-[README rule](../../../docs/aidd/README.md#user-facing-readme). Explain the
-delivered product to users and plugin authors with usable prerequisites,
-installation, configuration, and observable examples. Reference approved
-contracts rather than redefining them. If no README change is necessary,
+[README rule](../../../docs/aidd/README.md#user-facing-readme). Before drafting,
+select the steps a first-time human user needs to reach a useful result.
+Keep those steps and necessary limitations in the README, route plugin
+implementation details to existing authoritative specifications, and put
+verification records in the PR. Draft that usage path without reproducing
+the delivery case inventory. If no README change is necessary,
 explain why and still verify the existing instructions for this scope.
 
 Follow the documented acquisition and setup steps and execute every scoped
@@ -60,7 +62,11 @@ and merge, rerun affected checks and update the tested revision.
 Run the applicable checks from [AGENTS.md](../../../AGENTS.md), including
 formatting and guardrails, and record actual results. Apply
 [Markdown readability review](../review-markdown-readability/SKILL.md) to all
-written or edited Markdown. Delegate delivery self-review to a fresh
+written or edited Markdown. For the root README, specify first-time human
+users as the primary audience and reaching a useful working result as the
+primary purpose; include external plugin authors for the plugin section.
+Do not frame the audience solely as agents, contract implementers, or delivery
+reviewers. Delegate delivery self-review to a fresh
 clean-context subagent with `fork_turns="none"`, model `gpt-6.1-sol`, and
 reasoning effort `high`. Supply the original requested scope, repository,
 exact target/base revision or local snapshot, and evidence locations; have it
