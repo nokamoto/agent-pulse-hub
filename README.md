@@ -24,9 +24,10 @@ Stop if a command fails.
 git clone https://github.com/nokamoto/agent-pulse-hub.git
 cd agent-pulse-hub
 mkdir ./pulse-demo
-run="$(pwd)/pulse-demo"
-go build -o "$run/agent-pulse-hub" ./cmd/agent-pulse-hub
-go build -o "$run/manual-plugin" ./cmd/manual-plugin
+run="$(python3 -c 'from pathlib import Path; print((Path.cwd() / "pulse-demo").as_posix())')"
+suffix="$(go env GOEXE)"
+go build -o "$run/agent-pulse-hub$suffix" ./cmd/agent-pulse-hub
+go build -o "$run/manual-plugin$suffix" ./cmd/manual-plugin
 ```
 
 Open the cloned folder as the project for your existing Codex chat.
@@ -58,7 +59,7 @@ IFS= read -r codex
 After checking the help, write the configuration and start the daemon:
 
 ```sh
-python3 - "$run" "$codex" <<'PY'
+python3 - "$run" "$codex" "$suffix" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -66,26 +67,27 @@ from pathlib import Path
 run = Path(sys.argv[1])
 config = {
     "codex_executable": sys.argv[2],
-    "plugins": [{"name": "manual", "executable": str(run / "manual-plugin"), "args": []}],
+    "plugins": [{"name": "manual", "executable": str(run / ("manual-plugin" + sys.argv[3])), "args": []}],
 }
 (run / "daemon.json").write_text(json.dumps(config), encoding="utf-8")
 (run / "watch.json").write_text(json.dumps({"trigger_file": str(run / "next.txt")}), encoding="utf-8")
 PY
 printf 'Run directory: %s\n' "$run"
-"$run/agent-pulse-hub" daemon --config "$run/daemon.json"
+printf 'Hub executable: %s\n' "$run/agent-pulse-hub$suffix"
+printf 'Watch file: %s\n' "$run/watch.json"
+"$run/agent-pulse-hub$suffix" daemon --config "$run/daemon.json"
 ```
 
 Wait for `plugin_ready` (`manual`) and `registration_available` in this terminal.
 
 ### Register the conversation
 
-Send this in your Codex chat, replacing `<run directory>` with the printed path.
-Wait for Codex to confirm registration.
+Send this in your Codex chat, replacing `<hub executable>` and `<watch file>`
+with the printed paths. Wait for Codex to confirm registration.
 
 ```text
 Use $register-pulse to register this conversation with hub executable
-<run directory>/agent-pulse-hub, plugin manual, and watch arguments from
-<run directory>/watch.json.
+<hub executable>, plugin manual, and watch arguments from <watch file>.
 When PULSE-DEMO-001 arrives, reply with that message.
 ```
 
@@ -108,7 +110,8 @@ Your Codex chat should reply without another message from you. For problems, see
 Stop from the second terminal, or press Ctrl+C in the first:
 
 ```sh
-"$run/agent-pulse-hub" stop
+suffix="$(go env GOEXE)"
+"$run/agent-pulse-hub$suffix" stop
 ```
 
 Wait for the daemon to exit. Stopping loses watches and pending events; restart
