@@ -15,7 +15,7 @@ sources:
 
 ## Purpose and scope
 
-This document defines the principles, phases, deliverables, roles, and pull request (PR) approval boundaries for AI-Driven Development (AIDD). Requirements, design, implementation, and verification remain traceable through versioned deliverables and their PRs.
+This document defines the principles, phases, deliverables, roles, and pull request (PR) approval boundaries for AI-Driven Development (AIDD). Requirements, design, implementation, and delivery remain traceable through versioned deliverables, verification evidence, and their PRs.
 
 ## Core principles
 
@@ -63,9 +63,8 @@ the README is usable.
 Delivery work is expected to update the user-facing content within this
 structure. Changes to the fixed headings or their enforcement require the
 [repository rules workflow](../../.agents/skills/edit-repository-rules/SKILL.md).
-This rule establishes the README boundary; it does not define the delivery
-phase or change the existing requirements, design, and implementation
-boundaries. README examples explain approved behavior and must not introduce
+The [delivery phase](#4-delivery) defines the procedure and completion criteria
+for these updates. README examples explain approved behavior and must not introduce
 or change plugin contracts independently of their governing design.
 
 ## Development flow
@@ -78,6 +77,7 @@ why in the PR for the first downstream phase with deliverables.
 Requirements definition → Requirements PR → Human review → Approval and merge
 Design → Design PR → Human review → Approval and merge
 Implementation and verification → Implementation PR → Human review → Approval and merge
+Delivery and final quality verification → Delivery PR → Human review → Approval and merge
 ```
 
 Each phase produces a separate PR containing its deliverables. Agents prepare the PR, complete self-review and applicable checks, and request human review. Humans evaluate the phase's approval criteria and either merge the PR themselves as approval or record explicit approval before a permitted merge. Both are normal approval routes, as described in [Human approval routes](#human-approval-routes). Agents address review comments in that PR. The next phase starts only after approval and merge are verified. While awaiting approval or merge, agents may continue investigation or verification that does not depend on unapproved decisions.
@@ -406,7 +406,7 @@ does not require their execution or successful evidence. Publishing artifacts,
 installation in a recipient's environment, and operational handover also belong
 to delivery. Implementation completion neither establishes delivery quality nor
 authorizes these activities. Design supplies the delivery verification cases;
-the detailed delivery process and its approval criteria require separate definition.
+the [delivery phase](#4-delivery) defines execution, deliverables, and approval criteria.
 
 Classify checks by their dependencies and approved phase allocation. Local
 build, startup, and OS-specific checks that run without live services remain
@@ -429,6 +429,104 @@ Codex demonstrations: preserve their expected product behavior while explicitly
 allocating real-service evidence to delivery and service-free cases to
 implementation. This rule does not itself revise those product deliverables
 or claim their acceptance criteria have been met.
+
+### 4. Delivery
+
+Make the approved implementation usable by OSS users, external AI agents, and
+plugin authors, and verify the final quality checks assigned to delivery.
+Use [prepare-delivery](../../.agents/skills/prepare-delivery/SKILL.md),
+[review-delivery](../../.agents/skills/review-delivery/SKILL.md), and the
+[delivery PR template](../../.github/PULL_REQUEST_TEMPLATE/delivery.md).
+
+| Item | Description |
+| --- | --- |
+| Deliverables | User-facing README updates, evidence for every scoped delivery check, and an acquisition and setup verification record; distribution artifacts and operational handover only when included in the approved scope |
+| PR | A separate delivery PR linking the merged implementation and its upstream requirements and design, with documentation changes and delivery evidence |
+| Human role | Review usability, real-service results, distribution scope, and remaining risks, then approve and merge the final revision |
+| Agent role | Verify prerequisites, update user instructions, execute approved delivery checks within authorization, collect evidence, and prepare the PR for review |
+| Approval criteria | The scoped approved delivery checks pass, acquisition and setup instructions are verified for the supported scope, required artifacts are available, applicable repository checks and independent reviews pass, and no blocking work remains |
+
+#### Delivery inputs and outputs
+
+Before dependent delivery work, verify approval and merge of the implementation
+PR and the governing requirements and design using the
+[handoff evidence](#agent-verification-and-handoff-evidence). Identify the exact
+product revision, supported environment, approved delivery cases, and any
+remaining work recorded by implementation. A delivery PR may cover a bounded
+approved scope; identify exclusions without dropping required cases within it.
+For changes that need no new upstream PR, explain why and identify the existing
+approved baseline.
+
+Update the root README within its [user-facing structure](#user-facing-readme)
+to explain verified prerequisites, acquisition and installation, configuration,
+normal usage, and plugin authoring for the delivered scope. Validate the
+documented steps from acquisition through an observable working result in the
+supported environment. Record the revision or artifact used and the outcome
+in the delivery PR. If existing instructions already cover the entire scope,
+record the verification and explain why no README edit is needed.
+
+Keep the following evidence in the delivery PR rather than creating a new
+documentation category or putting execution logs in the README:
+
+- The product revision and documentation revision checked, environment and
+  relevant Codex or external-service versions, and links to upstream approval
+  and implementation verification evidence.
+- Every scoped delivery case and its requirement/design mapping, actions,
+  expected and actual results, execution date, and reproducible evidence.
+  Identify failures and checks not executed explicitly. Redact credentials and
+  private data without removing the observations needed to assess the result.
+- Acquisition and setup results, user-visible limitations, and any remaining
+  work with its owner and resolution phase. Blocking work prevents readiness.
+- When required by the approved scope, distribution artifact locations and
+  version or revision identity, publication results, and operational handover
+  instructions and recipient confirmation. Otherwise state why these are not
+  applicable; a tagged release or binary package is not universally required.
+
+Execute the real Codex or external-service scenarios defined by design.
+Service-free CI, static Pending, dry runs, test doubles, and local substitutes
+cannot establish their success. Missing access, credentials, authorization,
+or evidence leaves the affected check unverified and the delivery PR in draft.
+Do not invent delivery cases or lower expected behavior to complete the phase;
+resolve missing or conflicting acceptance decisions upstream.
+
+#### Delivery scope and feedback
+
+Delivery edits explain approved behavior for product users. They may add
+README examples and links to existing authoritative specifications, but may
+not create or revise product contracts or developer operating instructions
+that belong to requirements or design. The
+[developer documentation rule](#developer-documentation-and-upstream-feedback)
+and [specification rule](#specification-documents-and-approved-design) continue
+to govern those documents. Product code and test fixes belong in an
+implementation PR; CI, shared verification, and development rule changes
+belong in a repository rules PR.
+
+When delivery exposes such a gap or defect, preserve the delivery work and
+report the failed or unverified cases, affected artifacts, and required phase.
+End the delivery session without bundling the prerequisite fix or starting
+another session automatically. A human starts the prerequisite session.
+Resume after its approval and merge are verified, then rerun affected delivery
+checks against the revised product and instructions.
+
+Publishing, installing into a recipient's environment, and external handover
+require authorization for those actions. Neither implementation merge nor
+delivery PR preparation grants it. Record authorization and outcomes for
+required external actions before claiming readiness; if publication must wait
+for a separate decision, keep delivery incomplete until the required action
+and verification finish. Do not assume every delivery includes deployment or
+a public release.
+
+#### Delivery completion
+
+Apply independent [delivery review](../../.agents/skills/review-delivery/SKILL.md)
+and [Markdown readability review](../../.agents/skills/review-markdown-readability/SKILL.md)
+to the final deliverables. Run applicable repository checks and record their
+actual results. A READY FOR HUMAN REVIEW verdict is not delivery completion.
+The phase completes only when its approval criteria are met and human approval
+and merge of the delivery PR are verified under the
+[approval routes](#human-approval-routes). Required publication or handover
+cannot be left as future work in a completed delivery. Report completion only
+for the stated scope and verified product revision.
 
 ## Approval and traceability
 
@@ -488,7 +586,7 @@ Auto-merge, a merge queue, a bot merge, or a known agent-executed merge uses Exp
 
 ### Agent verification and handoff evidence
 
-Before dependent design or implementation, check the source PR on GitHub and record a compact evidence summary in the downstream PR. Link the PR and any explicit approval record instead of copying it into every deliverable.
+Before dependent design, implementation, or delivery, check the source PR on GitHub and record a compact evidence summary in the downstream PR. Link the PR and any explicit approval record instead of copying it into every deliverable.
 
 - **Scope and revision:** source phase, PR URL, final head SHA, merge commit SHA, and source concept paths. Confirm the documents used correspond to the merged revision, including any later changes that need their own approval. Verify PR evidence even if a document's status text still says approval is pending; that text alone does not establish or invalidate approval.
 - **Merge:** merged state, merge time, and merge actor. A closed but unmerged PR does not pass.
