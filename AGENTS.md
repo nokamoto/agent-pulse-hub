@@ -4,6 +4,11 @@ Implementation language: Go.
 
 Write all documentation in English.
 
+Keep the root README focused on OSS users, including external AI agents and
+plugin authors. Follow the [README content and structure rule](docs/aidd/README.md#user-facing-readme).
+Repository development and implementation instructions belong here or in the
+referenced developer documents.
+
 After writing or editing Markdown, apply the
 [Markdown readability review skill](.agents/skills/review-markdown-readability/SKILL.md)
 before presenting the document as complete. This also applies to skill and

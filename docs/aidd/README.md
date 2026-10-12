@@ -25,6 +25,49 @@ This document defines the principles, phases, deliverables, roles, and pull requ
 - **Turn verification into automation.** Maintain reproducible verification as tests and CI to reduce repeated manual checks. For checks that cannot be automated, explain why and identify what humans must verify.
 - **Minimize the cost of human approval.** Divide changes into reviewable units and present decisions, diffs, requirement mappings, and verification results together. Let humans focus on suitability and risk without repeating checks already covered by automation.
 
+## User-facing README
+
+The root `README.md` is the entry point for people and external AI agents
+using this OSS project. It must explain enough for those users to install,
+configure, run, and extend the product with plugins. Repository development
+and implementation instructions belong in `AGENTS.md` and the documents it
+references, not in the root README. Writing a plugin as an external user is
+part of product usage, not repository development.
+
+Use `# agent-pulse-hub` as the only level-one heading. A short introduction
+may follow it. Include exactly these level-two headings, once each and in
+this order:
+
+| Heading | User-facing content |
+| --- | --- |
+| `Background and motivation` | The problem the project addresses and why users would choose it. |
+| `Requirements` | Prerequisites for installing, running, and using the product. |
+| `Installation` | How users obtain and install the product. |
+| `Usage` | Configuration, running the product, and observable usage examples. |
+| `Writing plugins` | How external authors create and use compatible plugins, with references to the authoritative contracts where needed. |
+
+Level-three through level-six subheadings may be added freely within these
+sections. Use ATX headings (`#` prefixes) outside lists and block quotes;
+Setext headings (underline syntax) and HTML headings are not allowed.
+Code examples may contain heading syntax without creating document sections.
+Do not add contributor setup, repository architecture, implementation plans,
+development checks, or agent workflow instructions under any heading.
+
+The `readme` guardrail checks the root README's heading structure through the
+shared Mage `guardrails` target. It rejects missing, additional, duplicate,
+renamed, or reordered major headings. It does not determine whether prose is
+accurate, sufficient for users, or free of development instructions; reviewers
+must check those properties. A passing structural check alone does not prove
+the README is usable.
+
+Delivery work is expected to update the user-facing content within this
+structure. Changes to the fixed headings or their enforcement require the
+[repository rules workflow](../../.agents/skills/edit-repository-rules/SKILL.md).
+This rule establishes the README boundary; it does not define the delivery
+phase or change the existing requirements, design, and implementation
+boundaries. README examples explain approved behavior and must not introduce
+or change plugin contracts independently of their governing design.
+
 ## Development flow
 
 Use the following flow. Even for small changes, check the affected
