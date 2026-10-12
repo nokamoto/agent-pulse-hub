@@ -25,6 +25,7 @@ func Guardrails() error {
 		{"run", "./tools/guardrails/design"},
 		{"run", "./tools/guardrails/docs-layout"},
 		{"run", "./tools/guardrails/go-layout"},
+		{"run", "./tools/guardrails/readme"},
 	})
 }
 
