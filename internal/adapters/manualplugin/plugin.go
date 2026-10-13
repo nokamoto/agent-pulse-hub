@@ -132,7 +132,7 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 		p.mu.Unlock()
 	}()
 
-	if err := p.send(stream, pluginprotocol.Frame{Type: "ready"}); err != nil {
+	if err := p.send(stream, pluginprotocol.Frame{Type: "ready", Role: "input"}); err != nil {
 		return fmt.Errorf("send readiness: %w", err)
 	}
 	for {

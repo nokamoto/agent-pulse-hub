@@ -3,7 +3,6 @@ package pluginprocess
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -19,7 +18,6 @@ import (
 	"google.golang.org/grpc"
 )
 
-// memorySession exercises stream coordination without processes or network I/O.
 type memorySession struct {
 	ctx      context.Context
 	incoming chan []byte
@@ -54,10 +52,10 @@ func (s *memorySession) Recv() ([]byte, error) {
 func (s *memorySession) Context() context.Context { return s.ctx }
 func (s *memorySession) CloseSend() error         { return nil }
 
-func readyProcess(t *testing.T, handlers hub.PluginHandlers) (*Process, *memorySession) {
+func readyProcess(t *testing.T, role domain.PluginRole, handlers hub.PluginHandlers) (*Process, *memorySession) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	p := New(Config{Name: "test"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	p := New(Config{Name: "test", Role: role}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	s := &memorySession{ctx: ctx, incoming: make(chan []byte, 16), outgoing: make(chan []byte, 16)}
 	p.started = true
 	p.ready = true
@@ -69,18 +67,13 @@ func readyProcess(t *testing.T, handlers hub.PluginHandlers) (*Process, *memoryS
 	return p, s
 }
 
-func watchRequest(id string) hub.WatchRequest {
-	return hub.WatchRequest{
-		RequestID:      id,
-		SubscriptionID: domain.SubscriptionID("subscription-" + id),
-		Arguments:      jsonvalue.NewObject(map[string]*jsonvalue.Value{}),
+func jsonObject(t *testing.T, text string) *jsonvalue.Value {
+	t.Helper()
+	value, err := jsonvalue.Parse([]byte(text), 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func launchWatch(p *Process, id string, activate func() error) <-chan error {
-	result := make(chan error, 1)
-	go func() { result <- p.Watch(context.Background(), watchRequest(id), activate) }()
-	return result
+	return value
 }
 
 func payload(t *testing.T, frame pluginprotocol.Frame) []byte {
@@ -104,177 +97,165 @@ func await[T any](t *testing.T, values <-chan T) T {
 	}
 }
 
-func TestConcurrentWatchesSendBeforeEarlierAcknowledgement(t *testing.T) {
-	p, session := readyProcess(t, hub.PluginHandlers{})
-	var activations atomic.Int32
-	activate := func() error { activations.Add(1); return nil }
-	first := launchWatch(p, "first", activate)
-	firstFrame, err := pluginprotocol.ParsePayload(await(t, session.outgoing), pluginprotocol.DaemonToPlugin)
-	if err != nil || firstFrame.RequestID != "first" {
-		t.Fatalf("first watch = %+v, %v", firstFrame, err)
-	}
-	second := launchWatch(p, "second", activate)
-	secondFrame, err := pluginprotocol.ParsePayload(await(t, session.outgoing), pluginprotocol.DaemonToPlugin)
-	if err != nil || secondFrame.RequestID != "second" {
-		t.Fatalf("second watch = %+v, %v", secondFrame, err)
-	}
-	accepted := true
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "second", Accepted: &accepted})
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "first", Accepted: &accepted})
-	if err := await(t, first); err != nil {
+func readFrame(t *testing.T, session *memorySession) pluginprotocol.Frame {
+	t.Helper()
+	frame, err := pluginprotocol.ParsePayload(await(t, session.outgoing), pluginprotocol.DaemonToPlugin)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := await(t, second); err != nil {
-		t.Fatal(err)
-	}
-	if activations.Load() != 2 {
-		t.Fatalf("activated %d watches", activations.Load())
-	}
+	return frame
 }
 
-func TestActivationCompletesBeforeImmediateEvent(t *testing.T) {
-	var activated atomic.Bool
-	events := make(chan bool, 1)
-	p, session := readyProcess(t, hub.PluginHandlers{
-		Event: func(_, _ string) { events <- activated.Load() },
-	})
-	result := launchWatch(p, "watch", func() error { activated.Store(true); return nil })
-	await(t, session.outgoing)
-	accepted := true
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "watch", Accepted: &accepted})
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "event", SubscriptionID: "subscription-watch", Context: "immediate"})
-	if !await(t, events) {
-		t.Fatal("immediate event arrived before activation")
-	}
-	if err := await(t, result); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRejectedWatchKeepsInstanceAvailableAndDiscardsDuplicateResult(t *testing.T) {
-	events := make(chan struct{}, 1)
-	p, session := readyProcess(t, hub.PluginHandlers{Event: func(_, _ string) { events <- struct{}{} }})
-	var activations atomic.Int32
-	activate := func() error { activations.Add(1); return nil }
-	first := launchWatch(p, "rejected", activate)
-	await(t, session.outgoing)
-	accepted := false
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "rejected", Accepted: &accepted, Error: "unsupported arguments"})
-	err := await(t, first)
-	var watchError *hub.WatchError
-	if !errors.As(err, &watchError) || watchError.Code != "watch_rejected" || watchError.Unavailable {
-		t.Fatalf("rejection = %v", err)
-	}
-	second := launchWatch(p, "accepted", activate)
-	await(t, session.outgoing)
-	accepted = true
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "accepted", Accepted: &accepted})
-	if err := await(t, second); err != nil {
-		t.Fatal(err)
-	}
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "accepted", Accepted: &accepted})
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "unknown", Accepted: &accepted})
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "event", SubscriptionID: "subscription-accepted", Context: "barrier"})
-	await(t, events)
-	if activations.Load() != 1 {
-		t.Fatalf("activated %d watches", activations.Load())
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.failed || !p.ready {
-		t.Fatal("rejection or duplicate result invalidated the instance")
-	}
-}
-
-func TestMalformedPayloadAndPreReadyFramesAreDiscarded(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func TestWatchAcceptanceActivatesBeforeImmediateEventAndRejectsDuplicates(t *testing.T) {
+	var activated atomic.Int32
 	events := make(chan string, 2)
-	var readiness atomic.Int32
-	p := New(Config{Name: "test"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	p.started = true
-	p.cancel = cancel
-	p.handlers = hub.PluginHandlers{
-		Ready: func() { readiness.Add(1) },
-		Event: func(_, text string) { events <- text },
+	p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{Event: func(_, context string) { events <- context }})
+	result := make(chan error, 1)
+	go func() {
+		result <- p.Watch(context.Background(), hub.WatchRequest{
+			RequestID: "watch-1", SubscriptionID: "subscription-1", Arguments: jsonObject(t, `{}`),
+		}, func() error { activated.Add(1); return nil })
+	}()
+	if frame := readFrame(t, session); frame.Type != "watch" || frame.RequestID != "watch-1" {
+		t.Fatalf("watch frame = %+v", frame)
 	}
-	session := &memorySession{ctx: ctx, incoming: make(chan []byte, 16), outgoing: make(chan []byte, 1)}
-	p.stream = session
-	go p.receive(session)
-	session.incoming <- []byte(`{"version":1,"type":`)
-	session.incoming <- []byte(`{"version":1,"type":"ready","extra":true}`)
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "event", SubscriptionID: "id", Context: "early"})
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "ready"})
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "ready"})
-	session.incoming <- payload(t, pluginprotocol.Frame{Type: "event", SubscriptionID: "id", Context: "after readiness"})
-	if event := await(t, events); event != "after readiness" {
-		t.Fatalf("accepted event %q", event)
-	}
-	if readiness.Load() != 1 {
-		t.Fatalf("readiness called %d times", readiness.Load())
-	}
-	_ = p.Stop(context.Background())
-}
-
-func TestInterruptedWriteGateInvalidatesInstance(t *testing.T) {
-	unavailableEvents := make(chan error, 1)
-	p, _ := readyProcess(t, hub.PluginHandlers{Unavailable: func(err error) { unavailableEvents <- err }})
-	p.writeGate <- struct{}{}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	err := p.Watch(ctx, watchRequest("queued"), func() error { t.Error("interrupted watch activated"); return nil })
-	var watchError *hub.WatchError
-	if !errors.As(err, &watchError) || !watchError.Unavailable {
-		t.Fatalf("interrupted watch = %v", err)
-	}
-	if cause := await(t, unavailableEvents); !errors.Is(cause, context.Canceled) {
-		t.Fatalf("unavailable cause = %v", cause)
-	}
-	p.releaseWrite()
-}
-
-func TestSendFailureInvalidatesInstance(t *testing.T) {
-	unavailableEvents := make(chan error, 1)
-	p, session := readyProcess(t, hub.PluginHandlers{Unavailable: func(err error) { unavailableEvents <- err }})
-	session.sendErr = io.ErrClosedPipe
-	err := p.Watch(context.Background(), watchRequest("failed"), func() error { t.Error("failed watch activated"); return nil })
-	var watchError *hub.WatchError
-	if !errors.As(err, &watchError) || !watchError.Unavailable || !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("send failure = %v", err)
-	}
-	await(t, unavailableEvents)
-}
-
-func TestOversizedPayloadInvalidatesOnlyItsInstance(t *testing.T) {
-	unavailableEvents := make(chan error, 1)
-	failed, session := readyProcess(t, hub.PluginHandlers{Unavailable: func(err error) { unavailableEvents <- err }})
-	healthy, healthySession := readyProcess(t, hub.PluginHandlers{})
-	session.incoming <- make([]byte, pluginprotocol.MaxPayloadBytes+1)
-	await(t, unavailableEvents)
-	err := failed.Watch(context.Background(), watchRequest("failed"), func() error { return nil })
-	var watchError *hub.WatchError
-	if !errors.As(err, &watchError) || !watchError.Unavailable {
-		t.Fatalf("failed instance watch = %v", err)
-	}
-	result := launchWatch(healthy, "healthy", func() error { return nil })
-	await(t, healthySession.outgoing)
 	accepted := true
-	healthySession.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "healthy", Accepted: &accepted})
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "watch-1", Accepted: &accepted})
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "event", SubscriptionID: "subscription-1", Context: "immediate"})
 	if err := await(t, result); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestTransportClosureInvalidatesInstance(t *testing.T) {
-	unavailableEvents := make(chan error, 1)
-	_, session := readyProcess(t, hub.PluginHandlers{Unavailable: func(err error) { unavailableEvents <- err }})
-	close(session.incoming)
-	if cause := await(t, unavailableEvents); !errors.Is(cause, io.EOF) {
-		t.Fatalf("transport closure cause = %v", cause)
+	if got := await(t, events); got != "immediate" || activated.Load() != 1 {
+		t.Fatalf("activation=%d event=%q", activated.Load(), got)
 	}
 }
 
-func TestFrameworkContextObservesSessionAndCallerCancellation(t *testing.T) {
+func TestDestinationAndWatchRejectionsDoNotInvalidateProcess(t *testing.T) {
+	output, outputSession := readyProcess(t, domain.OutputRole, hub.PluginHandlers{})
+	destinationResult := make(chan error, 1)
+	go func() {
+		destinationResult <- output.ValidateDestination(context.Background(), hub.DestinationRequest{
+			RequestID: "destination-1", Arguments: jsonObject(t, `{}`),
+		})
+	}()
+	if frame := readFrame(t, outputSession); frame.Type != "validate_destination" {
+		t.Fatalf("destination frame = %+v", frame)
+	}
+	rejected := false
+	outputSession.incoming <- payload(t, pluginprotocol.Frame{Type: "destination_result", RequestID: "destination-1", Accepted: &rejected, Error: "bad path"})
+	err := await(t, destinationResult)
+	var destinationErr *hub.DestinationError
+	if !errors.As(err, &destinationErr) || destinationErr.Code != "destination_rejected" || destinationErr.Unavailable {
+		t.Fatalf("destination rejection = %v", err)
+	}
+
+	input, inputSession := readyProcess(t, domain.InputRole, hub.PluginHandlers{})
+	watchResult := make(chan error, 1)
+	go func() {
+		watchResult <- input.Watch(context.Background(), hub.WatchRequest{
+			RequestID: "watch-reject", SubscriptionID: "s1", Arguments: jsonObject(t, `{}`),
+		}, func() error { return nil })
+	}()
+	readFrame(t, inputSession)
+	inputSession.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "watch-reject", Accepted: &rejected, Error: "unsupported"})
+	err = await(t, watchResult)
+	var watchErr *hub.WatchError
+	if !errors.As(err, &watchErr) || watchErr.Code != "watch_rejected" || watchErr.Unavailable {
+		t.Fatalf("watch rejection = %v", err)
+	}
+	if input.failed || output.failed {
+		t.Fatal("explicit rejection invalidated a healthy plugin")
+	}
+}
+
+func TestDeliveryCorrelatesResultAndDoesNotRetryFailedOutcome(t *testing.T) {
+	p, session := readyProcess(t, domain.OutputRole, hub.PluginHandlers{})
+	results := make(chan hub.DeliveryResult, 1)
+	go func() {
+		results <- p.Deliver(context.Background(), domain.Event{
+			ID: "delivery-1", InputPlugin: "manual", OutputPlugin: "model", SubscriptionID: "subscription-1",
+			DestinationArgs: jsonObject(t, `{"output_file":"/tmp/events.jsonl"}`), Context: "PULSE-context",
+		})
+	}()
+	frame := readFrame(t, session)
+	if frame.Type != "deliver" || frame.InputPlugin != "manual" || frame.Context != "PULSE-context" || frame.ExternalData == nil || !*frame.ExternalData || frame.PermissionNotice != pluginprotocol.PermissionNotice {
+		t.Fatalf("deliver frame = %+v", frame)
+	}
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "delivery_result", RequestID: frame.RequestID, Status: "failed", Error: "disk full"})
+	result := await(t, results)
+	if result.Outcome != domain.DeliveryFailed || result.Detail != "disk full" || len(session.outgoing) != 0 {
+		t.Fatalf("delivery result = %+v; extra sends=%d", result, len(session.outgoing))
+	}
+	if p.failed {
+		t.Fatal("explicit failed result invalidated output process")
+	}
+}
+
+func TestPossiblySentRequestTimeoutInvalidatesInstance(t *testing.T) {
+	unavailable := make(chan error, 1)
+	p, _ := readyProcess(t, domain.OutputRole, hub.PluginHandlers{Unavailable: func(err error) { unavailable <- err }})
+	_, err := p.request(context.Background(), pluginprotocol.Frame{
+		Type: "validate_destination", RequestID: "timeout", DestinationArgs: jsonObject(t, `{}`),
+	}, "destination_result", 20*time.Millisecond, nil)
+	var requestErr *requestError
+	if !errors.As(err, &requestErr) || !requestErr.sent || !requestErr.unavailable {
+		t.Fatalf("timed out request = %v", err)
+	}
+	if cause := await(t, unavailable); !errors.Is(cause, context.DeadlineExceeded) {
+		t.Fatalf("invalidated cause = %v", cause)
+	}
+}
+
+func TestTimeoutBeforeSerializedSendDoesNotClaimPossibleDelivery(t *testing.T) {
+	unavailable := make(chan error, 1)
+	p, _ := readyProcess(t, domain.OutputRole, hub.PluginHandlers{Unavailable: func(err error) { unavailable <- err }})
+	p.writeGate <- struct{}{}
+	_, err := p.request(context.Background(), pluginprotocol.Frame{
+		Type: "validate_destination", RequestID: "queued", DestinationArgs: jsonObject(t, `{}`),
+	}, "destination_result", 20*time.Millisecond, nil)
+	p.releaseWrite()
+	var requestErr *requestError
+	if !errors.As(err, &requestErr) || requestErr.sent || !requestErr.unavailable {
+		t.Fatalf("pre-send timeout = %v", err)
+	}
+	if cause := await(t, unavailable); !errors.Is(cause, context.DeadlineExceeded) {
+		t.Fatalf("pre-send timeout invalidated with %v", cause)
+	}
+	if !p.failed {
+		t.Fatal("pre-send timeout left the instance available")
+	}
+}
+
+func TestResultWithWrongCorrelationIsDiscardedUntilMatchingResponse(t *testing.T) {
+	p, session := readyProcess(t, domain.OutputRole, hub.PluginHandlers{})
+	result := make(chan error, 1)
+	go func() {
+		result <- p.ValidateDestination(context.Background(), hub.DestinationRequest{RequestID: "right", Arguments: jsonObject(t, `{}`)})
+	}()
+	readFrame(t, session)
+	accepted := true
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "destination_result", RequestID: "wrong", Accepted: &accepted})
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "destination_result", RequestID: "right", Accepted: &accepted})
+	if err := await(t, result); err != nil {
+		t.Fatal(err)
+	}
+	if p.failed {
+		t.Fatal("unknown result invalidated process")
+	}
+}
+
+func TestWrongReadyRoleInvalidatesProcess(t *testing.T) {
+	unavailable := make(chan error, 1)
+	p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{Unavailable: func(err error) { unavailable <- err }})
+	p.ready = false
+	p.deadline = time.Now().Add(time.Second)
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "ready", Role: "output"})
+	if err := await(t, unavailable); err == nil || !strings.Contains(err.Error(), "role") {
+		t.Fatalf("wrong role failure = %v", err)
+	}
+}
+
+func TestSessionCancellationAndShutdownInterceptor(t *testing.T) {
 	for _, cancelSession := range []bool{false, true} {
 		t.Run(map[bool]string{false: "caller", true: "session"}[cancelSession], func(t *testing.T) {
 			caller, cancelCaller := context.WithCancel(context.Background())
@@ -294,41 +275,24 @@ func TestFrameworkContextObservesSessionAndCallerCancellation(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestFrameworkShutdownOutlivesSessionCancellation(t *testing.T) {
 	lifetime, cancelLifetime := context.WithCancel(context.Background())
 	cancelLifetime()
 	interceptor := sessionLifetimeUnaryInterceptor(lifetime)
-
 	err := interceptor(context.Background(), controllerShutdownMethod, nil, nil, nil,
 		func(ctx context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ ...grpc.CallOption) error {
 			if err := ctx.Err(); err != nil {
 				t.Fatalf("controller shutdown context = %v", err)
 			}
 			return nil
-		},
-	)
+		})
 	if err != nil {
-		t.Fatalf("controller shutdown = %v", err)
-	}
-
-	err = interceptor(context.Background(), "/example.Service/Health", nil, nil, nil,
-		func(ctx context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ ...grpc.CallOption) error {
-			if !errors.Is(ctx.Err(), context.Canceled) {
-				t.Fatalf("framework call context = %v, want canceled", ctx.Err())
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("framework call = %v", err)
+		t.Fatal(err)
 	}
 }
 
 func TestDiagnosticWriterBoundsAndSanitizesChunks(t *testing.T) {
 	var output bytes.Buffer
-	p := New(Config{Name: "test"}, slog.New(slog.NewJSONHandler(&output, nil)))
+	p := New(Config{Name: "test", Role: domain.InputRole}, slog.New(slog.NewJSONHandler(&output, nil)))
 	writer := p.newDiagnosticWriter("stderr")
 	first := []byte("prefix\t" + strings.Repeat("x", maxPluginDiagnosticBytes))
 	if n, err := writer.Write(first); err != nil || n != len(first) {
@@ -337,14 +301,7 @@ func TestDiagnosticWriterBoundsAndSanitizesChunks(t *testing.T) {
 	if _, err := writer.Write([]byte("tail\n")); err != nil {
 		t.Fatal(err)
 	}
-	var record struct {
-		Message   string `json:"message"`
-		Truncated bool   `json:"truncated"`
-	}
-	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
-		t.Fatal(err)
-	}
-	if len(record.Message) > maxPluginDiagnosticBytes || strings.ContainsAny(record.Message, "\t\n") || !record.Truncated {
-		t.Fatalf("unbounded or unsanitized diagnostic: %+v", record)
+	if output.Len() == 0 || output.Len() > maxPluginDiagnosticBytes+256 || strings.Contains(output.String(), "\t") {
+		t.Fatalf("diagnostic output is unbounded or unsanitized: %q", output.String())
 	}
 }

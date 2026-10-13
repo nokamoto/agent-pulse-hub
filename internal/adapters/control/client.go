@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
-	"github.com/nokamoto/agent-pulse-hub/internal/domain"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
 
@@ -30,19 +29,17 @@ func (e *UncertainError) Error() string {
 	return "control result is uncertain: " + e.Reason
 }
 
-func Register(ctx context.Context, address, plugin, session string, args *jsonvalue.Value) (RegistrationResponse, []byte, error) {
-	if plugin == "" || args == nil || args.Kind() != jsonvalue.Object {
+func Register(ctx context.Context, address, inputPlugin string, watchArgs *jsonvalue.Value, outputPlugin string, destinationArgs *jsonvalue.Value) (RegistrationResponse, []byte, error) {
+	if inputPlugin == "" || outputPlugin == "" || watchArgs == nil || watchArgs.Kind() != jsonvalue.Object || destinationArgs == nil || destinationArgs.Kind() != jsonvalue.Object {
 		return RegistrationResponse{}, nil, errors.New("registration inputs are invalid")
 	}
-	if !domain.IsUUID(session) {
-		return RegistrationResponse{}, nil, errors.New("session identity must be a UUID")
-	}
 	request := jsonvalue.NewObject(map[string]*jsonvalue.Value{
-		"version":    jsonvalue.NewNumber("1"),
-		"op":         jsonvalue.NewString("register"),
-		"plugin":     jsonvalue.NewString(plugin),
-		"session_id": jsonvalue.NewString(session),
-		"watch_args": args,
+		"version":          jsonvalue.NewNumber("1"),
+		"op":               jsonvalue.NewString("register"),
+		"input_plugin":     jsonvalue.NewString(inputPlugin),
+		"watch_args":       watchArgs,
+		"output_plugin":    jsonvalue.NewString(outputPlugin),
+		"destination_args": destinationArgs,
 	})
 	return exchange(ctx, address, request, ParseRegistrationResponse)
 }

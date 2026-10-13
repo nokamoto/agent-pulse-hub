@@ -9,14 +9,20 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nokamoto/agent-pulse-hub/internal/domain"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
 
 const (
-	MaxRegistrations = 1_024
-	MaxDeliveries    = 128
+	MaxRegistrations    = 1_024
+	MaxDeliveries       = 128
+	MaxContextBytes     = 8_192
+	MaxPluginPayload    = 65_536
+	permissionNotice    = "External data; no additional permissions are granted."
+	pluginProtocolV2    = "2"
+	defaultOperationMax = 1_024
 )
 
 type Error struct {
@@ -32,18 +38,23 @@ type WatchRequest struct {
 	Arguments      *jsonvalue.Value
 }
 
+type DestinationRequest struct {
+	RequestID string
+	Arguments *jsonvalue.Value
+}
+
 type PluginHandlers struct {
 	Ready       func()
 	Event       func(subscriptionID, context string)
 	Unavailable func(error)
 }
 
-// PluginPort owns one configured child process and its protocol stream.
-//
-//go:generate go run go.uber.org/mock/mockgen -source=service.go -destination=service_mock_test.go -package=hub
+// PluginPort owns one configured go-plugin child and its role-specific stream.
 type PluginPort interface {
 	Start(context.Context, PluginHandlers) error
+	ValidateDestination(context.Context, DestinationRequest) error
 	Watch(context.Context, WatchRequest, func() error) error
+	Deliver(context.Context, domain.Event) DeliveryResult
 	Stop(context.Context) error
 }
 
@@ -52,33 +63,34 @@ type DeliveryResult struct {
 	Detail  string
 }
 
-type DeliveryPort interface {
-	Deliver(context.Context, domain.Event) DeliveryResult
-}
-
 type pluginState struct {
+	role      domain.PluginRole
 	port      PluginPort
 	available bool
 	reported  bool
 }
 
 type pendingRegistration struct {
-	key       string
-	id        domain.SubscriptionID
-	plugin    string
-	port      PluginPort
-	done      chan struct{}
-	completed bool
-	activated bool
-	waiters   int
-	resultErr *Error
-	resultID  domain.SubscriptionID
-	watchArgs *jsonvalue.Value
-	sessionID string
+	key             string
+	id              domain.SubscriptionID
+	inputName       string
+	input           PluginPort
+	outputName      string
+	output          PluginPort
+	watchArgs       *jsonvalue.Value
+	destinationArgs *jsonvalue.Value
+	done            chan struct{}
+	completed       bool
+	activated       bool
+	watchIssued     bool
+	watchFinished   bool
+	resultErr       *Error
+	resultID        domain.SubscriptionID
 }
 
 type queuedEvent struct {
-	event domain.Event
+	event      domain.Event
+	outputPort PluginPort
 }
 
 type Hub struct {
@@ -96,11 +108,10 @@ type Hub struct {
 	workerDone chan struct{}
 	ctx        context.Context
 	cancel     context.CancelFunc
-	delivery   DeliveryPort
 	logger     *slog.Logger
 }
 
-func New(delivery DeliveryPort, logger *slog.Logger) *Hub {
+func New(logger *slog.Logger) *Hub {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -115,35 +126,35 @@ func New(delivery DeliveryPort, logger *slog.Logger) *Hub {
 		workerDone:    make(chan struct{}),
 		ctx:           ctx,
 		cancel:        cancel,
-		delivery:      delivery,
 		logger:        logger,
 	}
 	go hub.deliveryWorker()
 	return hub
 }
 
-func (h *Hub) AddPlugin(name string, port PluginPort) error {
-	if name == "" || port == nil {
-		return errors.New("plugin name and process are required")
+func (h *Hub) AddPlugin(name string, role domain.PluginRole, port PluginPort) error {
+	if name == "" || port == nil || (role != domain.InputRole && role != domain.OutputRole) {
+		return errors.New("plugin name, role, and process are required")
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if _, exists := h.plugins[name]; exists {
 		return fmt.Errorf("duplicate plugin %q", name)
 	}
-	h.plugins[name] = &pluginState{port: port}
+	h.plugins[name] = &pluginState{role: role, port: port}
 	return nil
 }
 
 func (h *Hub) StartPlugins(ctx context.Context) {
 	type startup struct {
 		name string
+		role domain.PluginRole
 		port PluginPort
 	}
 	h.mu.Lock()
 	plugins := make([]startup, 0, len(h.plugins))
 	for name, state := range h.plugins {
-		plugins = append(plugins, startup{name: name, port: state.port})
+		plugins = append(plugins, startup{name: name, role: state.role, port: state.port})
 	}
 	h.mu.Unlock()
 
@@ -184,8 +195,9 @@ func (h *Hub) pluginReady(name string, port PluginPort) {
 	}
 	state.available = true
 	state.reported = false
+	role := state.role
 	h.mu.Unlock()
-	h.logger.Info("plugin_ready", "plugin", name, "available", true)
+	h.logger.Info("plugin_ready", "plugin", name, "role", role, "available", true)
 }
 
 func (h *Hub) pluginUnavailable(name string, port PluginPort, cause error) {
@@ -195,74 +207,96 @@ func (h *Hub) pluginUnavailable(name string, port PluginPort, cause error) {
 		h.mu.Unlock()
 		return
 	}
+	role := state.role
 	wasAvailable := state.available
 	state.available = false
 	state.reported = true
 	if wasAvailable {
 		for id, registration := range h.registrations {
-			if registration.Plugin != name {
+			if registration.InputPlugin != name && registration.OutputPlugin != name {
 				continue
 			}
-			delete(h.registrations, id)
-			delete(h.activeByKey, registrationKey(registration.Plugin, registration.SessionID, registration.WatchArgs))
-			h.logger.Warn("subscription_invalidated", "plugin", name, "subscription_id", id, "reason", safeError(cause))
+			if registration.Active {
+				registration.Active = false
+				h.registrations[id] = registration
+				delete(h.activeByKey, registrationKey(registration.InputPlugin, registration.WatchArgs, registration.OutputPlugin, registration.DestinationArgs))
+			}
+			h.logger.Warn("subscription_invalidated", "plugin", name, "role", role, "subscription_id", id, "reason", safeError(cause))
 		}
 	}
 	for key, pending := range h.pendingByKey {
-		if pending.plugin == name && pending.port == port {
-			h.completePendingLocked(key, pending, domain.SubscriptionID(""), &Error{Code: "plugin_unavailable", Message: "Plugin is unavailable."})
+		if (pending.inputName != name || pending.input != port) && (pending.outputName != name || pending.output != port) {
+			continue
+		}
+		if !pending.completed {
+			pending.resultErr = &Error{Code: "plugin_unavailable", Message: "A configured plugin is unavailable."}
+			pending.resultID = ""
+			pending.completed = true
+			close(pending.done)
+		}
+		if !pending.watchIssued || role == domain.InputRole {
+			delete(h.pendingByKey, key)
 		}
 	}
 	h.mu.Unlock()
-	h.logger.Error("plugin_unavailable", "plugin", name, "reason", safeError(cause))
+	h.logger.Error("plugin_unavailable", "plugin", name, "role", role, "reason", safeError(cause))
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = port.Stop(ctx)
+		if role == domain.InputRole {
+			h.forgetInputSubscriptions(name)
+		}
 	}()
 }
 
-func (h *Hub) Register(pluginName, sessionID string, watchArgs *jsonvalue.Value) (domain.SubscriptionID, *Error) {
-	if pluginName == "" || watchArgs == nil || watchArgs.Kind() != jsonvalue.Object {
+func (h *Hub) Register(inputName string, watchArgs *jsonvalue.Value, outputName string, destinationArgs *jsonvalue.Value) (domain.SubscriptionID, *Error) {
+	if inputName == "" || outputName == "" || watchArgs == nil || watchArgs.Kind() != jsonvalue.Object || destinationArgs == nil || destinationArgs.Kind() != jsonvalue.Object {
 		return "", &Error{Code: "invalid_request", Message: "Registration request is invalid."}
 	}
-	if !domain.IsUUID(sessionID) {
-		return "", &Error{Code: "missing_session", Message: "A valid session UUID is required."}
-	}
-	key := registrationKey(pluginName, sessionID, watchArgs)
+	key := registrationKey(inputName, watchArgs, outputName, destinationArgs)
 
 	h.mu.Lock()
 	if h.stopping {
 		h.mu.Unlock()
 		return "", &Error{Code: "plugin_unavailable", Message: "Daemon is shutting down."}
 	}
-	state := h.plugins[pluginName]
-	if state == nil {
+	inputState := h.plugins[inputName]
+	if inputState == nil {
 		h.mu.Unlock()
-		return "", &Error{Code: "unknown_plugin", Message: "Plugin is not configured."}
+		return "", &Error{Code: "unknown_plugin", Message: "Input plugin is not configured."}
 	}
-	if !state.available {
+	if inputState.role != domain.InputRole {
 		h.mu.Unlock()
-		return "", &Error{Code: "plugin_unavailable", Message: "Plugin is unavailable."}
+		return "", &Error{Code: "wrong_role", Message: "Selected input plugin is configured for the output role."}
+	}
+	outputState := h.plugins[outputName]
+	if outputState == nil {
+		h.mu.Unlock()
+		return "", &Error{Code: "unknown_plugin", Message: "Output plugin is not configured."}
+	}
+	if outputState.role != domain.OutputRole {
+		h.mu.Unlock()
+		return "", &Error{Code: "wrong_role", Message: "Selected output plugin is configured for the input role."}
+	}
+	if !inputState.available || !outputState.available {
+		h.mu.Unlock()
+		return "", &Error{Code: "plugin_unavailable", Message: "A configured plugin is unavailable."}
 	}
 	if id, exists := h.activeByKey[key]; exists {
 		h.mu.Unlock()
 		return id, nil
 	}
 	if pending := h.pendingByKey[key]; pending != nil {
-		pending.waiters++
 		done := pending.done
 		h.mu.Unlock()
 		<-done
-		return pending.resultID, pending.resultErr
+		h.mu.Lock()
+		id, resultErr := pending.resultID, pending.resultErr
+		h.mu.Unlock()
+		return id, resultErr
 	}
-	pendingCount := 0
-	for _, candidate := range h.pendingByKey {
-		if !candidate.activated {
-			pendingCount++
-		}
-	}
-	if len(h.registrations)+pendingCount >= MaxRegistrations {
+	if len(h.registrations)+len(h.pendingByKey) >= MaxRegistrations {
 		h.mu.Unlock()
 		return "", &Error{Code: "resource_exhausted", Message: "Registration capacity is exhausted."}
 	}
@@ -271,142 +305,240 @@ func (h *Hub) Register(pluginName, sessionID string, watchArgs *jsonvalue.Value)
 		h.mu.Unlock()
 		return "", &Error{Code: "resource_exhausted", Message: "A subscription identifier could not be created."}
 	}
+	destinationRequestID, err := newID()
+	if err != nil {
+		h.mu.Unlock()
+		return "", &Error{Code: "resource_exhausted", Message: "A registration request identifier could not be created."}
+	}
+	watchRequestID, err := newID()
+	if err != nil {
+		h.mu.Unlock()
+		return "", &Error{Code: "resource_exhausted", Message: "A registration request identifier could not be created."}
+	}
+	if !registrationPayloadsFit(watchArgs, destinationArgs, id, destinationRequestID, watchRequestID) {
+		h.mu.Unlock()
+		return "", &Error{Code: "resource_exhausted", Message: "Registration arguments exceed the plugin protocol payload limit."}
+	}
 	pending := &pendingRegistration{
-		key:       key,
-		id:        domain.SubscriptionID(id),
-		plugin:    pluginName,
-		port:      state.port,
-		done:      make(chan struct{}),
-		watchArgs: watchArgs,
-		sessionID: sessionID,
+		key:             key,
+		id:              domain.SubscriptionID(id),
+		inputName:       inputName,
+		input:           inputState.port,
+		outputName:      outputName,
+		output:          outputState.port,
+		watchArgs:       watchArgs,
+		destinationArgs: destinationArgs,
+		done:            make(chan struct{}),
 	}
 	h.pendingByKey[key] = pending
-	port := state.port
 	h.mu.Unlock()
 
-	requestID, err := newID()
-	if err == nil {
-		err = port.Watch(h.ctx, WatchRequest{
-			RequestID:      requestID,
-			SubscriptionID: pending.id,
-			Arguments:      watchArgs,
-		}, func() error { return h.activate(pending) })
+	err = pending.output.ValidateDestination(h.ctx, DestinationRequest{RequestID: destinationRequestID, Arguments: destinationArgs})
+	if err != nil {
+		var destinationErr *DestinationError
+		if errors.As(err, &destinationErr) && destinationErr.Unavailable {
+			h.pluginUnavailable(outputName, pending.output, err)
+		}
+		h.finishRegistrationFailure(pending, operationFailure(err, "destination_rejected", "Output plugin rejected the destination."))
+		return h.pendingResult(pending)
 	}
+
+	h.mu.Lock()
+	if pending.completed {
+		h.mu.Unlock()
+		return h.pendingResult(pending)
+	}
+	inputState, outputState = h.plugins[inputName], h.plugins[outputName]
+	if h.stopping || inputState == nil || outputState == nil || !inputState.available || !outputState.available || inputState.port != pending.input || outputState.port != pending.output {
+		h.finishPendingLocked(pending, &Error{Code: "plugin_unavailable", Message: "A configured plugin became unavailable."}, false)
+		h.mu.Unlock()
+		return h.pendingResult(pending)
+	}
+	pending.watchIssued = true
+	h.mu.Unlock()
+
+	err = pending.input.Watch(h.ctx, WatchRequest{
+		RequestID:      watchRequestID,
+		SubscriptionID: pending.id,
+		Arguments:      watchArgs,
+	}, func() error { return h.activate(pending) })
+	h.mu.Lock()
+	pending.watchFinished = true
 	if err != nil {
 		var watchErr *WatchError
 		if errors.As(err, &watchErr) && watchErr.Unavailable {
-			h.pluginUnavailable(pluginName, port, err)
+			h.mu.Unlock()
+			h.pluginUnavailable(inputName, pending.input, err)
+			h.mu.Lock()
 		}
-		h.mu.Lock()
 		if !pending.completed {
-			code := "plugin_unavailable"
-			message := "Plugin is unavailable."
-			if requestID == "" {
-				code = "resource_exhausted"
-				message = "A request identifier could not be created."
-			}
-			if errors.As(err, &watchErr) && watchErr.Code != "" {
-				code = watchErr.Code
-				message = watchErr.Message
-			}
-			h.completePendingLocked(key, pending, "", &Error{Code: code, Message: message})
+			h.finishPendingLocked(pending, operationFailure(err, "watch_rejected", "Input plugin rejected the watch."), false)
+		} else {
+			delete(h.pendingByKey, pending.key)
 		}
-		h.mu.Unlock()
-	} else {
-		h.mu.Lock()
-		if !pending.completed {
-			if pending.activated {
-				h.completePendingLocked(key, pending, pending.id, nil)
-			} else {
-				h.completePendingLocked(key, pending, "", &Error{Code: "plugin_unavailable", Message: "Plugin did not confirm the watch."})
-			}
+	} else if !pending.completed {
+		if pending.activated {
+			h.finishPendingLocked(pending, nil, true)
+		} else {
+			h.finishPendingLocked(pending, &Error{Code: "plugin_unavailable", Message: "Input plugin did not confirm the watch."}, false)
 		}
-		h.mu.Unlock()
 	}
-
-	<-pending.done
-	return pending.resultID, pending.resultErr
+	h.mu.Unlock()
+	return h.pendingResult(pending)
 }
 
 func (h *Hub) activate(pending *pendingRegistration) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.stopping {
-		return errors.New("daemon is shutting down")
-	}
-	state := h.plugins[pending.plugin]
-	if state == nil || state.port != pending.port || !state.available {
-		return errors.New("plugin is unavailable")
-	}
-	if pending.completed || h.pendingByKey[pending.key] != pending {
+	if pending.completed && !pending.watchIssued {
 		return errors.New("registration is no longer pending")
 	}
-	registration := domain.Subscription{
-		ID:        pending.id,
-		Plugin:    pending.plugin,
-		SessionID: pending.sessionID,
-		WatchArgs: pending.watchArgs,
+	inputState := h.plugins[pending.inputName]
+	outputState := h.plugins[pending.outputName]
+	if h.stopping || inputState == nil || inputState.port != pending.input || !inputState.available {
+		return errors.New("input plugin is unavailable")
 	}
+	registration := domain.Subscription{
+		ID:              pending.id,
+		InputPlugin:     pending.inputName,
+		OutputPlugin:    pending.outputName,
+		WatchArgs:       pending.watchArgs,
+		DestinationArgs: pending.destinationArgs,
+		Active:          false,
+	}
+	if outputState != nil && outputState.port == pending.output && outputState.available && !h.stopping {
+		registration.Active = true
+		h.activeByKey[pending.key] = pending.id
+		pending.activated = true
+		h.registrations[pending.id] = registration
+		h.finishPendingLocked(pending, nil, false)
+		h.logger.Info("subscription_active", "input_plugin", pending.inputName, "output_plugin", pending.outputName, "subscription_id", pending.id)
+		return nil
+	}
+	// The input accepted a watch after its destination became unavailable. Keep
+	// the inert route until input shutdown because the protocol has no cancel RPC.
 	h.registrations[pending.id] = registration
-	h.activeByKey[pending.key] = pending.id
-	pending.activated = true
-	h.logger.Info("subscription_active", "plugin", pending.plugin, "subscription_id", pending.id)
+	if !pending.completed {
+		h.finishPendingLocked(pending, &Error{Code: "plugin_unavailable", Message: "Output plugin became unavailable before the watch was active."}, true)
+	} else {
+		delete(h.pendingByKey, pending.key)
+	}
+	h.logger.Warn("subscription_inactive", "input_plugin", pending.inputName, "output_plugin", pending.outputName, "subscription_id", pending.id, "reason", "output plugin unavailable")
 	return nil
 }
 
-func (h *Hub) completePendingLocked(key string, pending *pendingRegistration, id domain.SubscriptionID, resultErr *Error) {
-	if pending.completed {
-		return
+func (h *Hub) finishRegistrationFailure(pending *pendingRegistration, resultErr *Error) {
+	h.mu.Lock()
+	h.finishPendingLocked(pending, resultErr, false)
+	h.mu.Unlock()
+}
+
+func (h *Hub) finishPendingLocked(pending *pendingRegistration, resultErr *Error, keepReservation bool) {
+	if !pending.completed {
+		pending.completed = true
+		pending.resultErr = resultErr
+		if resultErr == nil {
+			pending.resultID = pending.id
+		}
+		close(pending.done)
 	}
-	pending.completed = true
-	pending.resultID = id
-	pending.resultErr = resultErr
-	delete(h.pendingByKey, key)
-	close(pending.done)
+	if !keepReservation {
+		delete(h.pendingByKey, pending.key)
+	}
+}
+
+func (h *Hub) pendingResult(pending *pendingRegistration) (domain.SubscriptionID, *Error) {
+	<-pending.done
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return pending.resultID, pending.resultErr
 }
 
 func (h *Hub) acceptEvent(pluginName string, port PluginPort, subscriptionID, eventContext string) {
-	if subscriptionID == "" || eventContext == "" {
-		h.logger.Warn("event_rejected", "plugin", pluginName, "subscription_id", subscriptionID, "reason", "invalid event")
+	if subscriptionID == "" || eventContext == "" || !utf8.ValidString(eventContext) || len([]byte(eventContext)) > MaxContextBytes {
+		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "invalid event")
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	state := h.plugins[pluginName]
-	if h.stopping || state == nil || state.port != port || !state.available {
-		h.logger.Warn("event_rejected", "plugin", pluginName, "subscription_id", subscriptionID, "reason", "plugin unavailable")
+	if h.stopping || state == nil || state.role != domain.InputRole || state.port != port || !state.available {
+		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "input plugin unavailable")
 		return
 	}
 	registration, ok := h.registrations[domain.SubscriptionID(subscriptionID)]
-	if !ok || registration.Plugin != pluginName {
-		h.logger.Warn("event_rejected", "plugin", pluginName, "subscription_id", subscriptionID, "reason", "inactive or foreign subscription")
+	if !ok || !registration.Active || registration.InputPlugin != pluginName {
+		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "inactive or foreign subscription")
+		return
+	}
+	outputState := h.plugins[registration.OutputPlugin]
+	if outputState == nil || outputState.role != domain.OutputRole || !outputState.available {
+		h.logger.Warn("event_rejected", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "reason", "output plugin unavailable")
 		return
 	}
 	if h.pendingEvents >= MaxDeliveries {
-		h.logger.Warn("event_rejected", "plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery queue is full")
+		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery queue is full")
 		return
 	}
 	deliveryID, err := newID()
 	if err != nil {
-		h.logger.Error("event_rejected", "plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery identifier unavailable")
+		h.logger.Error("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery identifier unavailable")
 		return
 	}
 	event := domain.Event{
-		ID:             domain.DeliveryID(deliveryID),
-		Plugin:         pluginName,
-		SubscriptionID: domain.SubscriptionID(subscriptionID),
-		SessionID:      registration.SessionID,
-		Context:        eventContext,
+		ID:              domain.DeliveryID(deliveryID),
+		InputPlugin:     pluginName,
+		OutputPlugin:    registration.OutputPlugin,
+		SubscriptionID:  domain.SubscriptionID(subscriptionID),
+		DestinationArgs: registration.DestinationArgs,
+		Context:         eventContext,
+	}
+	if !deliveryFits(event) {
+		h.logger.Warn("event_rejected", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "reason", "delivery payload exceeds protocol limit")
+		return
 	}
 	h.pendingEvents++
 	receivedAt := time.Now().UTC()
 	select {
-	case h.queue <- queuedEvent{event: event}:
-		h.logger.Info("event_admitted", "plugin", pluginName, "subscription_id", subscriptionID, "delivery_id", event.ID, "received_at", receivedAt)
+	case h.queue <- queuedEvent{event: event, outputPort: outputState.port}:
+		h.logger.Info("event_admitted", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "delivery_id", event.ID, "received_at", receivedAt)
 	default:
 		h.pendingEvents--
-		h.logger.Warn("event_rejected", "plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery queue is full")
+		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery queue is full")
 	}
+}
+
+func deliveryFits(event domain.Event) bool {
+	value := jsonvalue.NewObject(map[string]*jsonvalue.Value{
+		"version":           jsonvalue.NewNumber(pluginProtocolV2),
+		"type":              jsonvalue.NewString("deliver"),
+		"request_id":        jsonvalue.NewString("00000000-0000-4000-8000-000000000000"),
+		"delivery_id":       jsonvalue.NewString(string(event.ID)),
+		"input_plugin":      jsonvalue.NewString(event.InputPlugin),
+		"subscription_id":   jsonvalue.NewString(string(event.SubscriptionID)),
+		"destination_args":  event.DestinationArgs,
+		"context":           jsonvalue.NewString(event.Context),
+		"external_data":     jsonvalue.NewBoolean(true),
+		"permission_notice": jsonvalue.NewString(permissionNotice),
+	})
+	return len(value.Marshal()) <= MaxPluginPayload
+}
+
+func registrationPayloadsFit(watchArgs, destinationArgs *jsonvalue.Value, subscriptionID, destinationRequestID, watchRequestID string) bool {
+	destination := jsonvalue.NewObject(map[string]*jsonvalue.Value{
+		"version":          jsonvalue.NewNumber(pluginProtocolV2),
+		"type":             jsonvalue.NewString("validate_destination"),
+		"request_id":       jsonvalue.NewString(destinationRequestID),
+		"destination_args": destinationArgs,
+	})
+	watch := jsonvalue.NewObject(map[string]*jsonvalue.Value{
+		"version":         jsonvalue.NewNumber(pluginProtocolV2),
+		"type":            jsonvalue.NewString("watch"),
+		"request_id":      jsonvalue.NewString(watchRequestID),
+		"subscription_id": jsonvalue.NewString(subscriptionID),
+		"watch_args":      watchArgs,
+	})
+	return len(destination.Marshal()) <= MaxPluginPayload && len(watch.Marshal()) <= MaxPluginPayload
 }
 
 func (h *Hub) deliveryWorker() {
@@ -425,29 +557,34 @@ func (h *Hub) deliveryWorker() {
 				h.discardQueued()
 				return
 			}
-			h.deliver(item.event)
+			h.deliver(item)
 		}
 	}
 }
 
-func (h *Hub) deliver(event domain.Event) {
+func (h *Hub) deliver(item queuedEvent) {
+	event := item.event
 	started := time.Now().UTC()
-	h.logger.Info("delivery_attempt", "plugin", event.Plugin, "subscription_id", event.SubscriptionID, "delivery_id", event.ID, "session_id", event.SessionID, "attempted_at", started)
-	result := DeliveryResult{Outcome: domain.DeliveryUnknown, Detail: "delivery adapter unavailable"}
-	if h.delivery != nil {
-		result = h.delivery.Deliver(h.ctx, event)
+	h.mu.Lock()
+	state := h.plugins[event.OutputPlugin]
+	available := !h.stopping && state != nil && state.role == domain.OutputRole && state.available && state.port == item.outputPort
+	h.mu.Unlock()
+	h.logger.Info("delivery_attempt", "input_plugin", event.InputPlugin, "output_plugin", event.OutputPlugin, "subscription_id", event.SubscriptionID, "delivery_id", event.ID, "attempted_at", started)
+	result := DeliveryResult{Outcome: domain.DeliveryFailed, Detail: "output plugin unavailable before delivery"}
+	if available {
+		result = item.outputPort.Deliver(h.ctx, event)
 	}
-	if result.Outcome == "" {
+	if result.Outcome != domain.DeliveryAccepted && result.Outcome != domain.DeliveryFailed && result.Outcome != domain.DeliveryUnknown {
 		result.Outcome = domain.DeliveryUnknown
 	}
-	h.logger.Info("delivery_result", "plugin", event.Plugin, "subscription_id", event.SubscriptionID, "delivery_id", event.ID, "outcome", result.Outcome, "detail", bounded(result.Detail, 1024), "completed_at", time.Now().UTC())
+	h.logger.Info("delivery_result", "input_plugin", event.InputPlugin, "output_plugin", event.OutputPlugin, "subscription_id", event.SubscriptionID, "delivery_id", event.ID, "outcome", result.Outcome, "detail", bounded(result.Detail, defaultOperationMax), "completed_at", time.Now().UTC())
 	h.mu.Lock()
 	h.pendingEvents--
 	h.mu.Unlock()
 }
 
 func (h *Hub) discardEvent(event domain.Event, reason string) {
-	h.logger.Warn("delivery_discarded", "plugin", event.Plugin, "subscription_id", event.SubscriptionID, "delivery_id", event.ID, "reason", reason)
+	h.logger.Warn("delivery_discarded", "input_plugin", event.InputPlugin, "output_plugin", event.OutputPlugin, "subscription_id", event.SubscriptionID, "delivery_id", event.ID, "reason", reason)
 	h.mu.Lock()
 	h.pendingEvents--
 	h.mu.Unlock()
@@ -470,8 +607,10 @@ func (h *Hub) Shutdown() {
 		h.stopping = true
 		close(h.stopCh)
 		h.cancel()
-		for key, pending := range h.pendingByKey {
-			h.completePendingLocked(key, pending, "", &Error{Code: "plugin_unavailable", Message: "Daemon is shutting down."})
+		for _, pending := range h.pendingByKey {
+			if !pending.completed {
+				h.finishPendingLocked(pending, &Error{Code: "plugin_unavailable", Message: "Daemon is shutting down."}, false)
+			}
 		}
 	}
 	h.mu.Unlock()
@@ -500,9 +639,30 @@ func (h *Hub) StopPlugins(ctx context.Context) {
 	wait.Wait()
 }
 
-func registrationKey(pluginName, sessionID string, args *jsonvalue.Value) string {
-	canonical := args.Canonical()
-	return pluginName + "\x00" + sessionID + "\x00" + string(canonical)
+func (h *Hub) forgetInputSubscriptions(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id, registration := range h.registrations {
+		if registration.InputPlugin != name {
+			continue
+		}
+		delete(h.activeByKey, registrationKey(registration.InputPlugin, registration.WatchArgs, registration.OutputPlugin, registration.DestinationArgs))
+		delete(h.registrations, id)
+	}
+	for key, pending := range h.pendingByKey {
+		if pending.inputName == name {
+			h.finishPendingLocked(pending, &Error{Code: "plugin_unavailable", Message: "Input plugin is unavailable."}, false)
+			delete(h.pendingByKey, key)
+		}
+	}
+}
+
+func registrationKey(inputName string, watchArgs *jsonvalue.Value, outputName string, destinationArgs *jsonvalue.Value) string {
+	value := jsonvalue.NewArray(
+		jsonvalue.NewString(inputName), watchArgs,
+		jsonvalue.NewString(outputName), destinationArgs,
+	)
+	return string(value.Canonical())
 }
 
 func newID() (string, error) {
@@ -529,7 +689,7 @@ func safeError(err error) string {
 	if err == nil {
 		return "unspecified"
 	}
-	return bounded(err.Error(), 1024)
+	return bounded(err.Error(), defaultOperationMax)
 }
 
 func bounded(value string, maxBytes int) string {
@@ -542,8 +702,41 @@ func bounded(value string, maxBytes int) string {
 	return value[:maxBytes]
 }
 
-// WatchError describes whether a plugin watch failure leaves its process
-// usable. Only confirmed schema rejection and frame-size rejection preserve it.
+func operationFailure(err error, fallbackCode, fallbackMessage string) *Error {
+	var destinationErr *DestinationError
+	if errors.As(err, &destinationErr) && destinationErr.Code != "" {
+		return &Error{Code: destinationErr.Code, Message: destinationErr.Message}
+	}
+	var watchErr *WatchError
+	if errors.As(err, &watchErr) && watchErr.Code != "" {
+		return &Error{Code: watchErr.Code, Message: watchErr.Message}
+	}
+	if err != nil {
+		return &Error{Code: fallbackCode, Message: fallbackMessage}
+	}
+	return nil
+}
+
+type DestinationError struct {
+	Code        string
+	Message     string
+	Unavailable bool
+	Cause       error
+}
+
+func (e *DestinationError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	return "destination validation failed"
+}
+
+func (e *DestinationError) Unwrap() error { return e.Cause }
+
+// WatchError identifies expected plugin rejection separately from process loss.
 type WatchError struct {
 	Code        string
 	Message     string

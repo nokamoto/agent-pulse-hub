@@ -12,11 +12,11 @@ func TestEveryFrameRequiredFieldRejectsMissingNullAndWrongType(t *testing.T) {
 		name, input string
 		direction   Direction
 	}{
-		{name: "ready", input: `{"version":1,"type":"ready"}`, direction: PluginToDaemon},
-		{name: "accepted", input: `{"version":1,"type":"watch_result","request_id":"opaque request","accepted":true}`, direction: PluginToDaemon},
-		{name: "rejected", input: `{"version":1,"type":"watch_result","request_id":"opaque request","accepted":false,"error":"reject"}`, direction: PluginToDaemon},
-		{name: "event", input: `{"version":1,"type":"event","subscription_id":"opaque subscription","context":"line\nnext"}`, direction: PluginToDaemon},
-		{name: "watch", input: `{"version":1,"type":"watch","request_id":"opaque request","subscription_id":"opaque subscription","watch_args":{"n":9007199254740993}}`, direction: DaemonToPlugin},
+		{name: "ready", input: `{"version":2,"type":"ready","role":"input"}`, direction: PluginToDaemon},
+		{name: "accepted", input: `{"version":2,"type":"watch_result","request_id":"opaque request","accepted":true}`, direction: PluginToDaemon},
+		{name: "rejected", input: `{"version":2,"type":"watch_result","request_id":"opaque request","accepted":false,"error":"reject"}`, direction: PluginToDaemon},
+		{name: "event", input: `{"version":2,"type":"event","subscription_id":"opaque subscription","context":"line\nnext"}`, direction: PluginToDaemon},
+		{name: "watch", input: `{"version":2,"type":"watch","request_id":"opaque request","subscription_id":"opaque subscription","watch_args":{"n":9007199254740993}}`, direction: DaemonToPlugin},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			base, err := jsonvalue.Parse([]byte(test.input), 0)
@@ -65,8 +65,8 @@ func TestEveryFrameRequiredFieldRejectsMissingNullAndWrongType(t *testing.T) {
 }
 
 func TestVersionRequiresExactNumericToken(t *testing.T) {
-	for _, version := range []string{"1.0", "1e0", "2", "-1", "null", `"1"`} {
-		value, err := jsonvalue.Parse([]byte(`{"version":`+version+`,"type":"ready"}`), 0)
+	for _, version := range []string{"1", "2.0", "2e0", "-1", "null", `"2"`} {
+		value, err := jsonvalue.Parse([]byte(`{"version":`+version+`,"type":"ready","role":"input"}`), 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +97,7 @@ func TestWatchFrameExactWireBound(t *testing.T) {
 
 func TestEventContextBoundAfterEscapeDecoding(t *testing.T) {
 	for _, size := range []int{MaxContextBytes, MaxContextBytes + 1} {
-		value, err := jsonvalue.Parse([]byte(`{"version":1,"type":"event","subscription_id":"opaque","context":"`+strings.Repeat(`\u0061`, size)+`"}`), 0)
+		value, err := jsonvalue.Parse([]byte(`{"version":2,"type":"event","subscription_id":"opaque","context":"`+strings.Repeat(`\u0061`, size)+`"}`), 0)
 		if err != nil {
 			t.Fatal(err)
 		}

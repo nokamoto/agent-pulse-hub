@@ -8,16 +8,23 @@ import (
 	"google.golang.org/grpc"
 )
 
-const PluginKey = "events"
+const (
+	InputPluginKey  = "input"
+	OutputPluginKey = "output"
+)
 
 var HandshakeConfig = plugin.HandshakeConfig{
-	ProtocolVersion:  1,
+	ProtocolVersion:  2,
 	MagicCookieKey:   "AGENT_PULSE_HUB_PLUGIN",
-	MagicCookieValue: "plugin-v1",
+	MagicCookieValue: "plugin-v2",
 }
 
-// FrameworkPlugin connects the application Session service to go-plugin.
-// The host leaves Impl nil; a plugin executable supplies its service handler.
+func PluginKey(role string) string {
+	return role
+}
+
+// FrameworkPlugin keeps process startup, gRPC transport and shutdown under
+// go-plugin while exposing the public language-neutral Session service.
 type FrameworkPlugin struct {
 	plugin.NetRPCUnsupportedPlugin
 	Impl   pluginprotocol.EventPluginServer

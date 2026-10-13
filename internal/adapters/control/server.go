@@ -128,6 +128,9 @@ func (s *Server) handle(connection net.Conn) {
 		return
 	}
 	if request.operation == "stop" {
+		// Hub shutdown closes registration and event admission and resolves any
+		// in-flight delivery before the public stop acknowledgement is written.
+		s.service.Shutdown()
 		if _, err := writeRequest(connection, []byte("{\"ok\":true}\n")); err != nil {
 			s.logger.Warn("control_stop_response_lost", "reason", safeText(err.Error(), 256))
 		}
@@ -142,7 +145,12 @@ func (s *Server) handle(connection net.Conn) {
 	}
 	completed := make(chan result, 1)
 	go func() {
-		id, err := s.service.Register(request.registration.Plugin, request.registration.SessionID, request.registration.WatchArgs)
+		id, err := s.service.Register(
+			request.registration.InputPlugin,
+			request.registration.WatchArgs,
+			request.registration.OutputPlugin,
+			request.registration.DestinationArgs,
+		)
 		completed <- result{subscriptionID: string(id), err: err}
 	}()
 	timer := time.NewTimer(time.Until(deadline))
@@ -163,7 +171,7 @@ func (s *Server) handle(connection net.Conn) {
 			return
 		}
 		if _, err := writeRequest(connection, response); err != nil {
-			s.logger.Warn("control_response_lost", "plugin", request.registration.Plugin, "subscription_id", registration.subscriptionID, "reason", safeText(err.Error(), 256))
+			s.logger.Warn("control_response_lost", "input_plugin", request.registration.InputPlugin, "output_plugin", request.registration.OutputPlugin, "subscription_id", registration.subscriptionID, "reason", safeText(err.Error(), 256))
 		}
 	}
 }

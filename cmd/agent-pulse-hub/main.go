@@ -14,13 +14,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/nokamoto/agent-pulse-hub/internal/adapters/codex"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/config"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/control"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprocess"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
 	"github.com/nokamoto/agent-pulse-hub/internal/application/hub"
-	"github.com/nokamoto/agent-pulse-hub/internal/domain"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
 
@@ -28,8 +26,8 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 type commandOperations interface {
 	Daemon(configPath, address string, stderr io.Writer) error
-	WatchArguments(path string) (*jsonvalue.Value, error)
-	Register(context.Context, string, string, string, *jsonvalue.Value) (control.RegistrationResponse, []byte, error)
+	Arguments(path string) (*jsonvalue.Value, error)
+	Register(context.Context, string, string, *jsonvalue.Value, string, *jsonvalue.Value) (control.RegistrationResponse, []byte, error)
 	Stop(context.Context, string) error
 }
 
@@ -39,12 +37,10 @@ func (localOperations) Daemon(path, address string, stderr io.Writer) error {
 	return runDaemon(path, address, stderr)
 }
 
-func (localOperations) WatchArguments(path string) (*jsonvalue.Value, error) {
-	return loadWatchArguments(path)
-}
+func (localOperations) Arguments(path string) (*jsonvalue.Value, error) { return loadArguments(path) }
 
-func (localOperations) Register(ctx context.Context, address, pluginName, sessionID string, arguments *jsonvalue.Value) (control.RegistrationResponse, []byte, error) {
-	return control.Register(ctx, address, pluginName, sessionID, arguments)
+func (localOperations) Register(ctx context.Context, address, inputName string, watchArgs *jsonvalue.Value, outputName string, destinationArgs *jsonvalue.Value) (control.RegistrationResponse, []byte, error) {
+	return control.Register(ctx, address, inputName, watchArgs, outputName, destinationArgs)
 }
 
 func (localOperations) Stop(ctx context.Context, address string) error {
@@ -70,23 +66,21 @@ func runWith(args []string, stdout, stderr io.Writer, operations commandOperatio
 		}
 		return 0
 	case "register":
-		flags, err := parseFlags(args[1:], []string{"--plugin", "--session-id", "--watch-args-file"}, []string{"--address"})
+		flags, err := parseFlags(args[1:], []string{"--input-plugin", "--watch-args-file", "--output-plugin", "--destination-args-file"}, []string{"--address"})
 		if err != nil {
 			return report(stderr, "register: "+err.Error())
 		}
-		if flags["--plugin"] == "" {
-			return report(stderr, "register: --plugin must be nonempty.")
+		watchArgs, err := operations.Arguments(flags["--watch-args-file"])
+		if err != nil {
+			return report(stderr, "register: "+err.Error())
 		}
-		if !domain.IsUUID(flags["--session-id"]) {
-			return report(stderr, "register: --session-id must be a UUID.")
-		}
-		watchArgs, err := operations.WatchArguments(flags["--watch-args-file"])
+		destinationArgs, err := operations.Arguments(flags["--destination-args-file"])
 		if err != nil {
 			return report(stderr, "register: "+err.Error())
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), controlDeadline)
 		defer cancel()
-		_, wire, err := operations.Register(ctx, addressOrDefault(flags["--address"]), flags["--plugin"], flags["--session-id"], watchArgs)
+		_, wire, err := operations.Register(ctx, addressOrDefault(flags["--address"]), flags["--input-plugin"], watchArgs, flags["--output-plugin"], destinationArgs)
 		if err != nil {
 			var daemonError *control.DaemonError
 			if errors.As(err, &daemonError) {
@@ -120,7 +114,7 @@ func runWith(args []string, stdout, stderr io.Writer, operations commandOperatio
 	}
 }
 
-const controlDeadline = 15 * time.Second
+const controlDeadline = 25 * time.Second
 
 func addressOrDefault(address string) string {
 	if address == "" {
@@ -135,15 +129,7 @@ func runDaemon(configPath, address string, stderr io.Writer) error {
 		return err
 	}
 	logger := daemonLogger(stderr)
-	probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	version, err := codex.ReadVersion(probeCtx, settings.CodexExecutable)
-	probeCancel()
-	if err != nil {
-		return err
-	}
-	logger.Info("codex_cli_version", "version", version)
-
-	service := hub.New(codex.New(settings.CodexExecutable), logger)
+	service := hub.New(logger)
 	server, err := control.NewServer(address, service, logger)
 	if err != nil {
 		service.Shutdown()
@@ -153,9 +139,9 @@ func runDaemon(configPath, address string, stderr io.Writer) error {
 
 	for _, configured := range settings.Plugins {
 		process := pluginprocess.New(pluginprocess.Config{
-			Name: configured.Name, Executable: configured.Executable, Args: configured.Args,
+			Name: configured.Name, Role: configured.Role, Executable: configured.Executable, Args: configured.Args,
 		}, logger)
-		if err := service.AddPlugin(configured.Name, process); err != nil {
+		if err := service.AddPlugin(configured.Name, configured.Role, process); err != nil {
 			service.Shutdown()
 			service.StopPlugins(context.Background())
 			return err
@@ -228,35 +214,35 @@ func parseFlags(args, required, optional []string) (map[string]string, error) {
 	return values, nil
 }
 
-func loadWatchArguments(path string) (*jsonvalue.Value, error) {
+func loadArguments(path string) (*jsonvalue.Value, error) {
 	if !filepath.IsAbs(path) {
-		return nil, errors.New("watch arguments path must be absolute")
+		return nil, errors.New("argument file path must be absolute")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("open watch arguments file: %w", err)
+		return nil, fmt.Errorf("open argument file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("watch arguments path must name a regular file")
+		return nil, errors.New("argument file path must name a regular file")
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open watch arguments file: %w", err)
+		return nil, fmt.Errorf("open argument file: %w", err)
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, protocol.MaxFrameBytes))
 	if err != nil {
-		return nil, fmt.Errorf("read watch arguments file: %w", err)
+		return nil, fmt.Errorf("read argument file: %w", err)
 	}
 	if len(data) >= protocol.MaxFrameBytes {
 		return nil, protocol.ErrFrameTooLarge
 	}
 	value, err := jsonvalue.Parse(data, protocol.MaxFrameBytes-1)
 	if err != nil {
-		return nil, fmt.Errorf("parse watch arguments JSON: %w", err)
+		return nil, fmt.Errorf("parse argument file JSON: %w", err)
 	}
 	if value.Kind() != jsonvalue.Object {
-		return nil, errors.New("watch arguments file must contain a JSON object")
+		return nil, errors.New("argument file must contain a JSON object")
 	}
 	return value, nil
 }

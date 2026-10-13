@@ -16,9 +16,8 @@ import (
 )
 
 // Design probes remain outside TestIntegration and scoped acceptance reports.
-// Current builds establish a setup mechanism only; the new model output does
-// not exist yet. A conservative extra-build reserve cannot prove its future
-// compile cost, which implementation must measure within the approved budget.
+// The setup measurement builds all three actual command binaries and compiles
+// both tagged command suites within the approved reserve.
 func TestDesignBudgetFeasibility(t *testing.T) {
 	t.Logf("minimum setup only; OS=%s architecture=%s; populated caches; not product acceptance or a complete-suite measurement", runtime.GOOS, runtime.GOARCH)
 	t.Run("CommonBuild", designBudgetCommonBuild)
@@ -47,20 +46,17 @@ func designBudgetCommonBuild(t *testing.T) {
 		t.Logf("go %v: elapsed=%s", args, elapsed)
 		return elapsed
 	}
-	var productBuild, suiteCompilation, maximumBuild time.Duration
-	for _, command := range []string{"agent-pulse-hub", "manual-plugin"} {
+	var productBuild, suiteCompilation time.Duration
+	for _, command := range []string{"agent-pulse-hub", "manual-plugin", "model-output-plugin"} {
 		elapsed := run("build", "-o", filepath.Join(directory, command+".exe"), "./cmd/"+command)
 		productBuild += elapsed
-		if elapsed > maximumBuild {
-			maximumBuild = elapsed
-		}
 	}
 	for _, command := range []string{"agent-pulse-hub", "manual-plugin"} {
 		// Compile only; nested execution would recursively repeat this probe.
 		suiteCompilation += run("test", "-c", "-tags=integration", "-o", filepath.Join(directory, command+"-suite.exe"), "./cmd/"+command)
 	}
-	estimate := productBuild + suiteCompilation + maximumBuild
-	t.Logf("existing builds=%s; tagged compilation=%s; extra model-output build proxy=%s; conservative setup estimate=%s against 20s reserve; new product compilation, cold caches and dependency setup unmeasured", productBuild, suiteCompilation, maximumBuild, estimate)
+	estimate := productBuild + suiteCompilation
+	t.Logf("three actual command builds=%s; tagged suite compilation=%s; measured common setup=%s against 20s reserve; cold caches and dependency setup unmeasured", productBuild, suiteCompilation, estimate)
 	if estimate >= 20*time.Second {
 		t.Errorf("setup estimate exhausted 20s reserve: %s", estimate)
 	}
