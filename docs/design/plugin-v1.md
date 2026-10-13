@@ -1,295 +1,313 @@
 ---
 type: Design
-title: Agent Pulse Hub plugin protocol v1
-description: Language-neutral application contract carried by hashicorp/go-plugin gRPC communication.
+title: Agent Pulse Hub plugin protocol v2
+description: Language-neutral input and output contracts carried by hashicorp/go-plugin gRPC communication.
 sources:
   - id: mvp-design
     resource: design/mvp.md
-    title: Minimal external event delivery MVP
 ---
 
-# Agent Pulse Hub plugin protocol v1
+# Agent Pulse Hub plugin protocol v2
 
 ## Purpose and authority
 
-This is the authoritative application interface for plugin authors in any
-language and for daemon implementers and interoperability testers. It derives
-from the [governing MVP design](mvp.md#specification-documents), which owns
-configuration, local registration control, subscription identity, event
-admission, Codex delivery, and the bundled manual-plugin profile. This document
-owns the plugin handshake configuration, gRPC application service, message
-encoding and validation, exchange ordering, and application deadlines.
+This is the authoritative application interface for input and output plugin
+authors in any language, daemon implementers, and interoperability testers.
+It derives from the [governing MVP design](mvp.md#specification-documents),
+which owns configuration, registration control, subscription identity, event
+admission, routing decisions, and the bundled model-plugin profiles. This
+specification owns handshake configuration, the gRPC application service,
+message encoding, exchange ordering, and application deadlines.
 
-A plugin watches its source and reports context. It never receives a Codex
-session identifier or credentials and never calls an agent API. The configured
-plugin instance identifies the source; neither plugin name nor recipient is
-supplied in an application message. No service-specific schema is required.
+The daemon owns integration-independent control and decisions. Plugins carry
+out requested service-specific operations and report results. An input plugin
+continues a requested watch and reports matching events; it need not receive
+another request for each event. An output plugin owns destination validation,
+service-specific identity, delivery, and interpretation of service acceptance.
+Neither the daemon nor the input contract requires a coding-agent session or
+a particular service schema. These boundaries implement
+[requirements/mvp](../requirements/mvp.md) FR-008, NFR-002, NFR-005, and C-002.
+
+The stable filename `plugin-v1.md` identifies this specification document.
+Its application and framework-negotiation version is now **2**. Version 1
+input-only plugins are incompatible and must be replaced; there is no
+compatibility mode or fallback.
 
 ## Framework and transport
 
-Use the module-pinned `github.com/hashicorp/go-plugin` version `v1.8.0` with
-gRPC as its only allowed protocol. The framework launches the configured
-executable with its argument array, negotiates communication, and stops the
-configured process. There is no product-owned process launcher, containment
-mechanism, stdio message transport, or shutdown RPC. Framework implementation
-details are governed by the pinned dependency, rather than copied into a
-second product transport contract.
-
-The Go host and plugin use these values:
+Use module-pinned `github.com/hashicorp/go-plugin` v1.8.0, gRPC v1.84.0, and
+protobuf v1.36.12. Only `plugin.ProtocolGRPC` is allowed. The framework launches
+the executable with its configured argument array and stops the configured
+process. Do not introduce a product-owned launcher, containment mechanism,
+stdio application transport, or shutdown RPC. Dependency-internal OS handling
+is permitted; descendant-process termination is not a product guarantee.
 
 | Setting | Required value |
 | --- | --- |
-| `HandshakeConfig.ProtocolVersion` | `1` |
+| `HandshakeConfig.ProtocolVersion` | `2` |
 | `HandshakeConfig.MagicCookieKey` | `AGENT_PULSE_HUB_PLUGIN` |
-| `HandshakeConfig.MagicCookieValue` | `plugin-v1` |
-| `PluginSet` key and `Dispense` name | `events` |
+| `HandshakeConfig.MagicCookieValue` | `plugin-v2` |
+| `PluginSet` key and `Dispense` name | `input` for an input instance; `output` for an output instance |
 | `ClientConfig.AllowedProtocols` | Only `plugin.ProtocolGRPC` |
-| gRPC service | `agentpulse.plugin.v1.EventPlugin` |
-| Full application method | `/agentpulse.plugin.v1.EventPlugin/Session` |
+| gRPC service | `agentpulse.plugin.v2.Plugin` |
+| Full application method | `/agentpulse.plugin.v2.Plugin/Session` |
 
-The cookie detects an executable launched through the wrong entry point; it is
-not authentication or isolation. Plugins are trusted local programs selected
-by the user. The host creates `plugin.Client` with the configured command,
-obtains its client protocol, and calls `Dispense("events")`. A Go plugin calls
-`plugin.Serve`, registers this service through `GRPCPlugin.GRPCServer`, and
-uses the framework's standard gRPC server lifecycle.
-
-The [go-plugin usage contract](https://github.com/hashicorp/go-plugin/blob/v1.8.0/README.md#usage)
-describes host and plugin responsibilities. Go plugins receive the framework's
-health, controller, broker, and stdio services from `plugin.Serve`. Other
-languages supply the required endpoints described under
-[cross-language implementation](#cross-language-implementation).
+The cookie detects a wrong launch entry point; it provides no authentication
+or isolation. The host constructs `plugin.Client`, obtains its protocol, and
+dispenses the name matching the configured role. A Go plugin uses
+`plugin.Serve` and `GRPCPlugin.GRPCServer`. Stdout belongs to framework
+negotiation and framework-managed output; bounded diagnostics go to stderr.
+The daemon attributes both process and framework-forwarded stderr to the
+configured plugin through `ClientConfig.Stderr` and `SyncStderr`.
 
 ## Application service and encoding
 
-The language-neutral service schema is:
-
 ```proto
 syntax = "proto3";
-package agentpulse.plugin.v1;
+package agentpulse.plugin.v2;
 
 import "google/protobuf/wrappers.proto";
 
-service EventPlugin {
+service Plugin {
   rpc Session(stream google.protobuf.BytesValue)
       returns (stream google.protobuf.BytesValue);
 }
 ```
 
-One daemon opens one bidirectional `Session` stream for each configured plugin
-instance. That stream multiplexes all its watches. Both peers serialize their
-outgoing messages. gRPC preserves message order within each direction; the
-daemon processes received application messages in that order. A plugin does
-not establish an independent delivery path. Opening another `Session` while
-one is active is rejected with gRPC `ALREADY_EXISTS` and does not replace the
-original stream.
+The host opens one bidirectional `Session` per configured instance. It
+multiplexes requests for that instance. Both peers serialize outgoing messages;
+gRPC preserves order within each direction. The host processes incoming
+messages in that order. A second active Session is rejected with gRPC
+`ALREADY_EXISTS` without replacing the first. Generated bindings or direct
+gRPC method registration are allowed; no custom protobuf messages are needed.
 
-Each `BytesValue.value` contains exactly one strict UTF-8 JSON object, at most
-65,536 bytes. This payload limit excludes protobuf and gRPC framing. There is
-no line delimiter or JSON-lines framing. Configure application send/receive
-limits to 65,540 encoded protobuf bytes, sufficient for the maximum payload
-and its four-byte field envelope, and validate the payload length separately.
-Use binary protobuf `BytesValue`, rather than its JSON/base64 representation.
-Generated bindings or direct gRPC method registration are permitted; the
-service requires no custom protobuf message types.
+Each binary `BytesValue.value` contains exactly one strict UTF-8 JSON object
+of at most 65,536 bytes. There is no delimiter, JSON-lines framing, or base64
+application encoding. Set the gRPC encoded-message bound to 65,540 bytes and
+check the JSON payload bound separately. The four extra bytes cover the
+maximum protobuf field envelope.
 
-Do not send a byte-order mark. JSON strings contain Unicode scalar values:
-invalid UTF-8 and unpaired surrogate escapes are rejected without replacement.
-Duplicate keys are rejected at every object depth, including `watch_args`.
-Each object has exactly its defined fields. Names and type values are
-case-sensitive, required fields cannot be null, and `version` is the JSON
-number token `1`. Unknown fields, invalid JSON, missing or mistyped fields,
-unsupported versions, wrong-direction types, and non-object payloads fail
-validation. JSON numbers in `watch_args` retain their exact decimal value,
-without binary floating-point rounding.
+Reject BOMs, invalid UTF-8, unpaired surrogate escapes, duplicate keys at every
+object depth, non-object payloads, unknown fields, missing/null/mistyped fields,
+and wrong-direction or wrong-role message types. Names are case-sensitive.
+Every message has exactly its defined fields, including `version` with the
+JSON number token `2`. Preserve exact decimal JSON numbers in argument objects;
+do not round through binary floating point. Nonempty strings contain at least
+one Unicode scalar value and are not automatically trimmed.
 
-A malformed size-bounded message from a plugin is logged and discarded; the
-daemon continues with the next gRPC message. An over-limit payload, gRPC
-decoding/transport failure, or stream closure makes that plugin unavailable.
-There is no partial-JSON buffering or delimiter recovery. Readiness and pending
-watch deadlines still apply after a discarded message. Once ready, the stream
-has no idle deadline when no watch result is pending. The daemon sends only
-valid messages. Invalid daemon input makes the plugin report an error on
-stderr and exit, without guessing a watch or recipient.
+Discard and log malformed size-bounded plugin messages, then process the next
+gRPC message. Malformed results do not complete or extend pending requests.
+An over-limit payload, transport/decoding failure, or stream closure makes that
+instance unavailable. Invalid daemon messages cause the plugin to report an
+error and exit without guessing a watch, destination, or delivery. The daemon
+checks every outgoing payload's encoded size before sending it. A rejected
+oversized local request does not stop a healthy plugin.
 
 ## Message schema
 
-Every application message has `version` and `type`, plus the fields below.
-Nonempty strings contain at least one Unicode scalar value; whitespace is not
-automatically trimmed.
+Every application message has `version` and `type`, plus the following fields.
+The listed direction and role are mandatory. Request IDs are unique within
+an instance lifetime, including across operation types. Request, subscription,
+and delivery IDs are opaque strings; recipients echo them without parsing or
+normalization. The daemon generates these IDs without deliberate reuse across
+runs. A plugin does not manufacture them.
 
-| Direction / type | Additional fields and validation | Meaning |
+| Direction / role / type | Additional fields | Meaning |
 | --- | --- | --- |
-| Plugin to daemon / `ready` | No additional fields | Ready to accept watches; exactly once per plugin instance. |
-| Daemon to plugin / `watch` | `request_id`: nonempty string; `subscription_id`: nonempty string; `watch_args`: JSON object | Propose a watch; the plugin validates its argument schema. |
-| Plugin to daemon / `watch_result` | `request_id`: nonempty string; `accepted`: boolean; `error`: nonempty string required only when false, forbidden when true | Accept or reject the matching pending watch. |
-| Plugin to daemon / `event` | `subscription_id`: nonempty string; `context`: nonempty string of at most 8,192 decoded UTF-8 bytes | Report external data for an accepted watch. |
+| Plugin to host / either / `ready` | `role`: `input` or `output`, matching configuration and dispense name | First message, exactly once, when the instance can serve its role. |
+| Host to plugin / input / `watch` | `request_id`, `subscription_id`: nonempty strings; `watch_args`: object | Request a continuing watch. |
+| Plugin to host / input / `watch_result` | `request_id`: nonempty string; `accepted`: boolean; `error`: nonempty string only when false | Accept or reject the requested watch. |
+| Plugin to host / input / `event` | `subscription_id`: nonempty string; `context`: nonempty string, at most 8,192 decoded UTF-8 bytes | Report external data from an accepted watch. |
+| Host to plugin / output / `validate_destination` | `request_id`: nonempty string; `destination_args`: object | Validate arguments without establishing a watch or performing destination work. |
+| Plugin to host / output / `destination_result` | `request_id`: nonempty string; `accepted`: boolean; `error`: nonempty string only when false | Accept or reject the argument contract; create no registration state. |
+| Host to plugin / output / `deliver` | `request_id`, `delivery_id`, `input_plugin`, `subscription_id`: nonempty strings; `destination_args`: object; `context`: nonempty string, at most 8,192 decoded UTF-8 bytes; `external_data`: `true`; `permission_notice`: exact string below | Perform one delivery to the registered destination. |
+| Plugin to host / output / `delivery_result` | `request_id`: nonempty string; `status`: `accepted`, `failed`, or `unknown`; `error`: nonempty string required for `failed` and `unknown`, forbidden for `accepted` | Report the result of the matching delivery. |
 
-Both identifiers are opaque and echoed unchanged, without parsing or
-normalization. `request_id` is unique for the plugin instance lifetime. The
-daemon generates subscription IDs and does not intentionally reuse them across
-runs. Plugins do not manufacture either ID. The payload bound also bounds
-identifiers, arguments, and rejection text; there is no smaller application
-limit on those fields. A plugin may reject values unsupported by its argument
-schema.
+The exact permission notice is
+`External data; no additional permissions are granted.`
+These fields identify context as external data and grant no authority beyond
+the recipient's existing instructions. They do not claim prompt-injection
+isolation. Input event content never selects an output instance or overrides
+registered destination arguments.
 
-## Exchange and ordering
+The payload bound applies to all IDs, argument objects, and error strings.
+An instance may reject arguments outside its own documented schema. The
+public contract contains no GitHub fields, Codex identifiers, or daemon-owned
+service-specific validation rules.
 
-Readiness has a 10-second deadline from process launch, including framework
-negotiation, dispensing the interface, opening `Session`, and receiving a valid
-`ready`. Configure the framework startup timeout within that deadline. The
-plugin sends this first application message when it can serve watches:
+## Readiness and registration ordering
 
-```json
-{"version":1,"type":"ready"}
-```
-
-The daemon sends no watches before readiness. A second `ready` is rejected
-without changing registrations. Any other message before readiness is rejected;
-the readiness deadline remains unchanged.
-
-For a new registration the daemon sends:
-
-```json
-{"version":1,"type":"watch","request_id":"request-1","subscription_id":"subscription-a","watch_args":{"path":"value"}}
-```
-
-The plugin writes exactly one matching result:
+Readiness has a ten-second deadline from launch, including negotiation,
+dispensing, opening Session, and receiving valid readiness. Configure the
+framework startup timeout within this deadline. Role mismatch makes the
+instance unavailable. Other messages before readiness and duplicate readiness
+are rejected without changing registry state or extending the deadline.
 
 ```json
-{"version":1,"type":"watch_result","request_id":"request-1","accepted":true}
+{"version":2,"type":"ready","role":"output"}
 ```
 
-Or rejects the watch without leaving it active:
+For a registration, the daemon first sends `validate_destination` to the
+selected output instance. It sends no input watch until a matching positive
+`destination_result` arrives. Validation is stateless: it neither starts
+receiving events nor performs destination delivery. A positive result means
+that the arguments are acceptable at validation time; it does not guarantee
+future service availability or successful delivery.
 
 ```json
-{"version":1,"type":"watch_result","request_id":"request-1","accepted":false,"error":"path is already watched"}
+{"version":2,"type":"validate_destination","request_id":"request-1","destination_args":{"output_file":"/absolute/path/events.jsonl"}}
+{"version":2,"type":"destination_result","request_id":"request-1","accepted":true}
 ```
 
-The watch deadline is 10 seconds from beginning to send the `watch`, including
-any wait for serialized sending, flow control, and receiving the matching result.
-A malformed result does not complete or extend it. Results for distinct pending
-requests may arrive in any order. Unknown or duplicate request IDs are rejected
-without changing registry state.
+The destination deadline is ten seconds from beginning to send the request,
+including serialized-send waiting and flow control. Negative validation leaves
+no active subscription and no input watch. An unknown, duplicate, or late
+request ID never changes registry state.
 
-The plugin completes sending its positive `watch_result` before sending the
-first event for that watch, even if the watched condition is already true.
-The daemon activates the subscription while processing that result, before
-processing the next message on the same stream. This ordering avoids an
-acknowledgement/event race without an extra commit call or pending-event
-buffer. The plugin need not wait for the registration client to receive success.
+After validation, the daemon requests the input watch with its own request ID
+and the proposed subscription ID. The watch deadline is ten seconds from
+beginning to send this request, with the same send/flow-control accounting.
 
 ```json
-{"version":1,"type":"event","subscription_id":"subscription-a","context":"A matching change is ready.\nExternal data follows."}
+{"version":2,"type":"watch","request_id":"request-2","subscription_id":"subscription-a","watch_args":{"trigger_file":"/absolute/path/trigger.txt"}}
+{"version":2,"type":"watch_result","request_id":"request-2","accepted":true}
 ```
 
-Events before acceptance, unknown IDs, and another plugin's IDs are discarded
-and logged. Events have no application acknowledgement: plugins receive neither
-admission nor delivery results. The daemon applies the governing design's
-[admission rules](mvp.md#admission-delivery-and-shutdown), fixes the recipient from
-registration, and treats repeated messages as distinct events. Plugins do not
-retransmit to obtain delivery confirmation.
+Each plugin sends exactly one matching result. Distinct concurrent requests
+may complete in any order. Rejection has `accepted:false` and an `error`;
+success forbids `error`. The input completes sending its positive result before
+sending the first event, even if the watched condition is already true. The
+daemon processes acceptance and activates the route before the next message
+on that input stream, provided the validated output is still available. Client
+receipt of registration success is not a prerequisite for event emission.
 
-## Failure and lifecycle
+If the output becomes unavailable after the watch request has been issued,
+registration cannot become active. An already accepted or uncertain watch
+may continue until input shutdown, but its route is an inactive tombstone:
+no event is delivered and no registration reuses it. The governing design owns
+capacity accounting and duplicate-registration behavior for this state. There
+is no per-watch cancellation or new rollback RPC.
 
-Missing readiness, watch timeout, failed send, stream failure, or process exit
-makes the plugin unavailable. The daemon invalidates that instance's
-registrations and invokes its `plugin.Client.Kill()`. Watch timeout can leave
-acceptance uncertain; stopping the instance prevents an unconfirmed watch from
-remaining active. Other plugin instances remain available. There is no automatic
-restart, individual cancellation, or delivery retry. Messages received after
-unavailability are rejected. Events already admitted retain their captured
-destination under the [governing failure rules](mvp.md#admission-delivery-and-shutdown).
+```json
+{"version":2,"type":"event","subscription_id":"subscription-a","context":"PULSE-MODEL-001"}
+```
 
-On normal daemon shutdown, close registration and event admission, cancel
-application stream activity, and call `Client.Kill()` for every configured
-plugin client, including partially started clients. Plugins release watches
-when their stream/server is stopped and exit through the framework lifecycle.
-There is no application `shutdown` message, shutdown acknowledgement, or separate
-product grace period. The pinned framework manages graceful shutdown and its
-fallback termination of the configured process. Termination of descendants is
-not a product guarantee. Stream closure alone does not prove process exit;
-acceptance checks observe the configured process after framework cleanup.
+Events before activation, with an unknown ID, belonging to another input
+instance, or involving an unavailable input/output instance are discarded and
+logged. Events have no acknowledgement and expose no delivery result to the
+input. Repeated valid events remain distinct; plugins do not retransmit for
+confirmation. The daemon's [routing rules](mvp.md) bind each admitted event
+to its registered output and arguments.
 
-Use stderr for bounded diagnostics, never for application data. Keep stdout
-available to go-plugin negotiation and framework-managed output. The daemon
-drains process stderr through `ClientConfig.Stderr` and framework-forwarded
-stderr through `ClientConfig.SyncStderr`, attributing diagnostics to the
-configured plugin. Output cannot alter subscription or recipient identity.
+## Delivery outcomes and failures
 
-## Cross-language implementation
+The daemon attempts each admitted event once. If its captured output becomes
+unavailable before sending, the daemon records `failed` without sending;
+otherwise it sends one `deliver`. Its source name,
+subscription ID, destination arguments, and context come from the captured
+registration and event. Neither event content nor plugin diagnostics can alter
+this route.
 
-A plugin in another language implements the same protobuf service and strict
-JSON messages without importing Go packages. It uses the framework protocol
-compatible with the pinned go-plugin version. A minimal Python implementation
-uses `grpcio`, `protobuf`, and `grpcio-health-checking` at the versions pinned
-in `build/testdata/plugin-tooling/requirements.txt`. Its executable and arguments
-are selected in daemon configuration like the bundled plugin.
+```json
+{"version":2,"type":"deliver","request_id":"request-3","delivery_id":"delivery-a","input_plugin":"manual","subscription_id":"subscription-a","destination_args":{"output_file":"/absolute/path/events.jsonl"},"context":"PULSE-MODEL-001","external_data":true,"permission_notice":"External data; no additional permissions are granted."}
+{"version":2,"type":"delivery_result","request_id":"request-3","status":"accepted"}
+```
 
-1. Verify `AGENT_PULSE_HUB_PLUGIN=plugin-v1` in the child environment and fail
-   if the cookie is missing or mismatched. Create a local gRPC server on
-   `127.0.0.1:0` before announcing its chosen port.
-2. Register `agentpulse.plugin.v1.EventPlugin/Session` as a bidirectional stream
-   with binary protobuf `BytesValue` deserialization/serialization. Python may
-   use `grpc.stream_stream_rpc_method_handler` and
-   `google.protobuf.wrappers_pb2.BytesValue`; no product protobuf compiler or
-   generated product binding is required.
-3. Register standard `grpc.health.v1.Health` with `Check` returning `SERVING`
-   for service name `plugin`, and implement
-   `/plugin.GRPCController/Shutdown` with empty protobuf request and response.
-   Its shutdown handler stops the server, releases watches, and causes the
-   configured process to exit. `google.protobuf.Empty` is wire-compatible with
-   the framework's empty controller messages. These endpoints are required for
-   the framework health and standard shutdown path.
-4. After starting the server, print and flush the negotiation line
-   `1|1|tcp|127.0.0.1:<port>|grpc` to stdout. The first value is the framework
-   core protocol version; the second is this application's protocol version.
-   Do not print application JSON to stdout. Diagnostic text goes to stderr.
-5. On the host-opened `Session`, send `ready`, read each proposed watch, send its
-   result, and emit events in the required order. Serialize outgoing messages
-   from concurrent watch workers. Observe stream cancellation and controller
-   shutdown so no watches remain in the configured process after it exits.
+A delivery has a 30-second deadline from beginning to send it, including
+serialized-send waiting and flow control. `accepted` means the output confirms
+acceptance under its destination contract; it does not establish a human reply
+or durable completion. `failed` means the output can establish that acceptance
+under its destination contract did not occur, including explicit rejection
+before destination work. `unknown` means that acceptance can neither be confirmed
+nor ruled out. No result causes a retry.
 
-The product interface uses no framework broker callbacks or stdio RPCs. A
-minimal non-Go server may leave those unused endpoints unimplemented and write
-diagnostics directly to process stderr; no application operation depends on
-those endpoints. Go plugins use the framework-provided endpoints normally. Do
-not add a product replacement for the framework controller, transport, or
-process management. Recheck this recipe against the pinned source and language
-fixture when upgrading go-plugin.
+A valid `failed` or `unknown` result does not by itself make a healthy output
+unavailable. A delivery timeout or transport failure makes that output
+unavailable and records an unconfirmed in-flight attempt as `unknown`.
+Malformed or mismatched results never count as successful confirmation; a
+subsequent valid matching result may still complete before the unchanged
+deadline. Destination/watch timeout, failed send, stream failure, and process
+exit make the corresponding instance unavailable and invoke `Client.Kill()`.
+Other available routes continue. No instance reconnects or restarts automatically.
+
+On normal shutdown, close registration and event admission, discard queued
+events under the governing shutdown rules, cancel stream activity, and call
+`Client.Kill()` for every started or partially started instance. Input plugins
+release watches and outputs cease operations when their stream/server stops.
+The framework provides graceful shutdown and fallback termination. Observe
+configured-process exit; stream closure alone is insufficient. No product
+shutdown message, additional grace timer, or descendant termination guarantee
+is added. An interrupted delivery whose acceptance is unconfirmed is unknown.
+
+## Cross-language and standalone callers
+
+A non-Go implementation imports standard gRPC/protobuf bindings, not Go product
+packages. The approved Python fixture environment uses the pins in
+`build/testdata/plugin-tooling/requirements.txt`: grpcio and health checking
+1.84.0, protobuf 7.36.2, and typing-extensions 4.16.0. Implement this recipe for
+either role:
+
+1. Check `AGENT_PULSE_HUB_PLUGIN=plugin-v2`; bind a local gRPC server at
+   `127.0.0.1:0` before announcing its port.
+2. Register `agentpulse.plugin.v2.Plugin/Session` with binary `BytesValue`
+   serialization/deserialization. Direct stream-method registration is allowed.
+3. Register `grpc.health.v1.Health/Check`, returning `SERVING` for `plugin`, and
+   `/plugin.GRPCController/Shutdown` with empty protobuf request/response. Its
+   handler stops the server, releases operations, and exits the configured process.
+4. Print and flush `1|2|tcp|127.0.0.1:<port>|grpc` to stdout. The first value is
+   the framework core protocol version; the second is application version 2.
+   Emit only diagnostics on stderr, never application JSON on stdout.
+5. On the host-opened Session, send the matching readiness role, handle only
+   that role's requests, preserve correlations and ordering, and observe
+   stream cancellation and controller shutdown.
+
+The application needs no framework broker callbacks or stdio RPCs. A minimal
+non-Go server may leave these unused endpoints unimplemented. Go servers use
+the framework-provided endpoints normally. Recheck the recipe against the
+pinned framework source and language fixture when upgrading dependencies.
+
+A standalone verification caller can use the same framework launch, dispense,
+and Session sequence without starting the hub daemon. For an input plugin it
+requests a watch, applies that plugin's source stimulus, and observes events.
+For an output it validates a destination, sends a delivery with the required
+external-data fields, and observes the result and its destination. The caller
+supplies opaque test IDs; it implements no other plugin and needs no other
+plugin's live service.
+
+Future service-plugin evidence must record that plugin's target service and
+environment, stimulus/request, observable event or delivery result, and relevant
+failures. The plugin's service check and the hub's actual-model end-to-end
+check establish different behavior. Neither substitutes for the other; this
+MVP defines the boundary without claiming a future plugin's integration success.
 
 ## Compatibility and conformance verification
 
-This revision replaces the previous stdio JSON-lines transport at this stable
-specification path. Existing plugins adopt this gRPC service and framework
-launch/lifecycle contract before use. Keeping the JSON field names does not
-make a previous stdio executable compatible. There is no dual-protocol support
-or fallback, persistence migration, or restored subscription state. Unsupported
-framework/application versions fail visibly. Contract changes require design
-review; an incompatible future interface uses a distinct version.
+Replace version 1 input-only executables and Codex-specific registration
+arguments together with the revised daemon/client. The document path remains
+stable, but the service, cookie, role selection, and payload version change.
+There is no dual-interface support, persistence migration, or restored
+subscription state. Unsupported framework/application versions fail visibly.
+An incompatible future interface requires a distinct version.
 
-The following are required implementation checks, rather than completed product
-results. [MVP verification](mvp.md#verification-strategy) allocates selected public
-command observations to integration tests and complete input/decision matrices
-to unit tests with mocked external capabilities.
+[MVP verification](mvp.md#verification-strategy) governs case IDs and paths.
+The following are implementation obligations, rather than executed results.
+Broad schema/decision matrices belong in unit tests with mocked external
+capabilities; selected assembled command/process/stream/file behavior belongs
+in integration tests.
 
-| Cases | Decisive result | Design verification |
-| --- | --- | --- |
-| Framework startup, protocol selection, readiness, standard shutdown | gRPC selected; ready gates registration; missing executable or incompatible version fails visibly; `Client.Kill()` stops the configured process. | V01, V07 |
-| Message schemas, missing/null/mistyped/unknown fields, nested duplicates, wrong direction, non-1 version, inconsistent result/error fields | Invalid messages do not activate watches or deliver events; a valid message after a malformed size-bounded payload is processed on the same stream. | V02, V04, V07 |
-| Invalid UTF-8, unpaired surrogate, escaped newline, 65,536/65,537 payload bytes, protobuf wrapper | Exact payload bound accepted when otherwise valid; invalid encoding discarded; over-limit input makes only its plugin unavailable. No delimiter rules apply. | V04, V07 |
-| Empty context, 8,192/8,193 decoded UTF-8 bytes including multibyte characters | Invalid context rejected without truncation; exact bound accepted when ownership and capacity allow. | V04, V07 |
-| Missing/duplicate ready, late/unknown/duplicate result, blocked send, closed stream | Deadlines never extend; uncertain watches invalidate and stop only their plugin; no orphan active registration. | V01, V02, V04 |
-| Opaque IDs, multiple watches, immediate event after acceptance, event before acceptance, foreign ID | IDs echoed unchanged; results may be out of request order; only the emitting plugin's active watch admits an event. | V02, V04, V07 |
-| Equivalent registrations, repeated events, capacity exhaustion | One watch per equivalent registration; repeated admitted events remain distinct; exhaustion rejects without retry. | V02, V04, V10 |
-| Plugin exit, daemon shutdown, restart with old ID | Unavailable plugins cannot admit events; unaffected plugins work; shutdown loses state; old IDs rejected after restart. | V01, V04, V05 |
+| Coverage | Required observation |
+| --- | --- |
+| Both roles, framework selection, readiness, shutdown | Correct role and gRPC negotiation; readiness gates operations; startup failure is visible; standard cleanup stops configured processes. |
+| Strict schemas, Unicode, nested duplicates, direction, versions, payload/context bounds | Invalid input activates no route and performs no delivery; bounded malformed messages permit recovery; oversized transport input isolates its instance. |
+| Sequential destination/watch acceptance, immediate event, concurrent and duplicate results | No active route before both accept; no result/event race; foreign or late correlations never activate or retarget a route. |
+| Destination rejection and output loss after watch dispatch | No active registration or delivery; accepted orphan watches remain inactive and consume governed capacity until shutdown. |
+| Delivery correlation, rejection, unknown acceptance, real deadline | Exactly one attempt; invalid result never establishes success; timeout is unknown and isolates output; no retry/restart. |
+| Event ownership, plugin failures, duplicate registration, restart | Registered recipient is fixed; unavailable routes reject new events; separate available routes continue; equivalent active registration keeps its ID; old IDs fail after restart. |
+| Independent-language replacements for each role | Both executables can be substituted without daemon code changes; registration and routing succeed through public interfaces. |
+| Actual bundled model pair and standalone boundary | Ordinary trigger/observation interfaces establish hub routing; standalone callers can exercise either role without a daemon or another service. |
 
-The non-Go public-contract case uses an independent Python plugin through the
-real framework-launched process and application `Session`, observing watch
-acknowledgement, event context, and standard process shutdown. Minimal design
-feasibility probes exercise that same method and ordering with controlled peers.
-The existing `pluginTooling` qualification exercises framework
-health/streaming/lifecycle capabilities only; it does not implement this API.
-Neither tooling nor feasibility probes establish product registration/routing
-correctness or real Codex delivery. Actual Codex demonstrations remain delivery
-checks under the governing design.
+Tagged compilation, Pending case registration, tooling qualification, and
+minimal feasibility probes establish their stated preparation evidence only.
+Implemented acceptance requires the actual approved cases to pass. The
+clean-build README walkthrough is evaluated during delivery with ordinary
+model-plugin interfaces, without actual Codex or live services.
