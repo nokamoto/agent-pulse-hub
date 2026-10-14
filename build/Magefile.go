@@ -25,6 +25,7 @@ func Guardrails() error {
 		{"run", "./tools/guardrails/design"},
 		{"run", "./tools/guardrails/docs-layout"},
 		{"run", "./tools/guardrails/go-layout"},
+		{"run", "./tools/guardrails/plugins"},
 		{"run", "./tools/guardrails/readme"},
 	})
 }
@@ -54,8 +55,8 @@ func Lint() error {
 	return runGoCommands([][]string{
 		{"vet", "./..."},
 		{"run", "honnef.co/go/tools/cmd/staticcheck", "./..."},
-		{"vet", "-tags", "mage,integration", "./build", "./build/testdata/qualification"},
-		{"run", "honnef.co/go/tools/cmd/staticcheck", "-tags", "mage,integration", "./build", "./build/testdata/qualification"},
+		{"vet", "-tags", "mage,integration", "./build", "./build/testdata/qualification", "./build/testdata/plugin-layout"},
+		{"run", "honnef.co/go/tools/cmd/staticcheck", "-tags", "mage,integration", "./build", "./build/testdata/qualification", "./build/testdata/plugin-layout"},
 	})
 }
 

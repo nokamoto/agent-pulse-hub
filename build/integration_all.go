@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,15 +14,59 @@ import (
 	"strings"
 )
 
-// IntegrationAll runs every command's integration suites, allowing static Pending.
+// IntegrationAll runs command and bundled plugin integration suites, allowing static Pending.
 // APH_INTEGRATION_REPORT_DIR optionally names a new directory outside the checkout.
 func IntegrationAll() error {
 	root, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	args := []string{"test", "-tags", "integration", "-run", "^TestIntegration", "-count=1", "-timeout", "5m", "-json", "./cmd/..."}
-	return runIntegrationTests(root, os.Getenv("APH_INTEGRATION_REPORT_DIR"), args, os.Stdout, os.Stderr)
+	return runIntegrationAll(root, os.Getenv("APH_INTEGRATION_REPORT_DIR"), os.Stdout, os.Stderr)
+}
+
+func runIntegrationAll(root, reportDir string, stdout, stderr io.Writer) error {
+	packages, err := discoverIntegrationPackages(root)
+	if err != nil {
+		return err
+	}
+	args := []string{"test", "-tags", "integration", "-run", "^TestIntegration", "-count=1", "-timeout", "5m", "-json"}
+	args = append(args, packages...)
+	return runIntegrationTests(root, reportDir, args, stdout, stderr)
+}
+
+// Listing the root module avoids wildcard warnings for role directories that
+// do not exist yet. The integration tag includes packages containing only suites.
+func discoverIntegrationPackages(root string) ([]string, error) {
+	cmd := exec.Command("go", "list", "-tags", "integration", "-json", "./...")
+	cmd.Dir = root
+	var output, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("discover integration packages: %w: %s", err, stderr.String())
+	}
+	decoder := json.NewDecoder(&output)
+	var packages []string
+	for {
+		var pkg struct{ Dir string }
+		if err := decoder.Decode(&pkg); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("decode integration packages: %w", err)
+		}
+		rel, err := filepath.Rel(root, pkg.Dir)
+		if err != nil {
+			return nil, err
+		}
+		path := filepath.ToSlash(rel)
+		parts := strings.Split(path, "/")
+		if strings.HasPrefix(path, "cmd/") || (len(parts) == 3 && parts[0] == "plugins" && (parts[1] == "triggers" || parts[1] == "actions")) {
+			packages = append(packages, "./"+path)
+		}
+	}
+	if len(packages) == 0 {
+		return nil, errors.New("no command or bundled plugin integration packages discovered")
+	}
+	return packages, nil
 }
 
 func runIntegrationTests(root, reportDir string, args []string, stdout, stderr io.Writer) error {

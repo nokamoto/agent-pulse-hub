@@ -88,4 +88,7 @@ func TestIntegrationTooling(t *testing.T) {
 	t.Run("automatic runner", func(t *testing.T) {
 		qualifyIntegrationAll(t, root, filepath.Join(outputDir, "automatic-runner"))
 	})
+	t.Run("plugin layout", func(t *testing.T) {
+		qualifyPluginLayout(t, root, filepath.Join(outputDir, "plugin-layout"))
+	})
 }

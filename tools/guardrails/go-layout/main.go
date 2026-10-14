@@ -74,7 +74,7 @@ func validateRepository(root string) []error {
 			return nil
 		}
 		if filepath.Ext(rel) == ".go" && !allowedGoPath(rel) {
-			errors = append(errors, fmt.Errorf("%s: Go source must be tools.go at the root, build/*.go, cmd/<command>/*.go, internal/{domain,application,adapters}/**/*.go, or tools/guardrails/<validator>/**/*.go", rel))
+			errors = append(errors, fmt.Errorf("%s: Go source must follow the package placement in docs/aidd/go-development.md (root tools.go, build, cmd, defined internal layers, plugins/{triggers,actions}/<name>, or tools/guardrails)", rel))
 		}
 		return nil
 	})
@@ -96,10 +96,19 @@ func allowedGoPath(path string) bool {
 	case "cmd":
 		return len(parts) == 3
 	case "internal":
-		return len(parts) >= 3 && (parts[1] == "domain" || parts[1] == "application" || parts[1] == "adapters")
+		return len(parts) >= 3 && allowedLayer(parts[1])
+	case "plugins":
+		if len(parts) < 4 || (parts[1] != "triggers" && parts[1] != "actions") {
+			return false
+		}
+		return len(parts) == 4 || (len(parts) >= 6 && parts[3] == "internal" && allowedLayer(parts[4]))
 	case "tools":
 		return len(parts) >= 4 && parts[1] == "guardrails"
 	default:
 		return false
 	}
+}
+
+func allowedLayer(name string) bool {
+	return name == "domain" || name == "application" || name == "adapters"
 }

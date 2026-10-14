@@ -92,8 +92,11 @@ and merge. Include only necessary, feasible Ginkgo acceptance cases, initially
 static `Pending`, whose concrete implementation method and CI feasibility are
 resolved; test code completion and product wiring may follow in implementation.
 Give cases stable IDs and governed paths directly in
-`cmd/<command>/*_integration_test.go`, tag all case and suite files with
-`//go:build integration`, and place fixtures in that command's `testdata/`.
+`cmd/<command>/` or an existing bundled plugin root as `*_integration_test.go`,
+tag all case and suite files with
+`//go:build integration`, and place fixtures in that command or plugin's `testdata/`.
+For a plugin not yet introduced, use a verification command directory under the
+[bundled artifact rules](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#bundled-plugin-artifacts).
 Follow the [acceptance test conventions](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#design-acceptance-tests).
 Identify minimal fixture preparation under the playbook boundary above and map
 it to concrete cases; record separately approved and merged prerequisites for

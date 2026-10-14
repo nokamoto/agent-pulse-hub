@@ -16,6 +16,8 @@ func TestDecodeInventory(t *testing.T) {
 		valid       bool
 	}{
 		{"valid", `{"suites":[{"package":"./cmd/daemon","cases":["V01","V02"]}]}`, true},
+		{"trigger", `{"suites":[{"package":"./plugins/triggers/manual","cases":["V01"]}]}`, true},
+		{"action", `{"suites":[{"package":"./plugins/actions/output","cases":["V01"]}]}`, true},
 		{"missing suites", `{}`, false},
 		{"empty suites", `{"suites":[]}`, false},
 		{"empty cases", `{"suites":[{"package":"./cmd/daemon","cases":[]}]}`, false},

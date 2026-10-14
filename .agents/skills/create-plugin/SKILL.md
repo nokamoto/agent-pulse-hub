@@ -44,8 +44,10 @@ in its own requirement concept.
 During design, resolve the following against the authoritative contracts:
 
 - Use `plugins/triggers/<plugin-name>/` or `plugins/actions/<plugin-name>/`.
-  Specify implementation and configuration-example locations within that
-  directory and the lowercase `readme.md`. Check the
+  Follow the [artifact locations and presence check](../../../docs/aidd/go-development.md#bundled-plugin-artifacts);
+  specify source and example filenames within those locations and the lowercase
+  `readme.md`. For design-only suites before introducing a plugin, use the
+  verification command placement defined there. Check the
   [Go placement rules](../../../docs/aidd/go-development.md#package-placement)
   and actual guardrails before relying on a layout. New permitted source or
   test placement, build tooling, and artifact-presence enforcement require the
