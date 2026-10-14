@@ -26,6 +26,10 @@ Refer to the following directories:
 - [Design](docs/design/)
 - [AI-Driven Development rules](docs/aidd/)
 
+For bundled trigger or action plugin work, use
+[create-plugin](.agents/skills/create-plugin/SKILL.md) to coordinate the
+applicable phase workflows, plugin artifacts, and independent verification.
+
 ## Implementation completion
 
 Follow the [implementation completion and delivery boundary](docs/aidd/README.md#implementation-completion-and-delivery-boundary)
