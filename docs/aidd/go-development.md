@@ -238,9 +238,11 @@ and cases are included without an inventory selection or workflow change.
 Static Pending is allowed; failing tests and compilation failures still fail
 the run. Each package has a five-minute execution timeout for the combined
 run; the scoped acceptance runner's two-minute suite budget below is unchanged.
-CI currently runs this target in a fixed Windows job, separately from unit
-tests. That runner is verification infrastructure, not a product OS constraint
-or an instruction to add an OS support matrix.
+CI runs this target on Ubuntu, separately from unit tests. All required Go,
+product integration, and tooling checks use Ubuntu; Windows is not a required
+CI runner. Runner selection is verification infrastructure, not a product OS
+constraint or an OS support guarantee. Keep development OS neutral under the
+[OS-neutral policy](README.md#os-neutral-development-and-documentation).
 
 Reports go to a new directory outside the checkout by default. Set
 `APH_INTEGRATION_REPORT_DIR` to choose a new report directory. Retain
@@ -298,7 +300,7 @@ not need an inventory-specific invocation or a new job for each scope.
 The separate `integrationTooling` target qualifies the runner using real
 Ginkgo reports for passed, Pending, skipped, missing, and failed fixture cases.
 These fixtures contain no product behavior. CI runs this qualification on
-Linux and Windows and retains its reports independently of the default test
+Ubuntu and retains its reports independently of the default test
 job. Its success establishes tooling behavior only. It does not establish
 MVP acceptance, OS-specific product behavior, or delivery quality. An approved
 product inventory, passing product cases in CI, and the implementation PR's
