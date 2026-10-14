@@ -1,6 +1,7 @@
 # agent-pulse-hub
 
-Route external events from input plugins to destinations handled by output plugins.
+<!-- Keep the following sentence identical to the repository description. Do not edit it. -->
+Bring real-time external event triggers to your AI coding agents via lightweight daemon plugins.
 
 ## Background and motivation
 
