@@ -129,6 +129,21 @@ print("Watch:", watch_path, "Destination arguments:", destination_path)
 print("A:", destination_a, "Unregistered B:", destination_b)
 ```
 
+For delivery check BUNDLE-D01, before step 3 replace the generated JSON files
+with materialized shipped examples. Load and compare
+`plugins/triggers/manual/examples/daemon.json` and
+`plugins/actions/model-output/examples/daemon.json` as JSON objects; they must
+match. In that object replace `<ABSOLUTE_MANUAL_EXECUTABLE>` with `str(manual)`
+and `<ABSOLUTE_MODEL_OUTPUT_EXECUTABLE>` with `str(output)`, then serialize it
+to `config_path`. Load `plugins/triggers/manual/examples/watch.json`, replace
+`<ABSOLUTE_TRIGGER_FILE>` with `str(trigger)`, and serialize it to `watch_path`.
+Load `plugins/actions/model-output/examples/destination.json`, replace
+`<ABSOLUTE_OUTPUT_FILE>` with `str(destination_a)`, and serialize it to
+`destination_path`. Replace complete string values, not raw JSON text. Retain
+the source paths and resulting JSON as evidence, then use these same three
+runtime files in every subsequent step. Stop if comparison or materialization
+fails; do not fall back to the directly generated files for delivery evidence.
+
 The model input requires an absent absolute `trigger_file` in an existing
 writable directory. It compares lexically cleaned paths by exact string,
 without physical-file identity guarantees. Use one spelling per trigger and

@@ -468,10 +468,10 @@ real framework and Session, exercise ready/validation/watch/immediate-event/
 delivery/result, standard shutdown and one real 30-second unconfirmed output
 request. They also qualify loopback bind conflict and ordinary file publication,
 append/read observation. These probes qualify fixture mechanics and costs,
-not the product's new wiring. Existing commands can be built to bound startup
-cost; the slower existing command build is reserved again as a proxy for the
-new output command. Implementation measures all three actual binaries within
-that reserve. Pending declarations use no nonexistent production symbols.
+not completed source relocation. Measure all three actual binaries and tagged
+suite compilation within the existing setup reserve. Keep executable v2 cases
+enabled and rerun the measurements against the relocated packages during
+implementation; do not substitute a proxy build for a plugin binary.
 
 The hub case caps total 89 seconds. Reserve 20 seconds for warmed-cache tagged
 compilation and three common builds, five seconds for final cleanup and five

@@ -185,7 +185,7 @@ relocation.
 | `requirements/mvp` NFR-001 | AC-006 | Retain MVP-V03-ROUTE idle/no-delivery observation and source inspection. |
 | `requirements/mvp` NFR-002 | AC-007 | Retain MVP-V02-REGISTER non-Go replacement of both roles and unchanged protocol inspection. |
 | `requirements/mvp` NFR-003 | AC-008 | Retain MVP-V03-ROUTE recipient isolation/external-data fields and MVP-V08-LOCAL-CONTROL. |
-| `requirements/mvp` NFR-004 | AC-005, AC-009 | Retain MVP-V05-RESTART and D09; BUNDLE-D01 verifies migrated usage materials. |
+| `requirements/mvp` NFR-004 | AC-005, AC-009 | Retain MVP-V05-RESTART and [D09, the clean-build README walkthrough](mvp.md#delivery-verification); BUNDLE-D01 verifies migrated usage materials. |
 | `requirements/mvp` NFR-005 | AC-009, AC-011 | Retain actual model route, standalone manual cases, shared/service-specific boundary inspection and D09 without external services. |
 
 MVP functional requirements and all existing acceptance criteria remain covered
