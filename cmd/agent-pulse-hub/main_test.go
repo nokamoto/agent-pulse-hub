@@ -15,26 +15,28 @@ import (
 
 type commandOperationsStub struct {
 	daemonErr    error
-	watchArgs    *jsonvalue.Value
-	watchErr     error
+	argument     *jsonvalue.Value
+	argumentErr  error
+	argumentPath []string
 	response     control.RegistrationResponse
 	responseWire []byte
 	registerErr  error
 	stopErr      error
 	stopAddress  string
-	watchPath    string
+	registerArgs []string
 	registerCall int
 	stopCall     int
 }
 
 func (s *commandOperationsStub) Daemon(string, string, io.Writer) error { return s.daemonErr }
-func (s *commandOperationsStub) WatchArguments(path string) (*jsonvalue.Value, error) {
-	s.watchPath = path
-	return s.watchArgs, s.watchErr
+func (s *commandOperationsStub) Arguments(path string) (*jsonvalue.Value, error) {
+	s.argumentPath = append(s.argumentPath, path)
+	return s.argument, s.argumentErr
 }
 
-func (s *commandOperationsStub) Register(context.Context, string, string, string, *jsonvalue.Value) (control.RegistrationResponse, []byte, error) {
+func (s *commandOperationsStub) Register(_ context.Context, address, input string, _ *jsonvalue.Value, output string, _ *jsonvalue.Value) (control.RegistrationResponse, []byte, error) {
 	s.registerCall++
+	s.registerArgs = []string{address, input, output}
 	return s.response, s.responseWire, s.registerErr
 }
 
@@ -66,106 +68,113 @@ func TestParseFlagsRejectsInvalidInvocationShapes(t *testing.T) {
 
 func TestParseFlagsAcceptsRequiredAndOptionalInAnyOrder(t *testing.T) {
 	got, err := parseFlags([]string{"--address", "127.0.0.1:47831", "--required", "config.json"}, []string{"--required"}, []string{"--address"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got["--required"] != "config.json" || got["--address"] != "127.0.0.1:47831" {
-		t.Fatalf("parsed flags = %#v", got)
+	if err != nil || got["--required"] != "config.json" || got["--address"] != "127.0.0.1:47831" {
+		t.Fatalf("parsed flags = %#v, %v", got, err)
 	}
 }
 
-func TestRunRegisterWritesExactSuccessAndDaemonErrorResponses(t *testing.T) {
-	const session = "00000000-0000-4000-8000-000000000001"
+func TestRunRegisterPassesBothPluginRolesAndWritesExactResponses(t *testing.T) {
+	args := jsonvalue.NewObject(map[string]*jsonvalue.Value{"key": jsonvalue.NewString("value")})
 	for _, test := range []struct {
 		name        string
-		response    control.RegistrationResponse
-		wire        []byte
 		registerErr error
+		wire        []byte
 		wantCode    int
 		wantStdout  string
 		wantStderr  string
 	}{
-		{name: "success", response: control.RegistrationResponse{Success: true, SubscriptionID: "subscription-a"}, wire: []byte("{\"ok\":true,\"subscription_id\":\"subscription-a\"}\n"), wantStdout: "{\"ok\":true,\"subscription_id\":\"subscription-a\"}\n"},
-		{name: "daemon rejection", response: control.RegistrationResponse{Code: "invalid_request", Message: "bad arguments"}, wire: []byte("{\"ok\":false,\"code\":\"invalid_request\",\"message\":\"bad arguments\"}\n"), registerErr: &control.DaemonError{Response: control.RegistrationResponse{Code: "invalid_request", Message: "bad arguments"}, Wire: []byte("{\"ok\":false,\"code\":\"invalid_request\",\"message\":\"bad arguments\"}\n")}, wantCode: 1, wantStdout: "{\"ok\":false,\"code\":\"invalid_request\",\"message\":\"bad arguments\"}\n"},
+		{name: "success", wire: []byte("{\"ok\":true,\"subscription_id\":\"s1\"}\n"), wantStdout: "{\"ok\":true,\"subscription_id\":\"s1\"}\n"},
+		{name: "daemon error", registerErr: &control.DaemonError{Wire: []byte("{\"ok\":false,\"code\":\"destination_rejected\",\"message\":\"invalid\"}\n")}, wire: []byte("{\"ok\":false,\"code\":\"destination_rejected\",\"message\":\"invalid\"}\n"), wantCode: 1, wantStdout: "{\"ok\":false,\"code\":\"destination_rejected\",\"message\":\"invalid\"}\n"},
 		{name: "uncertain", registerErr: &control.UncertainError{Reason: "response unavailable"}, wantCode: 1, wantStderr: "register: control result is uncertain: response unavailable\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			operations := &commandOperationsStub{watchArgs: jsonvalue.NewObject(nil), response: test.response, responseWire: test.wire, registerErr: test.registerErr}
+			operations := &commandOperationsStub{argument: args, responseWire: test.wire, registerErr: test.registerErr}
 			var stdout, stderr strings.Builder
-			code := runWith([]string{"register", "--plugin", "manual", "--session-id", session, "--watch-args-file", filepath.Join(t.TempDir(), "watch.json")}, &stdout, &stderr, operations)
+			flags := []string{"register", "--input-plugin", "manual", "--watch-args-file", "watch.json", "--output-plugin", "model", "--destination-args-file", "destination.json"}
+			code := runWith(flags, &stdout, &stderr, operations)
 			if code != test.wantCode || stdout.String() != test.wantStdout || stderr.String() != test.wantStderr {
 				t.Fatalf("result code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
-			if operations.registerCall != 1 || operations.watchPath == "" {
-				t.Fatalf("registration calls=%d watch path=%q", operations.registerCall, operations.watchPath)
+			if operations.registerCall != 1 || len(operations.argumentPath) != 2 || operations.argumentPath[0] != "watch.json" || operations.argumentPath[1] != "destination.json" {
+				t.Fatalf("arguments=%v registration calls=%d", operations.argumentPath, operations.registerCall)
+			}
+			if len(operations.registerArgs) != 3 || operations.registerArgs[1] != "manual" || operations.registerArgs[2] != "model" {
+				t.Fatalf("registration routing = %v", operations.registerArgs)
 			}
 		})
 	}
 }
 
-func TestRunRegisterRejectsMissingIdentityBeforeReadingArguments(t *testing.T) {
-	operations := &commandOperationsStub{watchArgs: jsonvalue.NewObject(nil)}
+func TestRunRegisterRejectsMissingRoleFlagsBeforeReadingFiles(t *testing.T) {
+	operations := &commandOperationsStub{argument: jsonvalue.NewObject(nil)}
 	var stdout, stderr strings.Builder
-	code := runWith([]string{"register", "--plugin", "manual", "--session-id", "bad", "--watch-args-file", "C:\\watch.json"}, &stdout, &stderr, operations)
-	if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "--session-id must be a UUID") {
+	code := runWith([]string{"register", "--input-plugin", "manual", "--watch-args-file", "watch.json", "--output-plugin", "model"}, &stdout, &stderr, operations)
+	if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "--destination-args-file") {
 		t.Fatalf("result code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if operations.watchPath != "" || operations.registerCall != 0 {
-		t.Fatalf("invalid identity reached watch arguments or register: %#v", operations)
+	if len(operations.argumentPath) != 0 || operations.registerCall != 0 {
+		t.Fatalf("invalid CLI reached operations: %#v", operations)
 	}
 }
 
-func TestLoadWatchArgumentsRequiresAbsoluteRegularJSONObject(t *testing.T) {
-	if _, err := loadWatchArguments("relative.json"); err == nil {
+func TestLoadArgumentsRequiresAbsoluteRegularJSONObject(t *testing.T) {
+	if _, err := loadArguments("relative.json"); err == nil {
 		t.Fatal("relative path accepted")
 	}
-	path := filepath.Join(t.TempDir(), "watch.json")
-	for _, content := range []struct {
-		name, text string
-		valid      bool
+	path := filepath.Join(t.TempDir(), "args.json")
+	for _, test := range []struct {
+		name  string
+		data  []byte
+		valid bool
 	}{
-		{name: "object", text: `{"path":"value","n":9007199254740993}`, valid: true},
-		{name: "array", text: `[]`},
-		{name: "invalid json", text: `{`},
+		{name: "object exact number", data: []byte(`{"n":9007199254740993}`), valid: true},
+		{name: "array", data: []byte(`[]`)},
+		{name: "malformed", data: []byte(`{`)},
+		{name: "BOM", data: []byte{0xef, 0xbb, 0xbf, '{', '}'}},
+		{name: "invalid UTF8", data: []byte{'{', '"', 0xff, '"', ':', '1', '}'}},
 	} {
-		t.Run(content.name, func(t *testing.T) {
-			if err := os.WriteFile(path, []byte(content.text), 0o600); err != nil {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(path, test.data, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			got, err := loadWatchArguments(path)
-			if content.valid {
+			got, err := loadArguments(path)
+			if test.valid {
 				if err != nil || got.Kind() != jsonvalue.Object {
-					t.Fatalf("loadWatchArguments() = %v, %v", got, err)
+					t.Fatalf("loadArguments() = %v, %v", got, err)
 				}
 				field, _ := got.Get("n")
 				if token, ok := field.Text(); !ok || token != "9007199254740993" {
 					t.Fatalf("number token = %q, %v", token, ok)
 				}
 			} else if err == nil {
-				t.Fatal("invalid watch argument file accepted")
+				t.Fatal("invalid argument file accepted")
 			}
 		})
 	}
-	if _, err := loadWatchArguments(filepath.Join(t.TempDir(), "missing.json")); err == nil {
-		t.Fatal("missing file accepted")
+	if _, err := loadArguments(filepath.Join(t.TempDir(), "missing.json")); err == nil {
+		t.Fatal("missing argument file accepted")
 	}
 }
 
-func TestRunStopReportsConnectionFailure(t *testing.T) {
-	operations := &commandOperationsStub{stopErr: errors.New("daemon unavailable")}
-	var stdout, stderr strings.Builder
-	code := runWith([]string{"stop"}, &stdout, &stderr, operations)
-	if code != 1 || stdout.Len() != 0 || stderr.String() != "stop: daemon unavailable\n" || operations.stopCall != 1 {
-		t.Fatalf("result code=%d stdout=%q stderr=%q stop calls=%d", code, stdout.String(), stderr.String(), operations.stopCall)
-	}
-}
-
-func TestRunStopWritesExactSuccessResponse(t *testing.T) {
-	operations := &commandOperationsStub{}
-	var stdout, stderr strings.Builder
-	code := runWith([]string{"stop"}, &stdout, &stderr, operations)
-	if code != 0 || stdout.String() != "{\"ok\":true}\n" || stderr.Len() != 0 || operations.stopCall != 1 || operations.stopAddress != control.DefaultAddress {
-		t.Fatalf("result code=%d stdout=%q stderr=%q stop calls=%d address=%q", code, stdout.String(), stderr.String(), operations.stopCall, operations.stopAddress)
+func TestRunStopReportsFailureAndWritesSuccess(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		stopErr    error
+		wantCode   int
+		wantStdout string
+		wantStderr string
+	}{
+		{name: "success", wantStdout: "{\"ok\":true}\n"},
+		{name: "failure", stopErr: errors.New("daemon unavailable"), wantCode: 1, wantStderr: "stop: daemon unavailable\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			operations := &commandOperationsStub{stopErr: test.stopErr}
+			var stdout, stderr strings.Builder
+			code := runWith([]string{"stop"}, &stdout, &stderr, operations)
+			if code != test.wantCode || stdout.String() != test.wantStdout || stderr.String() != test.wantStderr || operations.stopCall != 1 || operations.stopAddress != control.DefaultAddress {
+				t.Fatalf("result code=%d stdout=%q stderr=%q operations=%+v", code, stdout.String(), stderr.String(), operations)
+			}
+		})
 	}
 }
 
@@ -179,12 +188,8 @@ func TestDaemonInterruptAndPublicStopShareShutdownCoordinator(t *testing.T) {
 			publicStop := make(chan struct{})
 			shutdown := make(chan struct{})
 			done := make(chan error, 1)
-			startCalls, shutdownCalls := 0, 0
 			go func() {
-				done <- runDaemonLifecycle(ctx, func(got context.Context) {
-					startCalls++
-					started <- got
-				}, func(got context.Context) error {
+				done <- runDaemonLifecycle(ctx, func(got context.Context) { started <- got }, func(got context.Context) error {
 					served <- got
 					if trigger == "interrupt" {
 						<-got.Done()
@@ -192,17 +197,13 @@ func TestDaemonInterruptAndPublicStopShareShutdownCoordinator(t *testing.T) {
 						<-publicStop
 					}
 					return nil
-				}, func() {
-					shutdownCalls++
-					close(shutdown)
-				})
+				}, func() { close(shutdown) })
 			}()
-
 			if got := <-started; got != ctx {
-				t.Fatal("plugin start did not receive the interrupt context")
+				t.Fatal("plugin startup received a different interrupt context")
 			}
 			if got := <-served; got != ctx {
-				t.Fatal("server did not receive the interrupt context")
+				t.Fatal("server received a different interrupt context")
 			}
 			if trigger == "interrupt" {
 				cancel()
@@ -210,15 +211,12 @@ func TestDaemonInterruptAndPublicStopShareShutdownCoordinator(t *testing.T) {
 				close(publicStop)
 			}
 			if err := <-done; err != nil {
-				t.Fatalf("daemon lifecycle = %v", err)
+				t.Fatal(err)
 			}
 			select {
 			case <-shutdown:
 			default:
-				t.Fatal("daemon shutdown coordinator was not called")
-			}
-			if startCalls != 1 || shutdownCalls != 1 {
-				t.Fatalf("start calls=%d shutdown calls=%d", startCalls, shutdownCalls)
+				t.Fatal("shutdown coordinator was not called")
 			}
 		})
 	}

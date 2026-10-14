@@ -7,18 +7,19 @@ import (
 	"path/filepath"
 
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
+	"github.com/nokamoto/agent-pulse-hub/internal/domain"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
 
 type Plugin struct {
 	Name       string
+	Role       domain.PluginRole
 	Executable string
 	Args       []string
 }
 
 type Config struct {
-	CodexExecutable string
-	Plugins         []Plugin
+	Plugins []Plugin
 }
 
 //go:generate go run go.uber.org/mock/mockgen -source=config.go -destination=config_mock_test.go -package=config
@@ -37,7 +38,7 @@ func Load(path string) (Config, error) {
 }
 
 func load(path string, files fileSystem) (Config, error) {
-	if !isAbsoluteFile(path) {
+	if !filepath.IsAbs(path) {
 		return Config{}, errors.New("configuration path must be absolute")
 	}
 	info, err := files.Stat(path)
@@ -55,49 +56,51 @@ func load(path string, files fileSystem) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("parse daemon configuration: %w", err)
 	}
-	if err := protocol.ValidateFields(value, []string{"codex_executable", "plugins"}, "codex_executable", "plugins"); err != nil {
+	if err := protocol.ValidateFields(value, []string{"plugins"}, "plugins"); err != nil {
 		return Config{}, errors.New("daemon configuration fields are invalid")
 	}
-	codexPath, ok := protocol.StringField(value, "codex_executable")
-	if !ok || !isAbsoluteFile(codexPath) {
-		return Config{}, errors.New("codex_executable must be an absolute path")
-	}
 	pluginsValue, ok := value.Get("plugins")
-	if !ok || pluginsValue.Kind() != jsonvalue.Array {
-		return Config{}, errors.New("plugins must be a JSON array")
+	if !ok || pluginsValue.Kind() != jsonvalue.Array || len(pluginsValue.Items()) == 0 {
+		return Config{}, errors.New("plugins must be a nonempty JSON array")
 	}
 	plugins := make([]Plugin, 0, len(pluginsValue.Items()))
-	seen := make(map[string]struct{})
+	seenNames := make(map[string]struct{}, len(pluginsValue.Items()))
+	roles := map[domain.PluginRole]bool{}
 	for index, pluginValue := range pluginsValue.Items() {
 		plugin, err := parsePlugin(pluginValue)
 		if err != nil {
 			return Config{}, fmt.Errorf("plugin entry %d is invalid: %w", index, err)
 		}
-		if _, exists := seen[plugin.Name]; exists {
+		if _, exists := seenNames[plugin.Name]; exists {
 			return Config{}, fmt.Errorf("plugin entry %d duplicates a configured name", index)
 		}
-		seen[plugin.Name] = struct{}{}
+		seenNames[plugin.Name] = struct{}{}
+		roles[plugin.Role] = true
 		plugins = append(plugins, plugin)
 	}
-	if err := validateProgramPath(files, codexPath, "codex_executable"); err != nil {
-		return Config{}, err
+	if !roles[domain.InputRole] || !roles[domain.OutputRole] {
+		return Config{}, errors.New("configuration requires at least one input and one output plugin")
 	}
 	for index, plugin := range plugins {
 		if err := validateProgramPath(files, plugin.Executable, fmt.Sprintf("plugin entry %d executable", index)); err != nil {
 			return Config{}, err
 		}
 	}
-	return Config{CodexExecutable: codexPath, Plugins: plugins}, nil
+	return Config{Plugins: plugins}, nil
 }
 
 func parsePlugin(value *jsonvalue.Value) (Plugin, error) {
-	if err := protocol.ValidateFields(value, []string{"name", "executable", "args"}, "name", "executable", "args"); err != nil {
+	if err := protocol.ValidateFields(value,
+		[]string{"name", "role", "executable", "args"},
+		"name", "role", "executable", "args"); err != nil {
 		return Plugin{}, errors.New("fields are invalid")
 	}
 	name, nameOK := protocol.StringField(value, "name")
+	roleText, roleOK := protocol.StringField(value, "role")
 	executable, executableOK := protocol.StringField(value, "executable")
-	if !nameOK || name == "" || !executableOK || !isAbsoluteFile(executable) {
-		return Plugin{}, errors.New("name or absolute executable path is invalid")
+	role := domain.PluginRole(roleText)
+	if !nameOK || name == "" || !roleOK || (role != domain.InputRole && role != domain.OutputRole) || !executableOK || !filepath.IsAbs(executable) {
+		return Plugin{}, errors.New("name, role, or absolute executable path is invalid")
 	}
 	argsValue, ok := value.Get("args")
 	if !ok || argsValue.Kind() != jsonvalue.Array {
@@ -111,11 +114,7 @@ func parsePlugin(value *jsonvalue.Value) (Plugin, error) {
 		}
 		args = append(args, text)
 	}
-	return Plugin{Name: name, Executable: executable, Args: args}, nil
-}
-
-func isAbsoluteFile(path string) bool {
-	return filepath.IsAbs(path)
+	return Plugin{Name: name, Role: role, Executable: executable, Args: args}, nil
 }
 
 func validateProgramPath(files fileSystem, path, field string) error {

@@ -1,6 +1,8 @@
 package control
 
 import (
+	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -8,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nokamoto/agent-pulse-hub/internal/application/hub"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
 
@@ -31,30 +34,15 @@ func TestStopClosesServerWhenAcknowledgementIsLost(t *testing.T) {
 	}
 	server := &Server{
 		listener: listener,
+		service:  hub.New(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		done:     make(chan struct{}),
 		active:   make(map[net.Conn]struct{}),
 	}
 	defer server.Close()
-	serverConnection, clientConnection := net.Pipe()
-	defer clientConnection.Close()
-	handlerDone := make(chan struct{})
-	go func() {
-		defer close(handlerDone)
-		defer serverConnection.Close()
-		server.handle(serverConnection)
-	}()
-	if _, err := clientConnection.Write([]byte("{\"version\":1,\"op\":\"stop\"}\n")); err != nil {
-		t.Fatal(err)
-	}
-	if err := clientConnection.Close(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-handlerDone:
-	case <-time.After(time.Second):
-		t.Fatal("stop handler did not finish after response loss")
-	}
+	defer server.service.Shutdown()
+	connection := &responseLostConn{Reader: bytes.NewReader([]byte("{\"version\":1,\"op\":\"stop\"}\n"))}
+	server.handle(connection)
 	select {
 	case <-server.done:
 	default:
@@ -62,29 +50,39 @@ func TestStopClosesServerWhenAcknowledgementIsLost(t *testing.T) {
 	}
 }
 
-func TestParseRegistrationRequestValidatesExactFieldsAndIdentity(t *testing.T) {
-	const validSession = "00000000-0000-4000-8000-000000000001"
+type responseLostConn struct{ *bytes.Reader }
+
+func (*responseLostConn) Write([]byte) (int, error) { return 0, errors.New("response lost") }
+func (*responseLostConn) Close() error              { return nil }
+func (*responseLostConn) LocalAddr() net.Addr       { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+
+func (*responseLostConn) RemoteAddr() net.Addr             { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+func (*responseLostConn) SetDeadline(time.Time) error      { return nil }
+func (*responseLostConn) SetReadDeadline(time.Time) error  { return nil }
+func (*responseLostConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestParseRegistrationRequestValidatesExactRoutingFields(t *testing.T) {
+	valid := `{"version":1,"op":"register","input_plugin":"manual","watch_args":{"n":9007199254740993},"output_plugin":"model","destination_args":{"path":"out"}}`
 	for _, test := range []struct {
 		name string
 		wire string
 		ok   bool
 	}{
-		{name: "valid preserves number", wire: `{"version":1,"op":"register","plugin":"manual","session_id":"` + validSession + `","watch_args":{"n":9007199254740993}}`, ok: true},
-		{name: "wrong version token", wire: `{"version":1.0,"op":"register","plugin":"manual","session_id":"` + validSession + `","watch_args":{}}`},
-		{name: "unknown field", wire: `{"version":1,"op":"register","plugin":"manual","session_id":"` + validSession + `","watch_args":{},"extra":true}`},
-		{name: "duplicate key", wire: `{"version":1,"op":"register","plugin":"manual","plugin":"other","session_id":"` + validSession + `","watch_args":{}}`},
-		{name: "missing session", wire: `{"version":1,"op":"register","plugin":"manual","watch_args":{}}`},
-		{name: "invalid session", wire: `{"version":1,"op":"register","plugin":"manual","session_id":"not-a-uuid","watch_args":{}}`},
-		{name: "empty plugin", wire: `{"version":1,"op":"register","plugin":"","session_id":"` + validSession + `","watch_args":{}}`},
-		{name: "array arguments", wire: `{"version":1,"op":"register","plugin":"manual","session_id":"` + validSession + `","watch_args":[]}`},
-		{name: "null arguments", wire: `{"version":1,"op":"register","plugin":"manual","session_id":"` + validSession + `","watch_args":null}`},
+		{name: "valid preserves number", wire: valid, ok: true},
+		{name: "wrong version token", wire: strings.Replace(valid, `"version":1`, `"version":1.0`, 1)},
+		{name: "unknown field", wire: strings.TrimSuffix(valid, "}") + `,"extra":true}`},
+		{name: "duplicate key", wire: strings.Replace(valid, `"input_plugin":"manual"`, `"input_plugin":"manual","input_plugin":"other"`, 1)},
+		{name: "missing output", wire: `{"version":1,"op":"register","input_plugin":"manual","watch_args":{},"destination_args":{}}`},
+		{name: "empty input", wire: strings.Replace(valid, `"input_plugin":"manual"`, `"input_plugin":""`, 1)},
+		{name: "array watch arguments", wire: strings.Replace(valid, `"watch_args":{"n":9007199254740993}`, `"watch_args":[]`, 1)},
+		{name: "null destination arguments", wire: strings.Replace(valid, `"destination_args":{"path":"out"}`, `"destination_args":null`, 1)},
 		{name: "non-object", wire: `[]`},
 		{name: "wrong operation", wire: `{"version":1,"op":"stop"}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request, parseErr := ParseRegistrationRequest([]byte(test.wire))
 			if test.ok {
-				if parseErr != nil || request.Plugin != "manual" || request.SessionID != validSession {
+				if parseErr != nil || request.InputPlugin != "manual" || request.OutputPlugin != "model" {
 					t.Fatalf("ParseRegistrationRequest() = %#v, %v", request, parseErr)
 				}
 				number, _ := request.WatchArgs.Get("n")

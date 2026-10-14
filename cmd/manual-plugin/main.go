@@ -9,6 +9,7 @@ import (
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/manualplugin"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprocess"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprotocol"
+	"github.com/nokamoto/agent-pulse-hub/internal/domain"
 	"google.golang.org/grpc"
 )
 
@@ -17,7 +18,7 @@ func main() {
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: pluginprocess.HandshakeConfig,
 		Plugins: plugin.PluginSet{
-			pluginprocess.PluginKey: &pluginprocess.FrameworkPlugin{
+			pluginprocess.PluginKey(string(domain.InputRole)): &pluginprocess.FrameworkPlugin{
 				Impl: manualplugin.New(logger),
 			},
 		},

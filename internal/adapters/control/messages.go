@@ -7,16 +7,16 @@ import (
 
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
 	"github.com/nokamoto/agent-pulse-hub/internal/application/hub"
-	"github.com/nokamoto/agent-pulse-hub/internal/domain"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
 
 const MaxErrorMessageBytes = 1_024
 
 type RegistrationRequest struct {
-	Plugin    string
-	SessionID string
-	WatchArgs *jsonvalue.Value
+	InputPlugin     string
+	WatchArgs       *jsonvalue.Value
+	OutputPlugin    string
+	DestinationArgs *jsonvalue.Value
 }
 
 type RegistrationResponse struct {
@@ -58,22 +58,25 @@ func parseRequest(frame []byte) (controlRequest, *hub.Error) {
 }
 
 func registrationFields(value *jsonvalue.Value) (RegistrationRequest, *hub.Error) {
-	if err := protocol.ValidateFields(value, []string{"version", "op", "plugin", "watch_args"}, "version", "op", "plugin", "session_id", "watch_args"); err != nil {
+	if err := protocol.ValidateFields(value,
+		[]string{"version", "op", "input_plugin", "watch_args", "output_plugin", "destination_args"},
+		"version", "op", "input_plugin", "watch_args", "output_plugin", "destination_args"); err != nil {
 		return RegistrationRequest{}, &hub.Error{Code: "invalid_request", Message: "Control request fields are invalid."}
 	}
-	plugin, ok := protocol.StringField(value, "plugin")
-	if !ok || plugin == "" {
-		return RegistrationRequest{}, &hub.Error{Code: "invalid_request", Message: "Plugin name is required."}
+	inputPlugin, inputOK := protocol.StringField(value, "input_plugin")
+	outputPlugin, outputOK := protocol.StringField(value, "output_plugin")
+	if !inputOK || inputPlugin == "" || !outputOK || outputPlugin == "" {
+		return RegistrationRequest{}, &hub.Error{Code: "invalid_request", Message: "Input and output plugin names are required."}
 	}
-	session, ok := protocol.StringField(value, "session_id")
-	if !ok || !domain.IsUUID(session) {
-		return RegistrationRequest{}, &hub.Error{Code: "missing_session", Message: "A valid session UUID is required."}
-	}
-	args, ok := protocol.ObjectField(value, "watch_args")
-	if !ok {
+	watchArgs, watchOK := protocol.ObjectField(value, "watch_args")
+	if !watchOK {
 		return RegistrationRequest{}, &hub.Error{Code: "invalid_request", Message: "Watch arguments must be a JSON object."}
 	}
-	return RegistrationRequest{Plugin: plugin, SessionID: session, WatchArgs: args}, nil
+	destinationArgs, destinationOK := protocol.ObjectField(value, "destination_args")
+	if !destinationOK {
+		return RegistrationRequest{}, &hub.Error{Code: "invalid_request", Message: "Destination arguments must be a JSON object."}
+	}
+	return RegistrationRequest{InputPlugin: inputPlugin, WatchArgs: watchArgs, OutputPlugin: outputPlugin, DestinationArgs: destinationArgs}, nil
 }
 
 func ParseRegistrationRequest(frame []byte) (RegistrationRequest, *hub.Error) {

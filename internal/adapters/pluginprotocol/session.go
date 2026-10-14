@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	ServiceName     = "agentpulse.plugin.v1.EventPlugin"
+	ServiceName     = "agentpulse.plugin.v2.Plugin"
 	SessionMethod   = "/" + ServiceName + "/Session"
 	MaxPayloadBytes = 65_536
 	// MaxMessageBytes includes the four-byte protobuf BytesValue field envelope.

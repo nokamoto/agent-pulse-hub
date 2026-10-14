@@ -10,7 +10,7 @@ import (
 
 const DefaultAddress = "127.0.0.1:47831"
 
-const operationTimeout = 15 * time.Second
+const operationTimeout = 25 * time.Second
 
 func validateAddress(address string) error {
 	host, port, err := net.SplitHostPort(address)

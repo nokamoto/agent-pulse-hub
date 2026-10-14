@@ -5,21 +5,30 @@ import "github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 type (
 	SubscriptionID string
 	DeliveryID     string
+	PluginRole     string
+)
+
+const (
+	InputRole  PluginRole = "input"
+	OutputRole PluginRole = "output"
 )
 
 type Subscription struct {
-	ID        SubscriptionID
-	Plugin    string
-	SessionID string
-	WatchArgs *jsonvalue.Value
+	ID              SubscriptionID
+	InputPlugin     string
+	OutputPlugin    string
+	WatchArgs       *jsonvalue.Value
+	DestinationArgs *jsonvalue.Value
+	Active          bool
 }
 
 type Event struct {
-	ID             DeliveryID
-	Plugin         string
-	SubscriptionID SubscriptionID
-	SessionID      string
-	Context        string
+	ID              DeliveryID
+	InputPlugin     string
+	OutputPlugin    string
+	SubscriptionID  SubscriptionID
+	DestinationArgs *jsonvalue.Value
+	Context         string
 }
 
 type DeliveryOutcome string
@@ -29,18 +38,3 @@ const (
 	DeliveryFailed   DeliveryOutcome = "failed"
 	DeliveryUnknown  DeliveryOutcome = "unknown"
 )
-
-func IsUUID(value string) bool {
-	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
-		return false
-	}
-	for i, char := range value {
-		if i == 8 || i == 13 || i == 18 || i == 23 {
-			continue
-		}
-		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
-			return false
-		}
-	}
-	return true
-}
