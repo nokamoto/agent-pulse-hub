@@ -76,8 +76,11 @@ approved requirements will be fulfilled and verified.
    actions, observable expected results, and relevant failure boundaries. Do
    not substitute dynamic `Skip` for Pending cases. Record their governed
    paths under the [acceptance test conventions](../../../docs/aidd/go-development.md#design-acceptance-tests):
-   `cmd/<command>/*_integration_test.go` with `//go:build integration` for
-   every case and suite file, and that command's `testdata/` for fixtures.
+   `*_integration_test.go` directly in `cmd/<command>/` or an existing bundled
+   plugin root, with `//go:build integration` for every case and suite file,
+   and that command or plugin's `testdata/` for fixtures. For a plugin not yet
+   introduced, use a verification command directory under the
+   [bundled artifact rules](../../../docs/aidd/go-development.md#bundled-plugin-artifacts).
    Record the selection tradeoffs and why each integration case needs that
    level, its concrete implementation method, its real product
    components and substituted external boundaries, and its setup, runtime,
@@ -136,8 +139,8 @@ Keep the complete design PR within the playbook's
 including the narrow
 [verification artifact and fixture preparation exception](../../../docs/aidd/README.md#design-verification-deliverables),
 deletions, and both sides of renames. The exception permits verification
-`*_integration_test.go` files directly in `cmd/<command>/` and fixtures in
-that command's `testdata/`, with paths governed by the design, plus minimal
+`*_integration_test.go` files directly in `cmd/<command>/` or an existing
+bundled plugin root, and fixtures in that command or plugin's `testdata/`, with paths governed by the design, plus minimal
 fixture preparation that satisfies every playbook condition. It does not permit
 production code or other dependency, build, CI, tooling, or shared harness
 changes. Prepare those prerequisites separately. Preserve unrelated working

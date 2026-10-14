@@ -27,6 +27,7 @@ are needed; empty placeholder packages are not required.
 | Location | Responsibility and allowed depth |
 | --- | --- |
 | `cmd/<command>/` | Executable entry points: startup, dependency wiring, and process exit decisions. Go files belong directly in the command directory; place reusable implementation in `internal/`. |
+| `plugins/triggers/<name>/` or `plugins/actions/<name>/` | Bundled plugin executable entry points and their command-level tests, directly in the plugin directory. Plugin-specific reusable implementation belongs in that plugin's `internal/{domain,application,adapters}/` layers; nested packages within those layers are allowed. |
 | `internal/domain/` | Product concepts and pure rules. Nested packages are allowed. |
 | `internal/application/` | Use-case coordination and interfaces for required external capabilities. Nested packages are allowed. |
 | `internal/adapters/` | External I/O, protocols, and platform-specific implementations. Nested packages are allowed. |
@@ -35,9 +36,11 @@ are needed; empty placeholder packages are not required.
 | `tools.go` at the root | Build-tagged tool dependency declarations. No other root Go source files are allowed. |
 
 Command and validator names, and responsibility-specific packages within each
-defined internal layer, may be added without changing this policy. Only
+defined internal layer, and bundled plugin names within either role, may be
+added without changing this policy. Only
 `domain`, `application`, and `adapters` are allowed directly under `internal`
-for Go code. New layers or placement categories, such as `internal/common`
+for Go code, including within a plugin. New layers or placement categories,
+such as `internal/common`
 or `pkg/`, require a policy update and a corresponding guardrail change.
 
 ## Architecture and dependency direction
@@ -62,16 +65,20 @@ requires.
 | `internal/domain/...` | Other domain packages only |
 | `internal/application/...` | Application and domain packages |
 | `internal/adapters/...` | Adapter, application, and domain packages |
-| `cmd/<command>/` | All three internal layers to assemble the executable |
+| `cmd/<command>/` or a bundled plugin root | All three internal layers to assemble the executable |
 
 Internal product packages must not import `cmd`, `build`, or
-`tools/guardrails`. Standard-library and third-party imports must respect the
+`tools/guardrails`, or executable plugin roots. Apply the same direction rules
+within each plugin's internal layers. Shared framework code may remain in the
+root internal layers; hub internals must not depend on plugin-specific internals.
+Standard-library and third-party imports must respect the
 same responsibilities: application code must not bypass its interfaces to
 perform external I/O, and domain code must remain independent of external
 systems. Interfaces are required where an application use case needs an
 external capability, not for every function or type.
 
-`cmd/<command>` is the composition root: it constructs concrete adapters and
+`cmd/<command>` and each bundled plugin root are composition roots: each
+constructs concrete adapters and
 passes them to application code. Keep product rules and use-case coordination
 in the internal layers. Subdivide a layer by responsibility when needed; do
 not create empty packages or duplicate types solely to populate all layers.
@@ -102,6 +109,44 @@ The guardrail also rejects Go files under an undefined `internal` layer.
 Package declarations and import dependency direction are outside this check's
 scope; reviewers must check the dependency rules above when reviewing Go code.
 
+## Bundled plugin artifacts
+
+The [bundled-plugin requirements](../requirements/bundled-plugins.md#functional-requirements)
+define the required implementation and usage materials. Every directory directly
+under `plugins/triggers/` or `plugins/actions/` is a bundled plugin and must have:
+
+- At least one nonempty, regular, non-test `*.go` file directly in the plugin
+  directory. Files starting with `.` or `_` do not count as implementation.
+- A nonempty, regular file named exactly `readme.md` directly in that directory.
+- At least one nonempty, regular `*.json` file directly in `examples/` within
+  that directory. The plugin design chooses filenames and contents; examples
+  together must show daemon configuration and watch or destination arguments.
+
+The plugin design chooses source filenames and subdivisions within the allowed
+layout. Shared framework code may stay in the root `internal/` layers. Keep
+fixtures in `testdata/`; fixtures, test-only Go files, and nested source alone
+cannot satisfy the executable implementation artifact. Symlinks and directories
+cannot substitute for required files or the `examples/` directory.
+
+The `plugins` guardrail discovers every plugin directory, including empty ones,
+and reports the plugin path and each missing artifact. Absent `plugins/` or role
+directories are allowed until plugins are introduced; files or symlinks in place
+of these directories or plugin entries fail. The model commands
+`cmd/manual-plugin/` and `cmd/model-output-plugin/` remain valid until their separately approved migration. Do not add production stubs to a
+design PR merely to satisfy presence checks: design-only suites for a plugin not
+yet introduced use `cmd/<verification-command>/` and its `testdata/`. Design may
+add suites directly to an existing plugin directory and govern their relocation
+and inventory changes for implementation.
+
+Run the check through the standard Mage `guardrails` target. Its qualification
+fixtures are materialized by `tools/guardrails/plugins/main_test.go` in temporary
+directories: complete trigger and action plugins pass; independent removal of
+implementation, lowercase README, or examples fails with the path and missing
+artifact. Tests also cover empty plugins, test-only source, empty artifacts,
+incorrect placement, and symlink substitution. The check establishes presence
+only: reviewers must assess README coverage, example correctness, compilability,
+and runtime behavior separately under the governing requirements and design.
+
 ## Tests
 
 ### Test levels and cost
@@ -113,8 +158,8 @@ and a fast test using real network or process boundaries is still integration.
 
 | Level | Purpose and placement | Dependencies and cost |
 | --- | --- | --- |
-| Unit | Standard Go `testing` cases beside the code in `internal/domain`, `internal/application`, or `internal/adapters`. Isolated command logic may also have unit tests in `cmd/<command>`. | Test one responsibility in memory. Mock external capabilities such as network, persistent storage, subprocess execution, and time-dependent waiting. No real network connections, subprocesses, or live services. Keep setup small and deterministic. |
-| Integration | Ginkgo scenarios directly in `cmd/<command>/*_integration_test.go`, at the command that assembles the behavior under test. Exercise the assembled application, domain logic, and relevant adapters together through the command's public behavior. | Real local processes, filesystem, and OS transport are allowed where the scenario requires them. Replace only external service endpoints such as Codex with controlled local substitutes. Account for build, startup, cleanup, and resource costs. |
+| Unit | Standard Go `testing` cases beside the code in `internal/domain`, `internal/application`, or `internal/adapters`. Isolated command logic may also have unit tests in `cmd/<command>` or a bundled plugin root. | Test one responsibility in memory. Mock external capabilities such as network, persistent storage, subprocess execution, and time-dependent waiting. No real network connections, subprocesses, or live services. Keep setup small and deterministic. |
+| Integration | Ginkgo scenarios directly in `cmd/<command>/*_integration_test.go` or a bundled plugin root as `*_integration_test.go`, at the command that assembles the behavior under test. Exercise the assembled application, domain logic, and relevant adapters together through the command's public behavior. | Real local processes, filesystem, and OS transport are allowed where the scenario requires them. Replace only external service endpoints such as Codex with controlled local substitutes. Account for build, startup, cleanup, and resource costs. |
 | Delivery quality | Checks specified by the approved design and performed during delivery. | Real Codex or other live services, credentials, and environment-dependent behavior. These checks do not gate implementation completion. |
 
 Application unit tests use consumer-owned interfaces and
@@ -171,8 +216,8 @@ Use Ginkgo for command-level integration acceptance scenarios under the
 [design verification rule](README.md#design-verification-deliverables).
 Design authors these scenarios; implementation adds the unit tests needed for
 local behavior. Put all Ginkgo scenario and suite files directly in
-`cmd/<command>/` as `*_integration_test.go`, with `//go:build integration`.
-Place data fixtures in that command's `testdata/`. Do not put Ginkgo acceptance
+`cmd/<command>/` or a bundled plugin root as `*_integration_test.go`, with `//go:build integration`.
+Place data fixtures in that command or plugin's `testdata/`. Do not put Ginkgo acceptance
 suites in `internal/application` or `internal/adapters`, introduce a new
 top-level test layout, or hide product implementation in fixtures.
 
@@ -232,8 +277,10 @@ results separate. Run just the integration checks with:
 go run build/mage.go -d build -w . integrationAll
 ```
 
-The `integrationAll` target runs uncached Go tests in every package under
-`cmd/` with the `integration` tag and `-run=^TestIntegration`. New command suites
+The `integrationAll` target lists packages in the root module with the
+`integration` tag, then runs uncached Go tests in every package under `cmd/`
+and directly in `plugins/triggers/<name>/` and `plugins/actions/<name>/` with
+the `integration` tag and `-run=^TestIntegration`. New command and plugin suites
 and cases are included without an inventory selection or workflow change.
 Static Pending is allowed; failing tests and compilation failures still fail
 the run. Each package has a five-minute execution timeout for the combined
@@ -260,7 +307,10 @@ The governing design owns the inventory path and its suite packages and case
 IDs. Include the inventory with the design's verification fixtures and review
 changes to its scope against the approved design. Each suite package is an
 explicit repository-relative directory; product suites remain directly in
-`cmd/<command>/`. The inventory is one JSON object with a nonempty `suites`
+`cmd/<command>/` or a bundled plugin root. Plugin inventories may live in the
+plugin's `testdata/`, using packages such as `./plugins/triggers/manual` or
+`./plugins/actions/model-output`. Mixed command/plugin inventories are allowed.
+The inventory is one JSON object with a nonempty `suites`
 array. Each suite has a unique `package` and nonempty `cases` array. Case IDs
 are unique across the inventory and use letters, digits, dots, underscores,
 and hyphens, starting with a letter or digit. For example:
@@ -299,7 +349,10 @@ not need an inventory-specific invocation or a new job for each scope.
 
 The separate `integrationTooling` target qualifies the runner using real
 Ginkgo reports for passed, Pending, skipped, missing, and failed fixture cases.
-These fixtures contain no product behavior. CI runs this qualification on
+These fixtures contain no product behavior. The fixture in
+`build/testdata/plugin-layout/` is copied into a temporary root module with
+command, trigger, and action suites to qualify automatic discovery and mixed
+acceptance inventories, including failing and missing plugin suites. CI runs this qualification on
 Ubuntu and retains its reports independently of the default test
 job. Its success establishes tooling behavior only. It does not establish
 MVP acceptance, OS-specific product behavior, or delivery quality. An approved

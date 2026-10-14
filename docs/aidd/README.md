@@ -201,10 +201,13 @@ test code completion or the connection to the product is deferred. Follow the
 The governing design identifies test and fixture paths, the approved case IDs,
 and which cases gate each implementation scope. Design PRs may include these
 verification-only `*_integration_test.go` files directly in `cmd/<command>/`
-and fixtures in that command's `testdata/`, following the
+or an existing bundled plugin root, and fixtures in that command or plugin's
+`testdata/`, following the
 [Go test conventions](go-development.md#design-acceptance-tests).
-New command directories within the placement policy are permitted when needed
-by the design; new placement categories are not. The design PR may also include
+New verification command directories within the placement policy are permitted
+when needed by the design. Apply the
+[bundled artifact rules](go-development.md#bundled-plugin-artifacts) before
+introducing a plugin directory; new placement categories are not. The design PR may also include
 the following minimal preparation needed to execute its command fixtures:
 
 - Mechanically reconcile direct and indirect requirements in `go.mod` to reflect

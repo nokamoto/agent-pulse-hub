@@ -42,8 +42,10 @@
      initially static Pending, their stable
      IDs, requirement/acceptance mappings, inputs, actions, expected observable
      results and failure boundaries, and governed paths directly in
-     cmd/<command>/*_integration_test.go with //go:build integration for all
-     case and suite files, and fixtures in that command's testdata/.
+     cmd/<command>/ or an existing bundled plugin root as *_integration_test.go
+     with //go:build integration for all case and suite files, and fixtures in
+     that command or plugin's testdata/. For plugins not yet introduced, use
+     verification command placement under the bundled artifact rules.
      Record each case's concrete implementation method and resolved CI feasibility;
      Pending defers test code completion and product wiring only.
      Explain why integration is needed, real product components and substituted
@@ -67,7 +69,8 @@
      Report approved acceptance-phase conflicts and the required upstream PR. -->
 
 [Go test levels and cost](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#test-levels-and-cost),
-[design verification deliverables](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#design-verification-deliverables)
+[design verification deliverables](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#design-verification-deliverables),
+[bundled artifact rules](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/go-development.md#bundled-plugin-artifacts),
 and [implementation completion and delivery boundary](https://github.com/nokamoto/agent-pulse-hub/blob/main/docs/aidd/README.md#implementation-completion-and-delivery-boundary).
 
 ## Open questions and risks
@@ -82,7 +85,7 @@ and [implementation completion and delivery boundary](https://github.com/nokamot
 ## Phase handoff
 
 - [ ] The complete diff stays within docs/design/ and the narrow verification artifact and fixture preparation exception, including governed specifications, deletions and both sides of renames.
-- [ ] Concrete integration cases and suites have design-governed paths and the integration build tag directly in `cmd/<command>/`, with fixtures in that command's `testdata/`; the complete base-to-head diff contains no production code, and any minimal fixture preparation satisfies every playbook allowance condition, including effects on other job steps.
+- [ ] Concrete integration cases and suites have design-governed paths and the integration build tag directly in `cmd/<command>/` or an existing bundled plugin root, with fixtures in that command or plugin's `testdata/`; the complete base-to-head diff contains no production code, and any minimal fixture preparation satisfies every playbook allowance condition, including effects on other job steps.
 - [ ] Selected cases justify their cost and have concrete feasible implementation methods; Pending defers test code completion and product wiring, with retained coverage explained for removed candidates.
 - [ ] Service-free CI feasibility and its runtime-cost budget have evidence; permitted fixture preparation has the required evidence above, and other infrastructure prerequisites are separately approved and merged.
 - [ ] The phase:design label is applied.

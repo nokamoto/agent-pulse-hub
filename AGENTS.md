@@ -95,7 +95,8 @@ Follow the [Go development conventions](docs/aidd/go-development.md) for
 package placement, testing, and error handling.
 Apply the [test levels and cost guide](docs/aidd/go-development.md#test-levels-and-cost):
 unit tests mock external capabilities; assembled-product Ginkgo integration
-tests belong directly in `cmd/<command>/*_integration_test.go` with
+tests belong directly in `cmd/<command>/` or a bundled plugin root as
+`*_integration_test.go` with
 `//go:build integration`. Require separate unit and integration results.
 
 Run the Mage targets from the repository root. Format Go code and tidy modules before committing:
@@ -104,7 +105,7 @@ Run the Mage targets from the repository root. Format Go code and tidy modules b
 go run build/mage.go -d build -w . format
 ```
 
-Run unit and all tagged command integration tests locally with:
+Run unit and all tagged command and bundled plugin integration tests locally with:
 
 ```sh
 go run build/mage.go -d build -w . check
@@ -116,13 +117,13 @@ For separate results, run the unit tests with:
 go run build/mage.go -d build -w . test
 ```
 
-Run all command integration tests with:
+Run all command and bundled plugin integration tests with:
 
 ```sh
 go run build/mage.go -d build -w . integrationAll
 ```
 
-New tagged command suites are included automatically in local checks and CI.
+New tagged command and bundled plugin suites are included automatically in local checks and CI.
 Static Pending is allowed in this run. Verify the implementation PR's approved
 scope separately under the [acceptance test conventions](docs/aidd/go-development.md#design-acceptance-tests);
 a successful general run alone does not establish implementation completion.
