@@ -131,8 +131,8 @@ cannot substitute for required files or the `examples/` directory.
 The `plugins` guardrail discovers every plugin directory, including empty ones,
 and reports the plugin path and each missing artifact. Absent `plugins/` or role
 directories are allowed until plugins are introduced; files or symlinks in place
-of these directories or plugin entries fail. The existing commands remain valid
-until their separately approved migration. Do not add production stubs to a
+of these directories or plugin entries fail. The model commands
+`cmd/manual-plugin/` and `cmd/model-output-plugin/` remain valid until their separately approved migration. Do not add production stubs to a
 design PR merely to satisfy presence checks: design-only suites for a plugin not
 yet introduced use `cmd/<verification-command>/` and its `testdata/`. Design may
 add suites directly to an existing plugin directory and govern their relocation
