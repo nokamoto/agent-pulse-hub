@@ -61,8 +61,8 @@ During design, resolve the following against the authoritative contracts:
 - Identify affected specifications and developer operating instructions and
   create them during the upstream phase required by the playbook. Define
   user-facing usage materials for delivery. If relocating the existing model
-  plugins (the manual trigger and model-output action), account for build
-  callers, examples, and existing service-free verification.
+  plugins, account for build callers, examples, and existing service-free
+  verification.
 - Select verification under the playbook's
   [design verification rules](../../../docs/aidd/README.md#design-verification-deliverables).
   Separate unit tests with mocked external capabilities, command-level
@@ -72,16 +72,6 @@ During design, resolve the following against the authoritative contracts:
   Record concrete cases, prerequisites, expected
   results, evidence, cost, and the responsible phase; simulated service results
   do not prove the real integration works.
-
-For a Codex Queue action, also read the
-[Codex Queue requirements](../../../docs/requirements/codex-queue.md).
-Resolve actual CLI acknowledgement and conversation-identity compatibility,
-registration-skill packaging and invocation contexts, and verification in its
-design. Treat historical code as investigation evidence, not a current contract.
-Keep queue acceptance distinct from processing, preserve uncertain outcomes and
-no automatic retry, and do not let external event data choose the recipient or
-grant authority. The registration skill is a plugin deliverable distinct from
-this authoring skill.
 
 ## Implement the approved scope
 
