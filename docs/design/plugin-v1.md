@@ -5,6 +5,8 @@ description: Language-neutral input and output contracts carried by hashicorp/go
 sources:
   - id: mvp-design
     resource: design/mvp.md
+  - id: bundled-design
+    resource: design/bundled-plugins.md
 ---
 
 # Agent Pulse Hub plugin protocol v2
@@ -32,6 +34,12 @@ The stable filename `plugin-v1.md` identifies this specification document.
 Its application and framework-negotiation version is now **2**. Version 1
 input-only plugins are incompatible and must be replaced; there is no
 compatibility mode or fallback.
+
+Bundled plugins use the user-facing roles **trigger** (input) and **action**
+(output), with source and usage materials under `plugins/triggers/<name>/` and
+`plugins/actions/<name>/`. The [bundled migration design](bundled-plugins.md)
+governs that layout. Directory terminology does not change version 2: literal
+role fields and dispense names remain `input` and `output`.
 
 ## Framework and transport
 

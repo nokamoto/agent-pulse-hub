@@ -6,6 +6,8 @@ sources:
   - id: mvp-requirements
     resource: requirements/mvp.md
     title: Plugin-based event routing MVP
+  - id: bundled-design
+    resource: design/bundled-plugins.md
 ---
 
 # Plugin-based event routing MVP
@@ -32,6 +34,12 @@ Use `hashicorp/go-plugin` v1.8.0, gRPC v1.84.0 and protobuf v1.36.12 for both
 roles. Product code and contracts remain OS neutral; dependency internals may
 handle platform differences. No new support matrix, local-user isolation,
 descendant containment or physical file-identity guarantee is introduced.
+
+Bundled source placement and usage artifacts follow the
+[model plugin migration design](bundled-plugins.md). Trigger/action are the
+user-facing role names; public configuration, CLI, and wire contracts retain
+input/output. The migration design governs source-path transition and test
+relocation without changing the runtime contracts below.
 
 ## Specification documents
 
@@ -142,8 +150,8 @@ falling back to a different endpoint.
 | `cmd/agent-pulse-hub` | `daemon --config <absolute JSON file> [--address <address>]` runs in foreground. Ctrl+C and local stop share shutdown. |
 | Same command | `register --input-plugin <name> --watch-args-file <absolute JSON file> --output-plugin <name> --destination-args-file <absolute JSON file> [--address <address>]` registers a route. |
 | Same command | `stop [--address <address>]` requests normal shutdown. |
-| `cmd/manual-plugin` | No arguments; model input launched through go-plugin. |
-| `cmd/model-output-plugin` | No arguments; model output launched through go-plugin. |
+| `plugins/triggers/manual` | No arguments; manual trigger (public input role) launched through go-plugin. |
+| `plugins/actions/model-output` | No arguments; model-output action (public output role) launched through go-plugin. |
 
 Required flags occur once and optional flags at most once, in any order. Reject
 unknown/duplicate flags, missing values and positional arguments. Input files
@@ -355,13 +363,13 @@ approved requirements retired them. They are not deferred acceptance conditions.
 The full model route uses actual bundled commands, not a fake recipient. Python
 protocol fixtures are restricted to role replacement and failure injection.
 Retain one real 30-second output timeout; mock ten-second registration/readiness
-deadline matrices. Replace prior implemented acceptance bodies with static
-Pending for the new contract, without claiming the old product implements it.
+deadline matrices. Preserve the executable v2 acceptance cases during source
+relocation; do not replace their bodies with Pending or weaken their assertions.
 
 Governed files are `cmd/agent-pulse-hub/*_integration_test.go` for the selected
 cases, suite and case-owned feasibility/harness code, corresponding
-`cmd/manual-plugin/*_integration_test.go` for its two cases, and fixtures under
-those commands' `testdata/`. All Go files use the `integration` build tag.
+`plugins/triggers/manual/*_integration_test.go` for its two cases, and fixtures under
+the command or plugin's `testdata/`. All Go files use the `integration` build tag.
 The complete inventory is `cmd/agent-pulse-hub/testdata/mvp-cases.json`.
 Obsolete Codex-only case fixtures may be removed. No production, shared Mage,
 build, dependency-version or CI change is part of this design. Reuse the
@@ -460,10 +468,10 @@ real framework and Session, exercise ready/validation/watch/immediate-event/
 delivery/result, standard shutdown and one real 30-second unconfirmed output
 request. They also qualify loopback bind conflict and ordinary file publication,
 append/read observation. These probes qualify fixture mechanics and costs,
-not the product's new wiring. Existing commands can be built to bound startup
-cost; the slower existing command build is reserved again as a proxy for the
-new output command. Implementation measures all three actual binaries within
-that reserve. Pending declarations use no nonexistent production symbols.
+not completed source relocation. Measure all three actual binaries and tagged
+suite compilation within the existing setup reserve. Keep executable v2 cases
+enabled and rerun the measurements against the relocated packages during
+implementation; do not substitute a proxy build for a plugin binary.
 
 The hub case caps total 89 seconds. Reserve 20 seconds for warmed-cache tagged
 compilation and three common builds, five seconds for final cleanup and five
@@ -481,8 +489,8 @@ cache preparation separately; actual scoped compilation/builds still count.
 ```text
 go run build/mage.go -d build -w . test
 go run build/mage.go -d build -w . integrationAll
-go test -tags=integration ./cmd/agent-pulse-hub ./cmd/manual-plugin -run=^$ -count=1
-go test -tags=integration ./cmd/agent-pulse-hub ./cmd/manual-plugin -run=^TestIntegration -v "-ginkgo.dry-run" "-ginkgo.v"
+go test -tags=integration ./cmd/agent-pulse-hub ./plugins/triggers/manual -run=^$ -count=1
+go test -tags=integration ./cmd/agent-pulse-hub ./plugins/triggers/manual -run=^TestIntegration -v "-ginkgo.dry-run" "-ginkgo.v"
 go test -tags=integration ./cmd/agent-pulse-hub -run="^TestPluginSessionFeasibility$|^TestLoopbackControlFeasibility$" -count=1 -v
 go test -tags=integration ./cmd/agent-pulse-hub -run=^TestPluginDeliveryDeadlineFeasibility$ -count=1 -timeout=1m -v
 go test -tags=integration ./cmd/agent-pulse-hub -run=^TestDesignBudget -count=1 -timeout=2m -v

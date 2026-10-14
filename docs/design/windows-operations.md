@@ -1,10 +1,12 @@
 ---
 type: Design
 title: Model-plugin operations
-description: Build, register, trigger, observe, and stop the local input/output model-plugin example.
+description: Build, register, trigger, observe, and stop the local trigger/action model-plugin example.
 sources:
   - id: mvp-design
     resource: design/mvp.md
+  - id: bundled-design
+    resource: design/bundled-plugins.md
   - id: mvp-requirements
     resource: requirements/mvp.md
     title: Plugin-based event routing MVP
@@ -13,6 +15,11 @@ sources:
 # Model-plugin operations
 
 ## Purpose and contract sources
+
+The manual **trigger** uses the public `input` role; the model-output **action**
+uses `output`. Keep those literal configuration values and CLI flags unchanged.
+The [bundled migration design](bundled-plugins.md) governs source paths and
+plugin README/example contracts; this guide specifies their paired operation.
 
 This guide supplies the reusable local walkthrough for
 [requirements/mvp](../requirements/mvp.md) NFR-004 and AC-009. Build the daemon,
@@ -74,8 +81,8 @@ manual = run / ("manual-plugin" + suffix)
 output = run / ("model-output-plugin" + suffix)
 
 for target, package in [(hub, "./cmd/agent-pulse-hub"),
-                        (manual, "./cmd/manual-plugin"),
-                        (output, "./cmd/model-output-plugin")]:
+                        (manual, "./plugins/triggers/manual"),
+                        (output, "./plugins/actions/model-output")]:
     argv = ["go", "build", "-o", str(target), package]
     print(json.dumps(argv))
     result = subprocess.run(argv, cwd=repo, text=True,
@@ -121,6 +128,21 @@ assert not destination_a.exists() and not destination_b.exists()
 print("Watch:", watch_path, "Destination arguments:", destination_path)
 print("A:", destination_a, "Unregistered B:", destination_b)
 ```
+
+For delivery check BUNDLE-D01, before step 3 replace the generated JSON files
+with materialized shipped examples. Load and compare
+`plugins/triggers/manual/examples/daemon.json` and
+`plugins/actions/model-output/examples/daemon.json` as JSON objects; they must
+match. In that object replace `<ABSOLUTE_MANUAL_EXECUTABLE>` with `str(manual)`
+and `<ABSOLUTE_MODEL_OUTPUT_EXECUTABLE>` with `str(output)`, then serialize it
+to `config_path`. Load `plugins/triggers/manual/examples/watch.json`, replace
+`<ABSOLUTE_TRIGGER_FILE>` with `str(trigger)`, and serialize it to `watch_path`.
+Load `plugins/actions/model-output/examples/destination.json`, replace
+`<ABSOLUTE_OUTPUT_FILE>` with `str(destination_a)`, and serialize it to
+`destination_path`. Replace complete string values, not raw JSON text. Retain
+the source paths and resulting JSON as evidence, then use these same three
+runtime files in every subsequent step. Stop if comparison or materialization
+fails; do not fall back to the directly generated files for delivery evidence.
 
 The model input requires an absent absolute `trigger_file` in an existing
 writable directory. It compares lexically cleaned paths by exact string,
@@ -438,3 +460,30 @@ dependencies. Future service-plugin checks exercise their own target service
 independently and keep their evidence separate. No future plugin integration
 success is claimed by this walkthrough. Pending, dry-run, tooling, and
 feasibility results do not establish implemented routing or completed delivery.
+
+For malformed or partial output, stop the daemon and await configured-plugin
+exits. Preserve the damaged file and inspect trigger/claim leftovers. Choose
+fresh absent output and trigger paths in an existing writable directory, write
+those paths into the destination and watch argument files using JSON
+serialization, then restart and register. Publish only a deliberately chosen
+subsequent distinct event; this procedure does not retry the uncertain event
+or repair its output. An `unknown` outcome can also leave a complete valid
+record, so inspect it before deciding whether damaged-file recovery applies.
+
+## Source-layout migration
+
+Stop the daemon and wait for plugin exits before replacing binaries. Build the
+manual trigger from `./plugins/triggers/manual` and model-output action from
+`./plugins/actions/model-output`; the former `cmd/` plugin build paths are
+removed. Binary output names and public v2 contracts remain compatible. Update
+configured executable paths only if the build outputs move, then start and
+register again. Inspect leftover triggers and output records before recovery.
+Rollback uses the prior revision and its source paths; it cannot undo output.
+
+Each plugin supplies `examples/daemon.json`; manual supplies `examples/watch.json`
+and model-output supplies `examples/destination.json`. These contain explicit
+path placeholders. Replace whole JSON string values through serialization,
+using the chosen absolute paths from steps 1–2; the daemon does not expand
+placeholders. Both daemon templates describe the same pair. The procedure above
+generates equivalent runtime JSON directly. During delivery, also materialize
+and run the shipped templates as specified by BUNDLE-D01 in the migration design.
