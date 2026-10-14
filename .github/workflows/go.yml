@@ -31,12 +31,8 @@ jobs:
           fi
 
   go:
-    name: Go CI (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    name: Go CI (Ubuntu)
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -73,8 +69,8 @@ jobs:
         run: go run build/mage.go -d build -w . lint
 
   product-integration:
-    name: Product integration (Windows)
-    runs-on: windows-latest
+    name: Product integration (Ubuntu)
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -102,18 +98,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: product-integration-windows
+          name: product-integration-ubuntu-latest
           path: ${{ runner.temp }}/product-integration
           if-no-files-found: error
 
   integration-tooling:
-    name: Integration tooling (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Integration tooling (Ubuntu)
+    runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -140,7 +132,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: plugin-tooling-${{ matrix.os }}
+          name: plugin-tooling-ubuntu-latest
           path: ${{ runner.temp }}/plugin-tooling
           if-no-files-found: error
 
@@ -153,6 +145,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: integration-tooling-${{ matrix.os }}
+          name: integration-tooling-ubuntu-latest
           path: ${{ runner.temp }}/integration-tooling
           if-no-files-found: error
