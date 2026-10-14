@@ -16,7 +16,7 @@ A coding agent may need to wait for a change in an external service before conti
 
 Agent Pulse Hub moves event watching and delivery to local programs. Operators configure input plugins that produce events and output plugins that deliver them to a destination. The daemon connects the two without implementing a particular external service or coding agent integration.
 
-The MVP provides a working local example and end-to-end verification using bundled model plugins on both sides. Operators can trigger an event and observe its source and context at the registered destination. These plugins are usable examples shipped with the product, rather than test-only mocks. Actual Codex integration is outside this MVP.
+The MVP provides a working local example and end-to-end verification using bundled model plugins on both sides. Operators can trigger an event and observe its source and context at the registered destination. These plugins are usable examples shipped with the product, rather than test-only mocks. Actual Codex integration is outside this MVP. The [bundled-plugin extension](bundled-plugins.md) defines common trigger/action terminology and repository organization; the separate [Codex Queue action requirements](codex-queue.md) define the Codex integration. Both preserve this MVP's service-free model verification.
 
 This scope separates two questions: whether the assembled hub routes events correctly, and whether a particular plugin works with its external service. Future external-service plugins must support independent verification of their own integration, without making the hub's model-plugin end-to-end checks depend on live services.
 
