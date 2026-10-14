@@ -19,8 +19,8 @@ reader's interpretation of input and output direction.
 
 These requirements define the common organization for a growing collection of
 bundled plugins. Plugin-specific behavior and acceptance criteria belong in
-separate requirement documents. The first external-agent integration is the
-[Codex Queue action](codex-queue.md).
+separate requirement documents, such as the
+[Codex Queue action requirements](codex-queue.md).
 
 ## Sources and decisions
 
@@ -81,8 +81,8 @@ The MVP's NFR-001–005 remain applicable: no coding-agent polling, public
 language-neutral interfaces, external-data boundaries, reproducible operation,
 and service-free hub verification distinct from independent service-plugin
 checks. Go implementation, English documentation, and OS-neutral product
-contracts remain mandatory. This organization change adds no performance,
-platform, or delivery guarantees; existing MVP acceptance checks still apply.
+contracts remain mandatory. Performance, platform, and delivery guarantees
+remain governed by the MVP requirements and their acceptance checks.
 
 ## Constraints and dependencies
 
@@ -104,11 +104,11 @@ changing build paths must not remove their coverage or service-free operation.
 
 | ID | Requirements | Stimulus and decisive expected result | Verification |
 | --- | --- | --- | --- |
-| AC-001 | FR-001, FR-002, FR-003 | Inspect each bundled plugin's role/path and artifacts. A complete fixture passes the guardrail. Independently remove implementation, README, and examples: each fails and names the affected plugin and missing artifact. Inspect examples and README for the required usage information. | Automated presence checks and maintainer documentation review; fixture locations and rules are defined in the repository rules change |
+| AC-001 | FR-001, FR-002, FR-003 | Inspect each bundled plugin's role/path and artifacts. A complete fixture passes the guardrail. Independently remove implementation, README, and examples: each fails and names the affected plugin and missing artifact. Inspect examples and README for the required usage information. | Automated presence checks and maintainer documentation review; fixture locations and checks must be documented in repository rules |
 
 ## Open questions and assumptions
 
-None blocking requirements approval. The design owner must specify
+No unresolved scope decisions. The design owner must specify
 compatibility for existing public `input`/`output` spellings, build paths, and
 transition instructions before implementation. This determines operator
 migration steps; it does not defer trigger/action terminology or require
@@ -116,20 +116,13 @@ backwards compatibility.
 
 ## Change impact
 
-This common requirement concept extends the MVP. All MVP IDs remain unchanged.
+These requirements supplement the MVP's service-neutral routing contract.
 Update [the routing design](../design/mvp.md),
 [the plugin specification](../design/plugin-v1.md), and
 [the operations guide](../design/windows-operations.md) where role names,
 plugin locations, or examples are affected. Build-path migration must update
 callers and instructions without dropping model-plugin coverage. Delivery must
 update the root README's entry points.
-
-The Codex-specific requirements formerly colocated here are owned by
-[codex-queue.md](codex-queue.md). Their local ID suffixes are retained for
-traceability: UC-002–004, FR-004–008, NFR-001–004, and AC-002–008 move to that
-concept path and are not reassigned here. Common UC-001, FR-001–003, and AC-001
-retain their IDs and ownership. References to a moved ID must use its new
-concept path; the split does not retire the behavior.
 
 Repository rules and guardrail implementation require their own change,
 covering artifact locations, discovery, missing-artifact fixtures, and

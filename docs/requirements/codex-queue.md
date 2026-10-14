@@ -31,7 +31,7 @@ daemon and trigger plugins independent of Codex.
 
 ## Sources and decisions
 
-Codex Queue is the first external-agent integration under the
+Codex Queue is an action plugin governed by the
 [bundled-plugin requirements](bundled-plugins.md). That document governs
 trigger/action terminology, directory layout, mandatory artifacts, model-plugin
 migration, and guardrail enforcement. Those common obligations apply to this
@@ -134,23 +134,17 @@ Common artifact enforcement is verified by bundled-plugins.md AC-001.
 
 ## Open questions and assumptions
 
-None blocking requirements approval. The design owner must resolve Codex CLI,
+No unresolved scope decisions. The design owner must resolve Codex CLI,
 identity, skill-invocation, and packaging details described above before
 implementation. Unsupported prerequisites must remain visible failures;
 historical behavior is not proof of current compatibility.
 
 ## Change impact
 
-This plugin-specific concept extends the MVP without restoring retired MVP
-FR-005 or weakening MVP NFR-005 and model acceptance. The MVP's exclusion of
-live Codex integration describes its service-free baseline; this document
-supplies the separate Codex obligations. All MVP IDs remain unchanged.
-
-UC-002–004, FR-004–008, NFR-001–004, and AC-002–008 retain their local ID suffixes
-from their previous location in bundled-plugins.md. Their authoritative concept
-path is now codex-queue.md; gaps in numbering preserve the relocation mapping.
-No behavior is retired by this document split. Common packaging requirements
-remain in [bundled-plugins.md](bundled-plugins.md).
+Codex-specific behavior supplements the [MVP requirements](mvp.md). The hub's
+model-plugin acceptance remains service-free, while this plugin requires
+independent Codex verification under MVP NFR-005. Common packaging requirements
+are governed by [bundled-plugins.md](bundled-plugins.md).
 
 Design must define the action and registration-skill contracts and allocate
 CI versus real-service delivery verification. Update
