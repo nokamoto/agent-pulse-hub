@@ -25,13 +25,8 @@ func IntegrationAll() error {
 }
 
 func runIntegrationAll(root, reportDir string, stdout, stderr io.Writer) error {
-	packages, err := discoverIntegrationPackages(root)
-	if err != nil {
-		return err
-	}
-	args := []string{"test", "-tags", "integration", "-run", "^TestIntegration", "-count=1", "-timeout", "5m", "-json"}
-	args = append(args, packages...)
-	return runIntegrationTests(root, reportDir, args, stdout, stderr)
+	// A nil argument list requests discovery after fresh evidence files exist.
+	return runIntegrationTests(root, reportDir, nil, stdout, stderr)
 }
 
 // Listing the root module avoids wildcard warnings for role directories that
@@ -103,6 +98,15 @@ func runIntegrationTests(root, reportDir string, args []string, stdout, stderr i
 	console, err := os.Create(filepath.Join(reportDir, "console.log"))
 	if err != nil {
 		return errors.Join(err, results.Close())
+	}
+	if args == nil {
+		packages, discoveryErr := discoverIntegrationPackages(root)
+		if discoveryErr != nil {
+			_, logErr := fmt.Fprintln(io.MultiWriter(stderr, console), discoveryErr)
+			return errors.Join(discoveryErr, logErr, results.Close(), console.Close())
+		}
+		args = []string{"test", "-tags", "integration", "-run", "^TestIntegration", "-count=1", "-timeout", "5m", "-json"}
+		args = append(args, packages...)
 	}
 	cmd := exec.Command("go", args...)
 	cmd.Dir = root

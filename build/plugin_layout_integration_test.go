@@ -88,8 +88,19 @@ func qualifyPluginLayout(t *testing.T, sourceRoot, outputDir string) {
 		t.Fatal("scoped gate accepted missing plugin suite")
 	}
 	writeLayoutFixture(t, root, "plugins/actions/example/broken.go", []byte("invalid Go"))
-	if _, err := discoverIntegrationPackages(root); err == nil || !strings.Contains(err.Error(), "discover integration packages") {
+	discoveryDir := filepath.Join(outputDir, "discovery-error")
+	if err := runIntegrationAll(root, discoveryDir, &output, &output); err == nil || !strings.Contains(err.Error(), "discover integration packages") {
 		t.Fatalf("discovery did not propagate build error: %v", err)
+	}
+	console, err := os.ReadFile(filepath.Join(discoveryDir, "console.log"))
+	if err != nil || !bytes.Contains(console, []byte("plugins/actions/example/broken.go")) {
+		t.Fatalf("discovery failure diagnostics not retained: %v\n%s", err, console)
+	}
+	if _, err := os.Stat(filepath.Join(discoveryDir, "test-results.json")); err != nil {
+		t.Fatalf("missing report file after discovery failure: %v", err)
+	}
+	if err := runIntegrationAll(root, discoveryDir, &output, &output); err == nil || !strings.Contains(err.Error(), "fresh integration report directory") {
+		t.Fatalf("discovery failure directory was reusable: %v", err)
 	}
 }
 
