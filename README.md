@@ -1,24 +1,33 @@
 # agent-pulse-hub
 
+<!-- Keep the following sentence identical to the repository description. Do not edit it. -->
 Bring real-time external event triggers to your AI coding agents via lightweight daemon plugins.
 
 ## Background and motivation
 
-Agent Pulse Hub lets external events wake an existing Codex chat. This quickstart
-uses the bundled manual plugin: publish a text file and see Codex reply.
+Agent Pulse Hub keeps event routing separate from service integrations. Register
+an input watch and an output destination, then let the daemon forward events
+without polling from a coding agent. Plugins handle their own sources and destinations.
+
+Try the bundled local example below: publish a text file and see its contents
+appended to a JSON-lines file. It needs no live service, credentials, or Codex
+installation. The current MVP includes these model plugins; it does not include
+a Codex integration.
 
 ## Requirements
 
-- Git and Go (see [go.mod](go.mod)).
-- Codex Desktop whose bundled CLI supports `codex queue`.
+- Git and Go 1.26.0 or later (see [go.mod](go.mod)).
+- An existing writable local directory for the example's files.
 
-The examples use a POSIX shell and Python 3 to write JSON configuration files.
-These example tools do not define a product OS requirement.
+The examples use two POSIX shell terminals and Python 3 to write JSON files.
+These are example utilities, not product runtime dependencies or OS requirements.
+Local control uses trusted loopback access; it does not isolate users of the same
+machine. Run only plugins you trust.
 
 ## Installation
 
-In the first terminal, obtain the source and build both programs.
-Stop if a command fails.
+In the first terminal, obtain the source and build all three programs from the
+same revision. Stop if a command fails.
 
 ```sh
 git clone https://github.com/nokamoto/agent-pulse-hub.git
@@ -28,96 +37,106 @@ run="$(python3 -c 'from pathlib import Path; print((Path.cwd() / "pulse-demo").a
 suffix="$(go env GOEXE)"
 go build -o "$run/agent-pulse-hub$suffix" ./cmd/agent-pulse-hub
 go build -o "$run/manual-plugin$suffix" ./cmd/manual-plugin
+go build -o "$run/model-output-plugin$suffix" ./cmd/model-output-plugin
 ```
-
-Open the cloned folder as the project for your existing Codex chat.
 
 ## Usage
 
 ### Configure and start
 
-In your existing Codex chat, ask it to locate the bundled CLI first:
-
-```text
-Find the absolute path of the CLI executable bundled with the Codex app hosting
-this chat. Inspect the running process or app installation to identify it;
-do not assume the first codex on PATH belongs to this app. Report the path,
-or explain if it cannot be identified.
-```
-
-Continue only once that path is identified. In the first terminal, enter it
-when prompted. Keep this terminal open
-and note the printed run directory. Before configuring the daemon, confirm that
-the CLI help lists `--thread` and `--message`; stop if it does not.
+Keep the first terminal open. Create the daemon configuration, input watch
+arguments, and output destination arguments:
 
 ```sh
-printf 'Absolute Codex executable path: '
-IFS= read -r codex
-"$codex" queue --help
-```
-
-After checking the help, write the configuration and start the daemon:
-
-```sh
-python3 - "$run" "$codex" "$suffix" <<'PY'
+python3 - "$run" "$suffix" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 run = Path(sys.argv[1])
-config = {
-    "codex_executable": sys.argv[2],
-    "plugins": [{"name": "manual", "executable": str(run / ("manual-plugin" + sys.argv[3])), "args": []}],
-}
+suffix = sys.argv[2]
+config = {"plugins": [
+    {"name": "manual", "role": "input", "executable": str(run / ("manual-plugin" + suffix)), "args": []},
+    {"name": "model", "role": "output", "executable": str(run / ("model-output-plugin" + suffix)), "args": []},
+]}
 (run / "daemon.json").write_text(json.dumps(config), encoding="utf-8")
 (run / "watch.json").write_text(json.dumps({"trigger_file": str(run / "next.txt")}), encoding="utf-8")
+(run / "destination.json").write_text(json.dumps({"output_file": str(run / "events.jsonl")}), encoding="utf-8")
 PY
 printf 'Run directory: %s\n' "$run"
-printf 'Hub executable: %s\n' "$run/agent-pulse-hub$suffix"
-printf 'Watch file: %s\n' "$run/watch.json"
-"$run/agent-pulse-hub$suffix" daemon --config "$run/daemon.json"
+"$run/agent-pulse-hub$suffix" daemon --config "$run/daemon.json" --address 127.0.0.1:47831
 ```
 
-Wait for `plugin_ready` (`manual`) and `registration_available` in this terminal.
+Note the printed run directory. In the first terminal's JSON diagnostics, wait
+for `msg: "plugin_ready"` with `available: true` for both `manual` and `model`,
+then `msg: "registration_available"` with `available: true`. If startup fails,
+inspect the diagnostic before continuing. Use the same address for every command; if that
+port is occupied, choose another loopback port consistently.
 
-### Register the conversation
+### Register and publish
 
-Send this in your Codex chat, replacing `<hub executable>` and `<watch file>`
-with the printed paths. Wait for Codex to confirm registration.
-
-```text
-Use $register-pulse to register this conversation with hub executable
-<hub executable>, plugin manual, and watch arguments from <watch file>.
-When PULSE-DEMO-001 arrives, reply with that message.
-```
-
-### Trigger and stop
-
-After the registration turn finishes, open a second POSIX shell terminal. Ensure
-`next.txt` is absent and use only this terminal to publish. Write and close a
-temporary file, then rename it so the plugin reads the complete text.
+Open the second terminal and enter the printed run directory when prompted.
+The trigger `next.txt` must be absent. Use one publisher and one spelling of
+each path, and avoid modifying the output file while the daemon is running.
 
 ```sh
 printf 'Run directory printed in the first terminal: '
 IFS= read -r run
+suffix="$(go env GOEXE)"
+"$run/agent-pulse-hub$suffix" register --input-plugin manual --watch-args-file "$run/watch.json" --output-plugin model --destination-args-file "$run/destination.json" --address 127.0.0.1:47831
+```
+
+Wait for exit success and JSON containing `"ok":true` and a `subscription_id`.
+Repeating this exact registration returns the same active ID. Registration alone
+does not create the output file. Publish nonempty UTF-8 text of at most 8,192
+bytes by closing a temporary file and renaming it onto the absent trigger:
+
+```sh
 printf '%s' 'PULSE-DEMO-001' > "$run/next.tmp"
 mv -i "$run/next.tmp" "$run/next.txt"
 ```
 
-Your Codex chat should reply without another message from you. For problems, see the
-[operations guide](docs/design/windows-operations.md).
-
-Stop from the second terminal, or press Ctrl+C in the first:
+In the first terminal, wait for `msg: "delivery_result"` with `outcome: "accepted"`
+and your `subscription_id`. Then read the output in the second terminal:
 
 ```sh
-suffix="$(go env GOEXE)"
-"$run/agent-pulse-hub$suffix" stop
+cat "$run/events.jsonl"
 ```
 
-Wait for the daemon to exit. Stopping loses watches and pending events; restart
-and register again before publishing. Inspect leftover files if a run fails.
+Expect one JSON record containing `PULSE-DEMO-001`, the registered subscription
+ID, input name `manual`, and `external_data: true`. The permission notice states
+that external data grants no additional permissions. Event text cannot change
+the registered destination. The input consumes the trigger file; after it is
+gone, you can publish another distinct event using the same procedure.
+
+### Stop and recover
+
+From the second terminal, request shutdown:
+
+```sh
+"$run/agent-pulse-hub$suffix" stop --address 127.0.0.1:47831
+```
+
+Alternatively, press Ctrl+C in the first terminal. Wait for daemon exit and
+the configured-plugin exit diagnostics. Stopping loses registrations and
+queued events. To resume, inspect leftover trigger files, start the daemon
+again with the same configuration, and register again. Existing output records
+remain, but do not restore subscriptions.
+
+There is no automatic retry or plugin restart. An `unknown` delivery outcome
+may already have appended a record; inspect the output before deliberately
+publishing another event. Output acceptance does not promise crash durability.
+The output file contains the event text, so choose its contents and retention
+accordingly. See the [operation guide](docs/design/windows-operations.md) for
+detailed diagnostics and recovery.
 
 ## Writing plugins
 
-Implement the [plugin protocol v1](docs/design/plugin-v1.md) and add your executable
-to the [daemon configuration](docs/design/mvp.md#configuration-and-local-control).
+Implement an input or output role using [plugin protocol v2](docs/design/plugin-v1.md),
+including its standalone verification procedure, and add the program to the
+[daemon configuration](docs/design/mvp.md#configuration-and-local-control).
+The [model plugin profiles](docs/design/mvp.md#bundled-model-plugin-profiles)
+show the bundled behavior. The protocol document's filename is retained from
+v1; v1 plugins, the old `codex_executable` configuration, and session-based
+registration are incompatible. Replace matching programs and configuration
+together, then register again.
