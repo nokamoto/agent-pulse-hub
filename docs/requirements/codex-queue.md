@@ -62,8 +62,12 @@ registration skill, Codex-specific usage materials, and independent
 verification of the integration. All requirements below are required.
 
 Excluded are new external-service triggers, other agent integrations, new
-conversations, persistence, automatic retries, and changes to the MVP's common
-routing/lifecycle behavior. The model output is not replaced by Codex, and the
+conversations, plugin-owned hub persistence, automatic retries, and changes to
+the MVP's common routing/lifecycle behavior. Common configuration and
+registration persistence belongs to the separate
+[local state persistence extension](state-persistence.md), including
+registrations whose action is Codex Queue. This plugin does not restore queued
+or in-flight hub events. The model output is not replaced by Codex, and the
 service-free model-plugin walkthrough and end-to-end suite remain required.
 
 ## Use cases
@@ -82,7 +86,7 @@ service-free model-plugin walkthrough and end-to-end suite remain required.
 | FR-005 | Deliver event source, subscription identifier, and context to the registered existing Codex conversation using `codex queue`. Do not create a conversation or allow event content to change the recipient. While the conversation is working, enqueue without interrupting it or report that acceptance was not established. Acceptance must be confirmed for the requested conversation, separately from subsequent agent processing. |
 | FR-006 | Preserve one delivery attempt and no automatic retry. Report an attempt that cannot start as failed; when submission may have happened but target acceptance cannot be confirmed, report unknown rather than success. This includes interrupted or timed-out commands and missing, malformed, or mismatched acknowledgements. Preserve relevant plugin/subscription diagnostics without claiming that a queued message has been processed. |
 | FR-007 | Bundle a skill for registering the current top-level Codex conversation through the local client, selecting a configured trigger and its watch arguments and the Codex Queue action. Obtain conversation identity from the invoking conversation's environment; fail on missing, malformed, or inconsistent identity rather than selecting another conversation. Report registration success only after the client confirms it and returns a subscription identifier. Preserve uncertain registration outcomes and do not automatically retry. |
-| FR-008 | Supply Codex-specific usage instructions and configuration examples, including how to identify a compatible Codex executable, build/configure the action, register, trigger an event, observe the existing conversation's response, and stop. Explain queue acceptance versus processing, busy-conversation behavior, registration loss on shutdown, and no automatic retries. Make the registration skill discoverable from the plugin README. |
+| FR-008 | Supply Codex-specific usage instructions and configuration examples, including how to identify a compatible Codex executable, build/configure the action, register, trigger an event, observe the existing conversation's response, and stop. Explain queue acceptance versus processing, busy-conversation behavior, the applicable registration-loss or restoration contract under [state-persistence.md](state-persistence.md), no queued/in-flight hub event replay, and no automatic retries. Make the registration skill discoverable from the plugin README. |
 
 ## Nonfunctional requirements
 
@@ -153,3 +157,9 @@ and [the operations guide](../design/windows-operations.md) where integration,
 registration, or examples are affected. Delivery must add the plugin's usage
 materials and update the root README's entry points. Implementation and skill
 changes belong in their respective phase changes, separate from requirements.
+
+The [local state persistence extension](state-persistence.md) revises FR-008's
+shutdown-registration-loss explanation and clarifies the scope boundary above;
+its common restart policy applies to saved Codex destinations. These revised
+decisions need human approval with that extension. Actual Codex queue acceptance
+and conversation processing remain governed and independently verified here.
