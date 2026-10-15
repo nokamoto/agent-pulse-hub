@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"time"
 )
@@ -49,6 +50,15 @@ func main() {
 		}
 		row["destination_path"] = path
 		row["destination"] = json.RawMessage(value)
+	}
+	var holdListener net.Listener
+	if settings.Mode == "hold" {
+		holdListener, err = net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			fail(err)
+		}
+		defer holdListener.Close()
+		row["probe_address"] = holdListener.Addr().String()
 	}
 	encoded, err := json.Marshal(row)
 	if err != nil {
