@@ -100,16 +100,17 @@ func prepareMVPSuite(t mvpReporter) *mvpCaseEnv {
 	}
 	env := &mvpCaseEnv{root: root, workspace: workspace, fixture: filepath.Join(root, "cmd", "agent-pulse-hub", "testdata", "mvp-plugin.py"), buildTimes: make(map[string]time.Duration)}
 	for _, item := range []struct {
-		name   string
-		target *string
+		name        string
+		packagePath string
+		target      *string
 	}{
-		{name: "agent-pulse-hub", target: &env.hub},
-		{name: "manual-plugin", target: &env.manual},
-		{name: "model-output-plugin", target: &env.model},
+		{name: "agent-pulse-hub", packagePath: "./cmd/agent-pulse-hub", target: &env.hub},
+		{name: "manual-plugin", packagePath: "./plugins/triggers/manual", target: &env.manual},
+		{name: "model-output-plugin", packagePath: "./plugins/actions/model-output", target: &env.model},
 	} {
 		path := filepath.Join(workspace, item.name+exeSuffix())
 		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-		command := exec.CommandContext(ctx, "go", "build", "-o", path, "./cmd/"+item.name)
+		command := exec.CommandContext(ctx, "go", "build", "-o", path, item.packagePath)
 		command.Dir = root
 		started := time.Now()
 		output, buildErr := command.CombinedOutput()

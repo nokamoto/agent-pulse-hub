@@ -54,7 +54,7 @@ var (
 )
 
 var _ = BeforeSuite(func() {
-	root, err := filepath.Abs(filepath.Join("..", ".."))
+	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
 		Fail(fmt.Sprintf("resolve repository root: %v", err))
 	}
@@ -65,7 +65,7 @@ var _ = BeforeSuite(func() {
 	manualBinary = filepath.Join(manualSuiteDirectory, "manual-plugin"+manualExeSuffix())
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "go", "build", "-o", manualBinary, "./cmd/manual-plugin")
+	command := exec.CommandContext(ctx, "go", "build", "-o", manualBinary, "./plugins/triggers/manual")
 	command.Dir = root
 	started := time.Now()
 	output, err := command.CombinedOutput()
