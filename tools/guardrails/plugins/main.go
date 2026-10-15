@@ -56,7 +56,7 @@ func validateRepository(root string) []error {
 			}); err != nil {
 				violations = append(violations, fmt.Errorf("%s: missing implementation (nonempty non-test *.go directly in the plugin): %w", rel, err))
 			}
-			if err := nonemptyFile(filepath.Join(path, "readme.md")); err != nil {
+			if err := hasArtifact(path, func(name string) bool { return name == "readme.md" }); err != nil {
 				violations = append(violations, fmt.Errorf("%s: missing lowercase readme.md: %w", rel, err))
 			}
 			if err := hasArtifact(filepath.Join(path, "examples"), func(name string) bool { return strings.HasSuffix(name, ".json") }); err != nil {
