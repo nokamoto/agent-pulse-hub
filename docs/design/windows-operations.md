@@ -28,6 +28,11 @@ register an input watch and output destination, trigger recognizable context,
 observe the destination file, and stop. No live service, credentials, Codex
 installation, or coding-agent session is needed.
 
+For the separate Codex integration, use the
+[Codex Queue design and operating contract](codex-queue.md#configuration-and-operating-instructions).
+Its action, current-conversation skill and real-service delivery checks do not
+replace this model-only walkthrough or its evidence.
+
 The [governing MVP design](mvp.md) owns configuration, CLI, local control,
 registration identity, routing, and the model-plugin profiles.
 [Plugin protocol v2](plugin-v1.md) owns public role messages and framework

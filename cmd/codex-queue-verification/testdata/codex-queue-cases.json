@@ -1,0 +1,13 @@
+{
+  "suites": [
+    {
+      "package": "./cmd/codex-queue-verification",
+      "cases": [
+        "CQ-V01-DELIVER",
+        "CQ-V02-OUTCOMES",
+        "CQ-V03-REGISTER",
+        "CQ-V04-REGISTRATION-BOUNDARY"
+      ]
+    }
+  ]
+}

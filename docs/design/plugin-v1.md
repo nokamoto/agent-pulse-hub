@@ -143,6 +143,11 @@ An instance may reject arguments outside its own documented schema. The
 public contract contains no GitHub fields, Codex identifiers, or daemon-owned
 service-specific validation rules.
 
+The [Codex Queue action profile](codex-queue.md) defines its own destination
+schema, CLI queue acceptance and registration helper. It uses this unchanged
+output interface; Codex-specific fields remain inside destination arguments,
+and the helper uses the existing local registration client.
+
 ## Readiness and registration ordering
 
 Readiness has a ten-second deadline from launch, including negotiation,
