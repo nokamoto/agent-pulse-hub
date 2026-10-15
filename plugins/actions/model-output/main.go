@@ -6,10 +6,10 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
-	"github.com/nokamoto/agent-pulse-hub/internal/adapters/modeloutput"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprocess"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprotocol"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain"
+	"github.com/nokamoto/agent-pulse-hub/plugins/actions/model-output/internal/adapters/modeloutput"
 	"google.golang.org/grpc"
 )
 

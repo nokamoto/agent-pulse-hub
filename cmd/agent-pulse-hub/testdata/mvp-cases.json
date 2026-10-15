@@ -15,7 +15,7 @@
       ]
     },
     {
-      "package": "./cmd/manual-plugin",
+      "package": "./plugins/triggers/manual",
       "cases": [
         "MVP-V04-MANUAL-INVALID-CONTENT",
         "MVP-V02-MANUAL-PATHS"

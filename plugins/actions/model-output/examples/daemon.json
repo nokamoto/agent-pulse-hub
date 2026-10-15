@@ -1,0 +1,16 @@
+{
+  "plugins": [
+    {
+      "name": "manual",
+      "role": "input",
+      "executable": "<ABSOLUTE_MANUAL_EXECUTABLE>",
+      "args": []
+    },
+    {
+      "name": "model",
+      "role": "output",
+      "executable": "<ABSOLUTE_MODEL_OUTPUT_EXECUTABLE>",
+      "args": []
+    }
+  ]
+}

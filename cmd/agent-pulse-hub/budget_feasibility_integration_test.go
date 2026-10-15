@@ -47,13 +47,20 @@ func designBudgetCommonBuild(t *testing.T) {
 		return elapsed
 	}
 	var productBuild, suiteCompilation time.Duration
-	for _, command := range []string{"agent-pulse-hub", "manual-plugin", "model-output-plugin"} {
-		elapsed := run("build", "-o", filepath.Join(directory, command+".exe"), "./cmd/"+command)
+	for _, item := range []struct{ name, packagePath string }{
+		{name: "agent-pulse-hub", packagePath: "./cmd/agent-pulse-hub"},
+		{name: "manual-plugin", packagePath: "./plugins/triggers/manual"},
+		{name: "model-output-plugin", packagePath: "./plugins/actions/model-output"},
+	} {
+		elapsed := run("build", "-o", filepath.Join(directory, item.name+exeSuffix()), item.packagePath)
 		productBuild += elapsed
 	}
-	for _, command := range []string{"agent-pulse-hub", "manual-plugin"} {
+	for _, item := range []struct{ name, packagePath string }{
+		{name: "agent-pulse-hub", packagePath: "./cmd/agent-pulse-hub"},
+		{name: "manual-plugin", packagePath: "./plugins/triggers/manual"},
+	} {
 		// Compile only; nested execution would recursively repeat this probe.
-		suiteCompilation += run("test", "-c", "-tags=integration", "-o", filepath.Join(directory, command+"-suite.exe"), "./cmd/"+command)
+		suiteCompilation += run("test", "-c", "-tags=integration", "-o", filepath.Join(directory, item.name+"-suite"+exeSuffix()), item.packagePath)
 	}
 	estimate := productBuild + suiteCompilation
 	t.Logf("three actual command builds=%s; tagged suite compilation=%s; measured common setup=%s against 20s reserve; cold caches and dependency setup unmeasured", productBuild, suiteCompilation, estimate)
