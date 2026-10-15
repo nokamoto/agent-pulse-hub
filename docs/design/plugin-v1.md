@@ -117,8 +117,10 @@ Every application message has `version` and `type`, plus the following fields.
 The listed direction and role are mandatory. Request IDs are unique within
 an instance lifetime, including across operation types. Request, subscription,
 and delivery IDs are opaque strings; recipients echo them without parsing or
-normalization. The daemon generates these IDs without deliberate reuse across
-runs. A plugin does not manufacture them.
+normalization. The daemon generates fresh IDs for new operations and routes.
+[Local persistence](state-persistence.md) deliberately restores subscription
+IDs across daemon runs; request and delivery IDs remain fresh. A plugin does
+not manufacture them.
 
 | Direction / role / type | Additional fields | Meaning |
 | --- | --- | --- |
@@ -190,11 +192,16 @@ Each plugin sends exactly one matching result. Distinct concurrent requests
 may complete in any order. Rejection has `accepted:false` and an `error`;
 success forbids `error`. The input completes sending its positive result before
 sending the first event, even if the watched condition is already true. The
-daemon processes acceptance and activates the route before the next message
-on that input stream, provided the validated output is still available. Client
+daemon processes acceptance and commits the registration to local storage
+before activating it and processing the next message on that input stream,
+provided both plugins remain available. The
+[local persistence design](state-persistence.md#commit-and-activation) owns the
+save decision. During startup every saved route must be accepted before the
+hub opens its registration/event gate; earlier events are discarded, not buffered. Client
 receipt of registration success is not a prerequisite for event emission.
 
-If the output becomes unavailable after the watch request has been issued,
+If saving fails, or the output becomes unavailable after the watch request has
+been issued,
 registration cannot become active. An already accepted or uncertain watch
 may continue until input shutdown, but its route is an inactive tombstone:
 no event is delivered and no registration reuses it. The governing design owns
@@ -298,8 +305,10 @@ MVP defines the boundary without claiming a future plugin's integration success.
 Replace version 1 input-only executables and Codex-specific registration
 arguments together with the revised daemon/client. The document path remains
 stable, but the service, cookie, role selection, and payload version change.
-There is no dual-interface support, persistence migration, or restored
-subscription state. Unsupported framework/application versions fail visibly.
+There is no dual-interface support or migration of registrations that an older
+nonpersistent daemon never saved. Saved-state compatibility and restoration
+follow [local persistence](state-persistence.md); the v2 wire format is unchanged.
+Unsupported framework/application versions fail visibly.
 An incompatible future interface requires a distinct version.
 
 [MVP verification](mvp.md#verification-strategy) governs case IDs and paths.
@@ -315,7 +324,7 @@ in integration tests.
 | Sequential destination/watch acceptance, immediate event, concurrent and duplicate results | No active route before both accept; no result/event race; foreign or late correlations never activate or retarget a route. |
 | Destination rejection and output loss after watch dispatch | No active registration or delivery; accepted orphan watches remain inactive and consume governed capacity until shutdown. |
 | Delivery correlation, rejection, unknown acceptance, real deadline | Exactly one attempt; invalid result never establishes success; timeout is unknown and isolates output; no retry/restart. |
-| Event ownership, plugin failures, duplicate registration, restart | Registered recipient is fixed; unavailable routes reject new events; separate available routes continue; equivalent active registration keeps its ID; old IDs fail after restart. |
+| Event ownership, plugin failures, duplicate registration, restart | Registered recipient is fixed; unavailable routes reject new events; separate available routes continue; equivalent active registration keeps its ID; saved IDs survive restart only after current plugin acceptance and complete startup restoration. |
 | Independent-language replacements for each role | Both executables can be substituted without daemon code changes; registration and routing succeed through public interfaces. |
 | Actual bundled model pair and standalone boundary | Ordinary trigger/observation interfaces establish hub routing; standalone callers can exercise either role without a daemon or another service. |
 

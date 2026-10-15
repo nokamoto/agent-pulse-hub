@@ -36,8 +36,9 @@ replace this model-only walkthrough or its evidence.
 The [governing MVP design](mvp.md) owns configuration, CLI, local control,
 registration identity, routing, and the model-plugin profiles.
 [Plugin protocol v2](plugin-v1.md) owns public role messages and framework
-lifecycle. This guide derives its procedures from those contracts and adds no
-independent wire interface. The stable path `windows-operations.md` is retained;
+lifecycle. [Local persistence](state-persistence.md) owns storage format,
+selection, exclusion, commit and restoration. This guide derives its
+procedures from those contracts and adds no independent wire interface. The stable path `windows-operations.md` is retained;
 the procedures do not select an operating system or support matrix.
 
 The maintainer runs the clean-build README walkthrough during delivery and
@@ -65,6 +66,7 @@ import datetime
 import json
 import pathlib
 import platform
+import shutil
 import subprocess
 import tempfile
 import time
@@ -118,6 +120,7 @@ trigger = run / "trigger.txt"
 destination_a = run / "destination-a.jsonl"
 destination_b = run / "destination-b.jsonl"
 config_path = run / "config.json"
+state_dir = pathlib.Path(str(config_path) + ".state")
 watch_path = run / "watch.json"
 destination_path = run / "destination.json"
 config = {"plugins": [
@@ -130,6 +133,7 @@ destination_path.write_text(json.dumps({"output_file": str(destination_a)}),
     encoding="utf-8")
 assert not trigger.exists()
 assert not destination_a.exists() and not destination_b.exists()
+print("Configuration:", config_path, "Default registration state:", state_dir)
 print("Watch:", watch_path, "Destination arguments:", destination_path)
 print("A:", destination_a, "Unregistered B:", destination_b)
 ```
@@ -146,8 +150,14 @@ Load `plugins/actions/model-output/examples/destination.json`, replace
 `<ABSOLUTE_OUTPUT_FILE>` with `str(destination_a)`, and serialize it to
 `destination_path`. Replace complete string values, not raw JSON text. Retain
 the source paths and resulting JSON as evidence, then use these same three
-runtime files in every subsequent step. Stop if comparison or materialization
-fails; do not fall back to the directly generated files for delivery evidence.
+runtime values throughout the walkthrough, including removal and rematerialization
+of client argument files in step 7. Stop if comparison or materialization fails; do not fall back to the directly generated files for delivery evidence.
+
+The daemon defaults to the cleaned absolute configuration pathname plus
+`.state`. An explicit `--state-dir <absolute-directory>` selects another
+dedicated local tree; its parent must exist. Reuse the same configuration and
+state for restart. Different control addresses do not allow sharing one state
+tree. Do not edit or copy live state; normal shutdown releases its `.lock/`.
 
 The model input requires an absent absolute `trigger_file` in an existing
 writable directory. It compares lexically cleaned paths by exact string,
@@ -167,11 +177,13 @@ fsync durability or crash recovery.
 ## 3. Start and inspect readiness
 
 ```python
-def start_daemon():
+def start_daemon(selected_state=None):
     log_path = run / ("daemon-" + uuid.uuid4().hex + ".jsonl")
     sink = log_path.open("xb")
     argv = [str(hub), "daemon", "--config", str(config_path),
             "--address", address]
+    if selected_state is not None:
+        argv += ["--state-dir", str(selected_state)]
     print(json.dumps(argv))
     try:
         handle = subprocess.Popen(argv, cwd=repo, stderr=sink)
@@ -188,8 +200,9 @@ print("Daemon status (None means running):", daemon.poll())
 ```
 
 Repeat the last two inspection lines until the same daemon is still running,
-both `manual` input and `model` output are ready, and registration is
-available. Use observable readiness rather than a fixed startup sleep. A
+both `manual` input and `model` output are ready, and `daemon_ready` reports
+`restored_registrations: 0` for this fresh state directory. Use observable
+readiness rather than a fixed startup sleep. A
 missing executable, handshake/role mismatch, or unavailable model plugin
 stops this walkthrough; preserve diagnostics. Starting and waiting request
 no destination work. Readiness is distinct from destination registration.
@@ -219,8 +232,9 @@ assert not trigger.exists() and not destination_a.exists()
 print("Active subscription:", subscription)
 ```
 
-Success appears only after the output accepts destination arguments and the
-input accepts the watch. No destination is inferred. Retain both CLI results
+Success appears only after the output accepts destination arguments, the
+input accepts the watch, and local registration storage commits successfully.
+No destination is inferred. Retain both CLI results
 and plugin acceptance diagnostics. Repetition returns the same active ID and
 adds no watch or delivery. Registration does not create an event or write the
 output file. An error or lost response is not success; explicit identical
@@ -231,7 +245,19 @@ Changing output plugin or destination arguments creates a different
 registration identity. It does not retarget an existing subscription. The
 model input rejects another independent watch of the same cleaned trigger
 path; choose a fresh trigger when deliberately registering a different route.
-Do not register B in this walkthrough.
+Do not register B in this walkthrough. Inspect the committed record without
+requiring the client argument files to remain present:
+
+```python
+saved_path = state_dir / "registrations" / (subscription + ".json")
+saved = json.loads(saved_path.read_text(encoding="utf-8"))
+assert saved["version"] == 1 and saved["subscription_id"] == subscription
+assert saved["input_plugin"] == "manual" and saved["output_plugin"] == "model"
+assert saved["watch_args"] == {"trigger_file": str(trigger)}
+assert saved["destination_args"] == {"output_file": str(destination_a)}
+assert len(list((state_dir / "registrations").glob("*.json"))) == 1
+print("Saved registration:", saved_path, "ID:", subscription)
+```
 
 ## 5. Observe idle behavior and publish one event
 
@@ -341,6 +367,9 @@ event, never an automatic retry.
 ## 7. Stop, restart, and interrupt
 
 ```python
+watch_path.unlink()
+destination_path.unlink()
+assert saved_path.is_file()
 stop_argv = [str(hub), "stop", "--address", address]
 print(json.dumps(stop_argv))
 stop_result = subprocess.run(stop_argv, cwd=repo, text=True,
@@ -363,10 +392,12 @@ state in the evaluated source. Stream close or daemon exit alone is insufficient
 A 30-second observation timeout is incomplete shutdown evidence; preserve the
 process handle and log, and do not call forced termination normal shutdown.
 
-Shutdown loses registrations and queued events. An unconfirmed interrupted
-delivery is unknown. There is no per-subscription unsubscribe, delivery retry,
-or automatic plugin restart. Existing output records remain ordinary files;
-they do not restore subscriptions.
+Normal shutdown retains committed registrations and releases state exclusion.
+Queued/in-flight events and incomplete registrations are not restored; an
+unconfirmed interrupted delivery is unknown. There is no per-subscription
+unsubscribe, delivery retry, automatic plugin restart, stopped-event collection,
+or forced-termination/power-loss recovery guarantee. Output records remain
+separate ordinary files; registration state establishes restoration.
 
 Inspect the trigger and any claimed paths in diagnostics, preserving leftovers
 before reuse. Restart the same configuration:
@@ -378,12 +409,15 @@ print(daemon_log.read_text(encoding="utf-8"))
 print("Daemon status (None means running):", daemon.poll())
 ```
 
-Inspect both role readiness and registration availability again as in step 3.
-Then register and publish a distinct marker, retaining the existing A records:
+Inspect both role readiness and `daemon_ready` again as in step 3; this time
+`restored_registrations` must be one. Restoration revalidates both plugin
+arguments and fails startup if any saved route cannot be restored. Do not
+re-register before publishing this distinct marker. The original client
+argument files remain absent and existing A records are retained:
 
 ```python
-subscription = register_once()
-assert subscription != old_subscription
+assert not watch_path.exists() and not destination_path.exists()
+assert subscription == old_subscription
 before = output_records(destination_a)
 context = "PULSE-MODEL-002"
 published = publish_event(context)
@@ -398,8 +432,27 @@ print(json.dumps(record, ensure_ascii=False))
 print(daemon_log.read_text(encoding="utf-8"))
 ```
 
-The CI restart case verifies explicit old-ID rejection; this walkthrough
-observes the required new registration and retained output file.
+Now rematerialize the argument files and explicitly repeat the equivalent
+registration. This returns the saved ID without adding a watch or record.
+Publish another distinct event and observe one additional A record:
+
+```python
+watch_path.write_text(json.dumps(saved["watch_args"]), encoding="utf-8")
+destination_path.write_text(json.dumps(saved["destination_args"]), encoding="utf-8")
+assert register_once() == old_subscription
+assert len(list((state_dir / "registrations").glob("*.json"))) == 1
+before = output_records(destination_a)
+context = "PULSE-MODEL-003"
+published = publish_event(context)
+records = wait_for_records(len(before) + 1)
+assert records[-1]["subscription_id"] == old_subscription
+assert records[-1]["context"] == context and not destination_b.exists()
+print(json.dumps(records[-1], ensure_ascii=False))
+```
+
+The persistence CI cases verify saved-ID restoration and duplicate behavior;
+MVP-V05-RESTART separately verifies loss of volatile queued/in-flight/pending
+work. These operator observations do not replay or retry any earlier event.
 
 Use the restarted live daemon for a separate foreground-interruption check.
 In the same terminal holding the Python interpreter and attached daemon,
@@ -429,6 +482,67 @@ The stop and interruption paths enter the same shutdown coordinator; retain
 source evidence and both run transcripts. No descendant-process termination
 check is required.
 
+## 8. Demonstrate deliberate saved-state recovery
+
+After the interrupt run has exited and both plugins have stopped, preserve the
+valid state and exercise a separate copied tree. This changes no live state.
+The copied malformed record must fail startup without `daemon_ready`; do not
+remove or silently skip the route. Restore the preserved bytes before retrying:
+
+```python
+assert daemon.poll() == 0 and not (state_dir / ".lock").exists()
+recovery_state = run / "recovery-state"
+shutil.copytree(state_dir, recovery_state)
+recovery_record = recovery_state / "registrations" / saved_path.name
+preserved_record = recovery_record.read_bytes()
+recovery_record.write_bytes(b"{")
+failed_daemon, failed_sink, failed_log = start_daemon(recovery_state)
+assert failed_daemon.wait(timeout=30) == 1
+failed_sink.close()
+failure = failed_log.read_text(encoding="utf-8")
+print("Expected failed startup:", failure)
+assert "daemon_ready" not in failure
+assert not (recovery_state / ".lock").exists()
+assert recovery_record.read_bytes() == b"{"
+recovery_record.write_bytes(preserved_record)
+daemon, daemon_sink, daemon_log = start_daemon(recovery_state)
+print(daemon_log.read_text(encoding="utf-8"))
+```
+
+Confirm the failure identifies the affected file and parse reason. Repeat the
+step 3 readiness inspection until `daemon_ready` reports one restored route.
+Then verify recovery with a new event, without registration:
+
+```python
+before = output_records(destination_a)
+context = "PULSE-MODEL-RECOVERED"
+published = publish_event(context)
+records = wait_for_records(len(before) + 1)
+assert records[-1]["subscription_id"] == old_subscription
+assert records[-1]["context"] == context and not destination_b.exists()
+print(json.dumps(records[-1], ensure_ascii=False))
+stop_result = subprocess.run(stop_argv, cwd=repo, text=True,
+    encoding="utf-8", capture_output=True)
+assert stop_result.returncode == 0 and json.loads(stop_result.stdout) == {"ok": True}
+assert daemon.wait(timeout=30) == 0
+daemon_sink.close()
+assert not (recovery_state / ".lock").exists()
+print(daemon_log.read_text(encoding="utf-8"))
+```
+
+Retain configured-plugin exit evidence, storage paths, failure and repaired
+record identity, unchanged destination and output. For other failures, stop all
+owners and preserve the entire state tree before repair. Restore a valid
+record/configuration or deliberately remove a selected saved registration
+while stopped; removal is an administrative decision, not automatic salvage.
+An existing manual trigger prevents restoration: inspect/archive that file and
+any claims deliberately before retrying. No stopped event is collected.
+
+A leftover `.lock/` after abnormal termination requires confirming that no
+daemon still owns the tree, preserving state, then removing only that marker
+while all owners are stopped. Never steal a live lock or infer safety from a
+PID/timeout. This procedure adds no forced-termination recovery guarantee.
+
 ## Failures, retention, and verification boundaries
 
 | Observation | Meaning and operator action |
@@ -440,7 +554,10 @@ check is required.
 | Invalid trigger encoding/size or claim/read/remove failure | No event is emitted for that file. Inspect the claimed path and preserve leftovers before a new publication; no claim retry occurs. |
 | Output open failure before writing | The plugin reports `failed`; no retry occurs. Correct the destination before deliberately publishing a distinct event. |
 | Output write/close failure or lost confirmation | Outcome is `unknown`; inspect A before another trigger because a record may already be present. |
-| Plugin timeout, transport failure, or exit | Affected routes become unusable; separate available routes continue. Recovery by daemon restart loses every registration. |
+| Plugin timeout, transport failure, or exit | Affected routes become unusable; separate available routes continue. Saved registrations remain; restart revalidates every saved route and fails if any cannot be restored. |
+| Saving failure (`storage_error`) | No active or saved new route; an accepted watch stays inert until input exit. Preserve diagnostics, correct storage while stopped and restart deliberately. |
+| Invalid/unreadable state or rejected saved arguments | Entire startup fails; preserve state and repair the reported file/plugin condition while stopped, then retry the same configuration/state. |
+| Existing state lock | Another owner or a leftover marker blocks startup even at a different address; use the offline recovery procedure above. |
 | Stop response without complete exits | Shutdown evidence is incomplete. Retain the process/logs within the declared observation bound. |
 
 Context is external data and grants no new permissions. The daemon uses bounded,
@@ -449,12 +566,16 @@ Context is intentionally visible in the model output file. Operators own
 retention of trigger files, destinations, and evidence logs; stop the daemon
 before removing run files and omit sensitive data from public evidence.
 
+Unqualified requirement and acceptance IDs below belong to MVP; the persistence
+row refers to [state-persistence requirements](../requirements/state-persistence.md).
+
 | Requirement / acceptance | Evidence allocation |
 | --- | --- |
 | FR-001, FR-004, C-001; AC-001 | Actual model-role startup and standard configured-process shutdown; command integration plus the walkthrough. |
 | FR-002, FR-007; AC-002, AC-010 | Ordinary registration and repeated active ID, one watch/attempt; rejection and changed-destination matrices use the governed CI cases and unit tests. |
 | FR-003, FR-004, FR-008; AC-003 | Actual model trigger and output file, exact source/ID/context, A/B isolation and attempted retargeting through external content. |
-| FR-006; AC-004, AC-005 | Governed CI failure/old-ID cases; walkthrough loss-of-state, deliberate recovery, and failure/no-retry instructions. |
+| FR-006; AC-004, AC-005 | Governed CI failure/volatile-work cases; walkthrough saved-ID restoration, deliberate recovery, and failure/no-retry instructions. |
+| Persistence FR-001–FR-007, NFR-001; AC-001–AC-006 | SP-D01 extends D09/BUNDLE-D01 with storage inspection, argument-file independence, same-ID restart and failed-startup recovery. CI/unit evidence remains separate. |
 | NFR-001; AC-006 | Declared idle interval, zero delivery requests and destination records, source inspection, correlated receipt/attempt/observation times. |
 | NFR-003; AC-008 | Local client registration and visible external-data/permission fields in output. |
 | NFR-004, NFR-005; AC-009 | Maintainer executes the clean-build README usage case with ordinary programs during delivery and retains complete evidence. |
@@ -468,9 +589,11 @@ feasibility results do not establish implemented routing or completed delivery.
 
 For malformed or partial output, stop the daemon and await configured-plugin
 exits. Preserve the damaged file and inspect trigger/claim leftovers. Choose
-fresh absent output and trigger paths in an existing writable directory, write
-those paths into the destination and watch argument files using JSON
-serialization, then restart and register. Publish only a deliberately chosen
+to archive the damaged output and restore valid destination conditions at its
+saved path, or deliberately remove the affected saved registration from a
+preserved stopped state tree before selecting fresh paths and registering a
+new route. Restore trigger absence as required. Follow the persistence recovery
+contract rather than editing live state. Publish only a deliberately chosen
 subsequent distinct event; this procedure does not retry the uncertain event
 or repair its output. An `unknown` outcome can also leave a complete valid
 record, so inspect it before deciding whether damaged-file recovery applies.
@@ -481,9 +604,13 @@ Stop the daemon and wait for plugin exits before replacing binaries. Build the
 manual trigger from `./plugins/triggers/manual` and model-output action from
 `./plugins/actions/model-output`; the former `cmd/` plugin build paths are
 removed. Binary output names and public v2 contracts remain compatible. Update
-configured executable paths only if the build outputs move, then start and
-register again. Inspect leftover triggers and output records before recovery.
-Rollback uses the prior revision and its source paths; it cannot undo output.
+configured executable paths only if the build outputs move, then reuse the
+same state and restore saved routes. Adoption from an older nonpersistent daemon
+requires one initial registration because it never saved those routes. Inspect
+leftover triggers and output records before recovery.
+Rollback uses the prior revision and its source paths; a nonpersistent binary
+requires registration again and does not maintain the newer state. Preserve
+that state separately. Rollback cannot undo output.
 
 Each plugin supplies `examples/daemon.json`; manual supplies `examples/watch.json`
 and model-output supplies `examples/destination.json`. These contain explicit

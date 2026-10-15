@@ -27,8 +27,9 @@ requested service-specific operations and report results or events; an input
 plugin continues a requested watch until shutdown. This C-002 boundary also
 applies to future extensions without defining additional features here.
 
-Retain memory-only subscriptions and queues, one delivery attempt, no automatic
-plugin restart, no individual cancellation and the other MVP exclusions.
+Persist accepted subscriptions under the [local persistence design](state-persistence.md);
+retain memory-only queues, one delivery attempt, no automatic plugin restart,
+no individual cancellation and the other MVP exclusions.
 Actual Codex integration and its registration skill are outside this contract.
 Use `hashicorp/go-plugin` v1.8.0, gRPC v1.84.0 and protobuf v1.36.12 for both
 roles. Product code and contracts remain OS neutral; dependency internals may
@@ -46,6 +47,7 @@ relocation without changing the runtime contracts below.
 | Document | Readers and purpose | Authority |
 | --- | --- | --- |
 | This document | System implementers and maintainers | Architecture, configuration, registration, state, model-plugin profiles, routing, verification and migration. |
+| [Local persistence](state-persistence.md) | System implementers and maintainers | Registration storage, selection, exclusion, commit, restoration and persistence verification. |
 | [Plugin protocol](plugin-v1.md) | Plugin authors in any language and adapter implementers | Version 2 application service, schemas, bounds, ordering and framework lifecycle, derived from this design. Its stable filename does not select the wire version. |
 | [Operation guide](windows-operations.md) | Operators and delivery evaluators | Derivative build/start/register/trigger/observe/stop procedure for the model plugins; the stable path does not restrict the operating system. |
 
@@ -90,14 +92,19 @@ interpreted. Validate the complete configuration, including executable
 existence, then reserve the control listener before launching any plugin.
 Invalid configuration or listener failure is fatal; individual startup failure
 makes that instance unavailable while other instances continue. Report all
-configured startup results before opening registration admission. The public
+configured startup results, then restore every saved registration before opening
+registration or event admission. The persistence design governs complete-set
+validation and failure cleanup; any failed restoration fails startup. Report
+`daemon_ready` with `restored_registrations` count only after that barrier. The public
 protocol's ready role must match configuration. No Codex version probe occurs.
 
 Use TCP on literal IPv4 loopback, default `127.0.0.1:47831`. All hub subcommands
 accept `--address 127.0.0.1:<port>`, port 1–65535. Reject hostnames, wildcard,
 non-loopback and port zero before connect/listen. A second daemon on the same
 address fails before starting plugins. Different addresses are independent
-instances; no global singleton guarantee is supplied. Local processes may
+instances when they use different state directories; the same state directory
+has an exclusive owner even across different addresses. No global singleton
+guarantee is supplied. Local processes may
 register or stop the daemon; loopback is not authentication or user isolation.
 
 One connection carries one newline-terminated strict JSON request and response,
@@ -132,6 +139,7 @@ decoded UTF-8 bytes. Any applicable code suffices when multiple fields fail.
 | `destination_rejected` | Output plugin rejects the destination arguments. |
 | `watch_rejected` | Input plugin rejects the watch arguments. |
 | `resource_exhausted` | Capacity or encoded message bound exceeded. |
+| `storage_error` | Accepted registration could not be saved; no active subscription is established. |
 
 Transport failure need not return JSON. A missing/invalid response after a
 possible commit is uncertain. An explicit identical registration may resolve
@@ -147,7 +155,7 @@ falling back to a different endpoint.
 
 | Package / command | Invocation and effect |
 | --- | --- |
-| `cmd/agent-pulse-hub` | `daemon --config <absolute JSON file> [--address <address>]` runs in foreground. Ctrl+C and local stop share shutdown. |
+| `cmd/agent-pulse-hub` | `daemon --config <absolute JSON file> [--state-dir <absolute directory>] [--address <address>]` runs in foreground. Ctrl+C and local stop share shutdown. |
 | Same command | `register --input-plugin <name> --watch-args-file <absolute JSON file> --output-plugin <name> --destination-args-file <absolute JSON file> [--address <address>]` registers a route. |
 | Same command | `stop [--address <address>]` requests normal shutdown. |
 | `plugins/triggers/manual` | No arguments; manual trigger (public input role) launched through go-plugin. |
@@ -165,6 +173,9 @@ input/transport failure writes bounded stderr, no success JSON, and exits one;
 possible committed requests are reported as uncertain. Daemon stdout is unused;
 stderr carries diagnostics. Fatal startup exits one, normal shutdown zero.
 Registration needs no skill, environment-discovered identity or coding agent.
+The optional absolute state directory defaults to the cleaned absolute config
+pathname plus `.state`. Reuse the same configuration and state on restart;
+[local persistence](state-persistence.md) defines ownership and offline recovery.
 
 ## Plugin lifecycle and registration state
 
@@ -177,7 +188,8 @@ a launch guard, not authentication. No custom process containment is added.
 
 Registry entries contain input/output instance identities, subscription ID,
 watch/destination argument objects and pending/active/inactive state. Generate
-opaque random IDs without deliberate reuse across runs. The duplicate key is
+opaque random IDs for new routes; restoration deliberately retains saved
+subscription IDs while creating fresh request and delivery IDs. The duplicate key is
 both configured plugin names and both canonical argument objects: object order
 ignored, array order retained, numbers compared by exact decimal value without
 floating-point rounding. Active equivalent requests return the same ID without
@@ -196,9 +208,13 @@ For a new route:
    pending state. The input must finish sending its positive result before
    sending an event for that watch.
 4. Process that positive result in stream order. If both instances remain
-   available, activate the route before processing its next event and return
-   success. Response loss does not roll back activation. If either is already
-   unavailable, fail the registration and do not activate it.
+   available, commit the complete registration to local storage, activate before
+   processing the next event and return success. Commit and activation serialize
+   with stop and plugin-unavailability decisions. Saving failure returns
+   `storage_error`, preserves an inactive watch and never activates an unsaved
+   route. Do not kill a healthy shared input for storage failure. Response loss
+   after commit does not roll back the saved route. See
+   [commit and activation](state-persistence.md#commit-and-activation).
 
 Destination validation does not guarantee later access or delivery. Input
 watches cannot be individually cancelled. If output failure races an issued
@@ -206,7 +222,8 @@ watch or invalidates an active route, retain an inactive entry while that input
 instance lives; discard its later events. This inert watch and its capacity
 slot last until input exit or daemon shutdown. Do not kill a healthy shared
 input solely to clean it up. Same-argument registration does not reuse an
-inactive ID and can be rejected by the input's resource-conflict rule. Restart
+inactive ID and can be rejected by the input's resource-conflict rule. Saved successful routes remain on disk when live entries become inactive or
+are removed; restart revalidates them with both plugins. Restart
 is the recovery boundary; there is no hidden rollback or automatic restart.
 Negative watch results free their slots because no watch exists.
 
@@ -220,7 +237,8 @@ activate or redirect a route.
 
 ## Admission, delivery and shutdown
 
-Capacity is 1,024 pending/active/inactive retained entries and 128 total queued
+Capacity is 1,024 retained saved or live pending/active/inactive entries,
+counting each ID once, and 128 total queued
 or in-flight events. Reject unknown, foreign-input, inactive or post-exit events,
 invalid/empty context and capacity overflow. Context is at most 8,192 decoded
 UTF-8 bytes. Before admission, ensure the complete encoded output message fits
@@ -255,10 +273,12 @@ change a final outcome. Admitted events survive input exit with their captured
 recipient; output exit makes not-yet-attempted deliveries fail. New events on
 any affected route are rejected. Other available routes remain usable.
 
-Normal stop closes admission/listener, discards queued events with reasons,
+Normal stop closes admission/listener, prevents new commits and waits for an
+already serialized commit decision. Saved registrations survive; pending
+registrations do not resume. Stop discards queued events with reasons,
 marks a possibly sent in-flight delivery unknown, cancels Sessions and calls
 `Client.Kill` for every started or partially started client. Await configured
-clients and record their `Exited` states. There is no application shutdown RPC,
+clients and record their `Exited` states, then release state exclusion. There is no application shutdown RPC,
 product grace timer or descendant enumeration. Stop and Ctrl+C enter the same
 coordinator. CI exercises public stop and unit interrupt dispatch; delivery
 observes a foreground interrupt with configured-process exit evidence.
@@ -323,7 +343,7 @@ Its retention and removal are operator responsibilities.
 | Stateless destination validation before watch | Input-first can start watches for rejected destinations; transactional reservation/cancellation would add excluded lifecycle complexity. A later output failure can leave bounded inert watches. |
 | Destination arguments captured by daemon and sent per delivery | Output-owned routing tables duplicate core control and need cleanup transactions. Larger messages cost repeated encoding but leave service identity opaque. |
 | File input and append-only local output | Live agents/services prevent independent core E2E; stdout is reserved by framework negotiation and is less useful as a selected destination. File output needs single-writer discipline. |
-| Loopback TCP, bounded memory and one delivery worker | Authentication/persistence/parallelism add excluded guarantees. Local callers are trusted; slow delivery delays later events and failures may lose work. |
+| Loopback TCP, bounded memory and one delivery worker | Authentication and parallelism add excluded guarantees; local registration persistence is governed separately. Local callers are trusted; slow delivery delays later events and failures may lose work. |
 
 ## Requirement coverage
 
@@ -337,12 +357,12 @@ that any future service plugin works.
 | FR-001, C-001 | AC-001, AC-007 | Both-role config/lifecycle; V01 invalid-config/shutdown, V02 alternate-language roles, structural inspection. |
 | FR-002 | AC-002 | Two-stage registration and role checks; V02 register, V08 local-control, unit validation matrix. |
 | FR-003, FR-004, FR-008 | AC-003 | Actual model input/output route to file A; V03 context/source/ID and recipient-in-context isolation. |
-| FR-006 | AC-004, AC-005 | V04 malformed/foreign events, rejection/unknown, exits of each role and unaffected route; V05 restart; unit failure matrices. |
+| FR-006 | AC-004, AC-005 | V04 malformed/foreign events, rejection/unknown, exits of each role and unaffected route; V05 volatile-work restart; unit failure matrices. |
 | FR-007 | AC-010 | V10 equivalent registration, changed output/destination and distinct repeated events; V04 rejection/no retry. |
 | NFR-001 | AC-006 | V03 idle zero requests/output, receipt/attempt/observation chronology and source inspection. |
 | NFR-002, C-002 | AC-007 | Both-role language-neutral protocol, V02 replacement and source responsibility inspection. |
 | NFR-003 | AC-008 | V08 local client, V03 external-data/permission payload, protocol and source inspection. |
-| NFR-004 | AC-005, AC-009 | Operating guide, V05 state loss, D09 clean-build README walkthrough. |
+| NFR-004 | AC-005, AC-009 | Operating guide, V05 volatile-work loss, D09/SP-D01 restoration walkthrough. |
 | NFR-005 | AC-009, AC-011 | Actual model E2E and independent plugin-host boundary below; D09 normal usage without services. |
 
 ## Verification strategy
@@ -398,7 +418,7 @@ case cleanup; setup/compilation and suite cleanup have separate reserves below.
 | `MVP-V03-ROUTE` | Actual hub/client/manual/model-output. Register A twice: same ID. Declare one-second idle: zero delivery requests and no A/B record. Publish context containing `PULSE-ROUTE` and text naming B/output R through normal sibling rename. Exactly one A JSONL record preserves source, ID, full context and external-data/permission fields; B absent. Trigger/claim removed. Retain receipt/attempt/observed times and source evidence of no idle work. | Complete normal model E2E, real observation interface. 6 s / 4. |
 | `MVP-V04-INVALID-EVENT` | P->O and Q->R routes. P sends malformed JSON, unknown ID, Q's ID then valid event: only valid delivers. Exit P: new P registrations/events fail, Q->R still works. Exit O with an additional Q->O route active: new events on it rejected, Q->R still works. Logs name affected role/instance/subscription; no restart. | Stream recovery, source binding, both-role failure isolation. 8 s / 6. |
 | `MVP-V04-DELIVERY-OUTCOME` | Output returns failed for one event, unknown for another, then holds a third beyond the actual 30-second deadline. Exactly one request per event; failures and unknowns recorded distinctly, timeout makes output unavailable and is unknown. No retry; standard cleanup observes configured output exit. | Result/timeout wire behavior; all outcome parsing matrices unit. 35 s / 4. |
-| `MVP-V05-RESTART` | Register, stop, restart same config; controlled input emits old ID then newly registered ID to actual model output. Old rejected; new delivered once with different ID. | Daemon lifetime and state loss. 5 s / 4. |
+| `MVP-V05-RESTART` | Completed saved route plus held in-flight delivery, queued event and incomplete registration; normal stop and restart. No old delivery attempt or pending registration resumes; a new event uses the restored ID. The [persistence design](state-persistence.md#ci-acceptance-cases) supplies exact fixtures and assertions. | Process-boundary loss of volatile work with retained registrations. 10 s / 6 under the separate persistence scoped budget. |
 | `MVP-V10-DUPLICATE` | Lose first client response while result gated; two concurrent equivalent registrations share validation/watch and ID. Explicit repeat returns same ID. Change destination args, then output name: distinct IDs and original recipient retained (fixture accepts multiple watches). Two identical events on original route yield two delivery IDs in admission order, one request each. | Concurrency/response loss and routing key wiring. 8 s / 6. |
 | `MVP-V01-SHUTDOWN` | Start both real model plugins. Public stop acknowledges; listener closes; daemon exits zero and configured-client exit records confirm each process stopped. Host awaits children. | Standard lifecycle wiring; interrupt dispatch unit, foreground interrupt D09. 8 s / 4. |
 | `MVP-V08-LOCAL-CONTROL` | Register over loopback; second daemon same address fails before plugin startup. First still accepts fresh registration/event. Non-loopback address rejected before connect/listen. | Bind exclusivity/client wiring; address matrix unit. 5 s / 5. |
@@ -476,9 +496,11 @@ suite compilation within the existing setup reserve. Keep executable v2 cases
 enabled and rerun the measurements against the relocated packages during
 implementation; do not substitute a proxy build for a plugin binary.
 
-The hub case caps total 89 seconds. Reserve 20 seconds for warmed-cache tagged
-compilation and three common builds, five seconds for final cleanup and five
-seconds contingency: 119 seconds inside the unchanged two-minute scoped budget.
+The revised hub case caps total 94 seconds, including ten seconds for V05.
+Reserve 20 seconds for warmed-cache tagged compilation and three common builds
+and five seconds for final cleanup: 119 seconds inside the unchanged two-minute
+scoped budget. Persistence acceptance has its
+[separate scoped budget](state-persistence.md#commands-feasibility-and-budget).
 The manual suite reserves 35 seconds around ten seconds of cases: 45 seconds.
 Peak case children are six, excluding compiler/runner infrastructure. No queue
 flood or unbounded trace is needed. Measure feasibility separately; a missed
@@ -520,8 +542,10 @@ scope; a source-build acquisition path is sufficient.
 
 Observe a declared idle interval and correlate event receipt, delivery attempt
 and file observation without a latency target. Repeat the registration to show
-same ID/one watch; stop and restart with new registration, preserving the state
-loss/no-retry explanation. Perform public stop and foreground Ctrl+C on separate
+same ID/one watch; remove client argument files, stop and restart with the same
+configuration/state, then publish a new event using the saved ID before another
+registration. SP-D01 extends D09 with saved-state failure and deliberate offline
+recovery. Preserve the no-event-replay/no-retry explanation. Perform public stop and foreground Ctrl+C on separate
 live runs and retain configured-plugin exit evidence. Missing or failed steps
 remain incomplete; CI alone does not establish README usability. Actual Codex
 and future live-service checks are not MVP delivery obligations.
@@ -530,12 +554,15 @@ and future live-service checks are not MVP delivery obligations.
 
 Stop the prior daemon, inspect remaining triggers and output files, replace
 hub/client and configured plugins together, select the address and register
-again. Plugin protocol v1, old `codex_executable` config, session-based CLI and
+once when adopting persistence from a nonpersistent daemon. Existing persistent
+state instead follows [the persistence rollout contract](state-persistence.md#change-and-rollout-impact).
+Plugin protocol v1, old `codex_executable` config, session-based CLI and
 registration skill are not compatibility layers. Reject old input explicitly.
 Implementation removes the daemon's Codex adapter and the bundled
 `.agents/skills/register-pulse/` skill; delivery replaces README usage. Keep
 specification paths stable. Rollback restores matching binaries/config/instructions
-and registers anew; it cannot retract already observed output.
+and, for a nonpersistent binary, registers anew; keep newer state aside. It
+cannot retract already observed output.
 
 Log bounded sanitized UTC lifecycle/receipt/attempt/outcome records with known
 input/output instance, request/subscription/delivery IDs. Do not log raw context

@@ -27,8 +27,10 @@ NFR-001–004 and AC-002–008, plus the applicable
 
 Use [plugin protocol v2](plugin-v1.md), including its existing deadlines,
 message bounds, output role and daemon-managed lifecycle. No protocol change,
-new conversation, persistence, retry, restart, external-service trigger, or
-replacement of the service-free model walkthrough is introduced. Queue
+new conversation, plugin-owned persistence, retry, automatic plugin restart,
+external-service trigger, or replacement of the service-free model walkthrough
+is introduced. Common saved-route restoration belongs to
+[local persistence](state-persistence.md), including Codex destinations. Queue
 acceptance and subsequent conversation processing are separate observations.
 
 ## Architecture and responsibilities
@@ -36,7 +38,7 @@ acceptance and subsequent conversation processing are separate observations.
 ```text
 User invokes skill in top-level Codex conversation
   -> action executable register-current -> existing hub register client
-  -> daemon validates output destination, then accepts input watch
+  -> daemon validates output destination, accepts input watch, saves route
 Trigger event -> daemon captures registered destination -> output Session
   -> action executes codex queue once -> target-specific acknowledgement
 ```
@@ -305,8 +307,15 @@ wait for both roles and registration readiness, invoke the skill, then publish
 a unique UTF-8 context using the manual trigger's closed-file rename procedure.
 Observe the action result separately from the target conversation's response.
 Stop with the existing hub `stop --address` command and await configured plugin
-exits. Daemon shutdown loses registrations and queued hub events; it cannot
-retract a message already accepted by Codex. Restart requires registration.
+exits. Daemon shutdown retains committed registrations in the selected local
+state, but loses queued/in-flight hub events and incomplete registrations; it
+cannot retract a message already accepted by Codex. Reuse the same
+configuration/state and wait for `daemon_ready` with its restored count before
+publishing. Restoration revalidates the saved destination with the current
+action and re-establishes the trigger watch; failure aborts startup under
+[local persistence](state-persistence.md). The original temporary destination
+argument file need not survive, and no Codex conversation work is replayed by
+the hub.
 
 If compatibility checks fail, choose a compatible executable/shared server and
 restart deliberately. If acceptance is unknown, inspect the target before
@@ -471,7 +480,7 @@ derive from this invocation and must replace placeholders with usable paths.
 | --- | --- | --- |
 | CQ-D01: AC-003/007, FR-005/008, NFR-001/003 | Maintainer selects existing A and B, instructs A in advance to acknowledge a unique marker, then runs the standalone caller once with the actual action/Codex. Require target-specific queue acceptance and A's later marker response without another user message. B receives no marker and no new conversation appears. | Maintainer records revision, OS/shell, selected binary/version, shared-server context, exact non-secret commands, A/B identities, marker, action result/ACK and separate conversation observations. Declare observation period; absent processing is incomplete/failed evidence, never inferred from ACK. |
 | CQ-D02: AC-004 | While A is visibly processing prearranged work, submit another marker through the standalone caller once. Require queued work without interruption, or a reported non-acceptance/unknown outcome, with no retry. | Maintainer records before/during/after activity, queue result, continuity of existing work and eventual marker handling if accepted. Simulated success cannot replace this check. |
-| CQ-D03: AC-005/006/007, FR-007/008 | Follow shipped README/examples and install/discover skill deliberately. In top-level A invoke it with actual hub/manual/action, receive ID, publish a unique event and observe A. Confirm invalid environment refuses registration, permission notice is present, no override/delegation/retry instruction exists; stop, observe exits and registration loss. | Maintainer retains materialized configurations, helper/client result, route/queue evidence, actual conversation response, shutdown/restart observations and README/skill/artifact review. Keep independent model walkthrough evidence separate. |
+| CQ-D03: AC-005/006/007, FR-007/008 | Follow shipped README/examples and install/discover skill deliberately. In top-level A invoke it with actual hub/manual/action, receive ID, publish a unique event and observe A. Confirm invalid environment refuses registration, permission notice is present, no override/delegation/retry instruction exists; stop, observe exits and the applicable same-ID saved-route restoration boundary. | Maintainer retains materialized configurations, helper/client result, route/queue evidence, actual conversation response, shutdown/restart observations and README/skill/artifact review. Keep independent model walkthrough evidence separate. |
 
 Execute these checks only during delivery after implementation approval/merge.
 No CI substitute proves real Codex behavior. No new messages to real
@@ -482,10 +491,16 @@ conversations are needed to compile this design or measure fixture feasibility.
 Add the action/skill/artifacts and their implementation tests. Link this
 profile from MVP, public plugin and model operations documents without changing
 their wire or service-free contracts. Deploy matching action/helper artifacts;
-stop the daemon before changing executable configuration, then register again.
+stop the daemon before changing executable configuration. Existing saved routes
+restore only when the configured names/roles and current plugin acceptance
+remain valid; follow [offline recovery](state-persistence.md#quality-and-operations)
+before removing or changing a configured destination.
 Rollback removes the Codex action configuration and skill version and restarts
-the prior configuration; it cannot retract queued messages. No persisted
-subscription migration or new distribution mechanism applies.
+the prior configuration; preserve affected saved routes and repair or remove
+them deliberately while stopped before restarting without that action. It
+cannot retract queued messages. The common persistence contract governs saved
+state compatibility; this action adds no separate storage migration or new
+distribution mechanism.
 
 ## Open questions and risks
 

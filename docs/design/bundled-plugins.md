@@ -78,8 +78,11 @@ may stay `manual-plugin` and `model-output-plugin`; configured instance names
 `manual` and `model` remain valid. Source build paths change, executable paths
 need change only when the operator chooses different build outputs.
 
-Subscriptions and queued events remain memory-only. There is no new migration
-format or persisted state. Destination records and unconsumed trigger files
+The [local persistence design](state-persistence.md) governs committed
+subscriptions, storage selection and restart restoration. Queued/in-flight
+events and pending registrations remain memory-only. Source relocation itself
+adds no storage format or plugin-owned persistence. Destination records and
+unconsumed trigger files
 remain operator-owned data. The daemon still validates destinations before
 accepting watches, binds recipients from registration, and attempts delivery
 once. Neither plugin gains authority to select another destination.
@@ -118,7 +121,11 @@ and recovery. Link the counterpart's examples and the
 [operation guide](windows-operations.md) for the complete paired workflow.
 Explain that registration does not create the output, `accepted` is not an
 fsync guarantee, `unknown` may already have written data, and no automatic
-retry or restart occurs. Explain invalid paths/content, duplicate trigger
+retry or plugin restart occurs. Explain state selection/reuse, saved-ID
+restoration, storage/startup failure and deliberate offline recovery under
+[local persistence](state-persistence.md), including no event replay, stopped-event
+collection or forced-termination/power-loss guarantee. Explain invalid
+paths/content, duplicate trigger
 paths, failed builds, unavailable plugins, and partial output recovery.
 
 Implementation introduces both plugin directories with complete, accurate
@@ -140,7 +147,9 @@ implementation-time specification.
    The manual trigger consumes it; the action appends one JSONL record with
    unchanged source, subscription identifier, context, and external-data notice.
 4. Stop through the public client or foreground interrupt. Wait for configured
-   plugin exits. Restart requires registration again; output records survive.
+   plugin exits. Restart with unchanged configuration/state restores accepted
+   registrations and their IDs after current plugin acceptance; queued events
+   do not return. Output records remain separate operator-owned files.
 
 A stale source build path fails to build: update the caller, do not retain an
 old binary as evidence of success. Unreplaced placeholders or missing executables
@@ -196,11 +205,14 @@ and AC-002–008 belong to the separate Codex Queue design, outside this scope.
 
 ### Existing cases and relocation
 
-Retain all eleven stable IDs, stimuli, assertions, failure boundaries, and
-budgets in [the MVP case table](mvp.md#selected-command-workflows). Cases already
-have executable bodies: keep them enabled rather than replacing them with
-Pending. No new runtime behavior requires a new case. Relocation defects are
-caught by building the actual new packages and running the same public workflow;
+Source relocation itself retains all eleven stable IDs and the behavior in
+[the MVP case table](mvp.md#selected-command-workflows); it introduces no new
+runtime case and does not turn executable cases into Pending. The separate
+[persistence design](state-persistence.md#ci-acceptance-cases) revises
+MVP-V05-RESTART's stimuli, expectations and budget, initially as static Pending,
+and adds three cases. Apply that revision when adopting persistence; keep all
+other cases enabled and unchanged by relocation. Relocation defects are caught
+by building the actual new packages and running the same public workflow;
 artifact presence is checked more cheaply by the existing validator fixtures.
 
 The governed inventory remains `cmd/agent-pulse-hub/testdata/mvp-cases.json`.
@@ -250,8 +262,8 @@ For design-time compilation/registration and baseline feasibility only, use
 `./cmd/manual-plugin` in place of the future manual suite path and the unchanged
 inventory. This verifies the existing method, not completed relocation.
 
-Keep the MVP budgets: hub cases 89 seconds plus 20 seconds warmed compilation
-and builds, five seconds cleanup and five seconds contingency (119 seconds);
+Keep the MVP budgets: hub cases 94 seconds plus 20 seconds warmed compilation
+and builds and five seconds cleanup (119 seconds);
 manual cases ten seconds plus 35 seconds setup/cleanup reserve (45 seconds).
 Peak case children remain six. The hub builds all three real binaries; the
 standalone suite builds only manual. Both fit the unchanged two-minute scoped
@@ -275,7 +287,8 @@ use the resulting watch/destination files in D09's actual registration and
 publication. All required fields must be explained without invented paths.
 
 Require the D09 idle observation, duplicate registration result, exact unique
-context at A, absence at B, shutdown, restart/state loss, and separate foreground
+context at A, absence at B, shutdown, same-ID restart restoration without client
+argument files, [SP-D01](state-persistence.md#delivery-quality-checks) saved-state failure/recovery, and separate foreground
 interrupt run. Record revision, environment, commands, substituted non-secret
 configuration, source template paths, plugin diagnostics, resulting records,
 and cleanup. Review README purposes, prerequisites, fields, results, relevant
@@ -288,10 +301,14 @@ No actual Codex or external-service verification applies to these local models.
 Operators stop the old daemon and wait for plugin exits, inspect residual
 trigger/output files, build from the new package paths, and update configured
 executable paths only if their chosen output locations changed. Start and
-register again; no subscription restoration is promised. Old `./cmd/manual-plugin`
+restore saved registrations using the same configuration/state. An older
+nonpersistent daemon requires one initial registration; it has no saved history
+to migrate. Old `./cmd/manual-plugin`
 and `./cmd/model-output-plugin` source builds are intentionally unsupported.
 Rollback uses the prior revision's matching source paths and binaries, then
-registers anew. It cannot retract already appended output.
+registers anew when returning to a nonpersistent daemon; preserve newer state
+separately under the persistence rollback contract. It cannot retract already
+appended output.
 
 The main risks are stale caller paths, losing manual cases during relocation,
 and confusing directory terminology with literal wire roles. Explicit package
