@@ -1,0 +1,19 @@
+{
+  "plugins": [
+    {
+      "name": "manual",
+      "role": "input",
+      "executable": "<ABSOLUTE_MANUAL_EXECUTABLE>",
+      "args": []
+    },
+    {
+      "name": "codex",
+      "role": "output",
+      "executable": "<ABSOLUTE_CODEX_QUEUE_ACTION_EXECUTABLE>",
+      "args": [
+        "--codex-executable",
+        "<ABSOLUTE_CODEX_EXECUTABLE>"
+      ]
+    }
+  ]
+}
