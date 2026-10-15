@@ -429,8 +429,11 @@ Implementation supplies unit tests beside each responsibility:
 
 Inspect product source and contracts for AC-007/AC-011: both roles use the
 framework lifecycle, daemon control remains service neutral, input receives no
-destination, and no embedded Codex/API adapter or Codex registration skill is
-shipped. Inspect absence of product-specific OS imports, branches, suffix-based
+destination, and the daemon and model plugins contain no embedded Codex/API
+adapter or Codex registration logic. The separately governed
+[Codex Queue action and skill](codex-queue.md) use the public output and local
+client interfaces; they are outside this service-free baseline. Inspect absence
+of product-specific OS imports, branches, suffix-based
 implementations, identity/security APIs and containment; ordinary standard-library
 operations and dependency internals are permitted. Check idle daemon/model
 paths cannot independently request output work. Record paths, revision and
