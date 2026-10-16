@@ -1,0 +1,13 @@
+{
+  "suites": [
+    {
+      "package": "./cmd/agent-pulse-hub",
+      "cases": [
+        "SP-V01-RESTORE",
+        "SP-V02-SAVE-FAILURE",
+        "SP-V03-STARTUP-FAILURE",
+        "MVP-V05-RESTART"
+      ]
+    }
+  ]
+}

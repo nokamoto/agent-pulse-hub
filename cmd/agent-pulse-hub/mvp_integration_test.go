@@ -310,40 +310,28 @@ var _ = Describe("MVP input/output routing command acceptance", Serial, func() {
 		}
 	})
 
-	It("rejects stale subscriptions after restart and requires a new registration", Label("case:MVP-V05-RESTART"), func() {
-		t := GinkgoT()
-		root := mvpEnv.newCase(t)
-		input := mvpEnv.pythonPlugin(t, root, "P", "input")
-		config := writeMVPConfig(t, root, mvpConfig{Plugins: []mvpPluginConfig{input, mvpEnv.modelOutput("model")}})
-		address := freeMVPAddress(t)
-		firstDaemon := mvpEnv.startDaemon(t, root, config, address, 2)
-		DeferCleanup(firstDaemon.cleanup)
-		destination := filepath.Join(root, "observed.jsonl")
-		watchArgs := map[string]any{"phase": "restart"}
-		destinationArgs := map[string]any{"output_file": destination}
-		oldID := parseMVPResponse(t, mvpEnv.register(t, 5*time.Second, address, "P", "model", watchArgs, destinationArgs))["subscription_id"].(string)
-		firstDaemon.stop(t, mvpEnv.hub)
-		for i := 1; i <= 20; i++ {
-			_ = os.Remove(filepath.Join(root, "P", fmt.Sprintf("command-%d.json", i)))
-		}
-		secondDaemon := mvpEnv.startDaemon(t, root, config, address, 2)
-		DeferCleanup(secondDaemon.cleanup)
-		newID := parseMVPResponse(t, mvpEnv.register(t, 5*time.Second, address, "P", "model", watchArgs, destinationArgs))["subscription_id"].(string)
-		if oldID == newID || newID == "" {
-			t.Fatalf("restart reused subscription ID %q", oldID)
-		}
-		writeFixtureEvent(t, filepath.Join(root, "P"), 1, oldID, "stale event")
-		writeFixtureEvent(t, filepath.Join(root, "P"), 2, newID, "PULSE-after-restart")
-		if !waitMVP(t, 4*time.Second, func() bool { return len(modelRecords(t, destination)) == 1 }) {
-			t.Fatalf("new subscription did not deliver: %s", readMVPFile(secondDaemon.logPath))
-		}
-		records := modelRecords(t, destination)
-		if len(records) != 1 || records[0]["subscription_id"] != newID || records[0]["context"] != "PULSE-after-restart" {
-			t.Fatalf("stale event was delivered or new event changed: %v", records)
-		}
-		if !waitMVP(t, time.Second, func() bool { return countMVPLog(secondDaemon.logPath, "event_rejected") > 0 }) {
-			t.Fatalf("old subscription was not rejected: %s", readMVPFile(secondDaemon.logPath))
-		}
+	It("restores completed routes without replaying volatile work after normal restart", Label("case:MVP-V05-RESTART"), Pending, func() {
+		// Governing design: docs/design/state-persistence.md; state-persistence
+		// FR-006/AC-005 and MVP NFR-004/AC-005. Use the actual daemon/control and
+		// existing controlled Python input/output plugins; no live services.
+		// Isolate config/storage; await daemon_ready. Register accepted route S.
+		// Hold one delivery result after its deliver journal entry (possibly sent
+		// in-flight E1), then admit distinct E2 and await event_admitted so E2 is
+		// queued behind E1. Separately gate a new registration P before watch
+		// acceptance; journal barriers must establish that P is incomplete.
+		// Normal stop, await daemon and every configured plugin_process_exit;
+		// require E1's existing unknown-result observation, no E2 attempt and no
+		// committed P record. Completed S remains saved with its original ID.
+		// Remove consumed Python command-N.json stimulus files after stop, restart
+		// sequence at 1, release fixture gates and restart same config/storage.
+		// Await daemon_ready restored_registrations=1: no queued E2, retry of E1,
+		// or resumed P acceptance/watch/delivery. Retain pre-stop journals and use
+		// distinct contexts so fixture re-emission cannot masquerade as hub replay.
+		// Emit fresh E3 on S without re-registering; one delivery with S and exact
+		// E3 context succeeds. No old context appears after restart. Repeat normal
+		// shutdown and observe all configured exits. Bound waits and cleanup.
+		// Lifecycle unit tests cover pre/post-commit races without process matrices.
+		// Budget: 10s case, shared warmed build <=20s, suite <=2 minutes.
 	})
 
 	It("deduplicates identical registrations while keeping output plugin and destination changes distinct", Label("case:MVP-V10-DUPLICATE"), func() {
