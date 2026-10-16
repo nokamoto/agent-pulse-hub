@@ -15,6 +15,7 @@ import (
 
 type commandOperationsStub struct {
 	daemonErr    error
+	daemonArgs   []string
 	argument     *jsonvalue.Value
 	argumentErr  error
 	argumentPath []string
@@ -28,7 +29,11 @@ type commandOperationsStub struct {
 	stopCall     int
 }
 
-func (s *commandOperationsStub) Daemon(string, string, io.Writer) error { return s.daemonErr }
+func (s *commandOperationsStub) Daemon(configPath, stateDirectory, address string, _ io.Writer) error {
+	s.daemonArgs = []string{configPath, stateDirectory, address}
+	return s.daemonErr
+}
+
 func (s *commandOperationsStub) Arguments(path string) (*jsonvalue.Value, error) {
 	s.argumentPath = append(s.argumentPath, path)
 	return s.argument, s.argumentErr
@@ -70,6 +75,46 @@ func TestParseFlagsAcceptsRequiredAndOptionalInAnyOrder(t *testing.T) {
 	got, err := parseFlags([]string{"--address", "127.0.0.1:47831", "--required", "config.json"}, []string{"--required"}, []string{"--address"})
 	if err != nil || got["--required"] != "config.json" || got["--address"] != "127.0.0.1:47831" {
 		t.Fatalf("parsed flags = %#v, %v", got, err)
+	}
+}
+
+func TestRunDaemonPassesOptionalStateDirectory(t *testing.T) {
+	operations := &commandOperationsStub{}
+	var stdout, stderr strings.Builder
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	stateDirectory := filepath.Join(t.TempDir(), "state")
+	code := runWith([]string{"daemon", "--state-dir", stateDirectory, "--config", configPath, "--address", "127.0.0.1:47832"}, &stdout, &stderr, operations)
+	if code != 0 || len(operations.daemonArgs) != 3 || operations.daemonArgs[0] != configPath || operations.daemonArgs[1] != stateDirectory || operations.daemonArgs[2] != "127.0.0.1:47832" {
+		t.Fatalf("daemon args=%v code=%d stderr=%q", operations.daemonArgs, code, stderr.String())
+	}
+}
+
+func TestResolveStateDirectoryUsesCleanConfigurationDefaultAndAbsoluteOverride(t *testing.T) {
+	root := t.TempDir()
+	separator := string(os.PathSeparator)
+	uncleanConfig := filepath.Join(root, "run") + separator + ".." + separator + "daemon.json"
+	uncleanStateDirectory := filepath.Join(root, "run") + separator + ".." + separator + "state"
+	for _, test := range []struct {
+		name, config, selected, want string
+		invalid                      bool
+	}{
+		{name: "default", config: uncleanConfig, want: filepath.Join(root, "daemon.json") + ".state"},
+		{name: "override", config: filepath.Join(root, "daemon.json"), selected: uncleanStateDirectory, want: filepath.Join(root, "state")},
+		{name: "relative config", config: "daemon.json", invalid: true},
+		{name: "relative override", config: filepath.Join(root, "daemon.json"), selected: "state", invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolveStateDirectory(test.config, test.selected)
+			if test.invalid {
+				if err == nil {
+					t.Fatalf("resolveStateDirectory(%q,%q) accepted", test.config, test.selected)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("resolveStateDirectory() = %q, %v; want %q", got, err, test.want)
+			}
+		})
 	}
 }
 
@@ -189,7 +234,7 @@ func TestDaemonInterruptAndPublicStopShareShutdownCoordinator(t *testing.T) {
 			shutdown := make(chan struct{})
 			done := make(chan error, 1)
 			go func() {
-				done <- runDaemonLifecycle(ctx, func(got context.Context) { started <- got }, func(got context.Context) error {
+				done <- runDaemonLifecycle(ctx, func(got context.Context) error { started <- got; return nil }, func(got context.Context) error {
 					served <- got
 					if trigger == "interrupt" {
 						<-got.Done()

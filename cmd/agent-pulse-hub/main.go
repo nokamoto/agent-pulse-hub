@@ -18,6 +18,7 @@ import (
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/control"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprocess"
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
+	"github.com/nokamoto/agent-pulse-hub/internal/adapters/registrationstore"
 	"github.com/nokamoto/agent-pulse-hub/internal/application/hub"
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
@@ -25,7 +26,7 @@ import (
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 type commandOperations interface {
-	Daemon(configPath, address string, stderr io.Writer) error
+	Daemon(configPath, stateDirectory, address string, stderr io.Writer) error
 	Arguments(path string) (*jsonvalue.Value, error)
 	Register(context.Context, string, string, *jsonvalue.Value, string, *jsonvalue.Value) (control.RegistrationResponse, []byte, error)
 	Stop(context.Context, string) error
@@ -33,8 +34,8 @@ type commandOperations interface {
 
 type localOperations struct{}
 
-func (localOperations) Daemon(path, address string, stderr io.Writer) error {
-	return runDaemon(path, address, stderr)
+func (localOperations) Daemon(path, stateDirectory, address string, stderr io.Writer) error {
+	return runDaemon(path, stateDirectory, address, stderr)
 }
 
 func (localOperations) Arguments(path string) (*jsonvalue.Value, error) { return loadArguments(path) }
@@ -57,11 +58,11 @@ func runWith(args []string, stdout, stderr io.Writer, operations commandOperatio
 	}
 	switch args[0] {
 	case "daemon":
-		flags, err := parseFlags(args[1:], []string{"--config"}, []string{"--address"})
+		flags, err := parseFlags(args[1:], []string{"--config"}, []string{"--state-dir", "--address"})
 		if err != nil {
 			return report(stderr, "daemon: "+err.Error())
 		}
-		if err := operations.Daemon(flags["--config"], addressOrDefault(flags["--address"]), stderr); err != nil {
+		if err := operations.Daemon(flags["--config"], flags["--state-dir"], addressOrDefault(flags["--address"]), stderr); err != nil {
 			return report(stderr, "daemon: "+err.Error())
 		}
 		return 0
@@ -123,37 +124,69 @@ func addressOrDefault(address string) string {
 	return address
 }
 
-func runDaemon(configPath, address string, stderr io.Writer) error {
+func runDaemon(configPath, selectedStateDirectory, address string, stderr io.Writer) (returnErr error) {
 	settings, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}
-	logger := daemonLogger(stderr)
-	service := hub.New(logger)
-	server, err := control.NewServer(address, service, logger)
+	stateDirectory, err := resolveStateDirectory(configPath, selectedStateDirectory)
 	if err != nil {
-		service.Shutdown()
 		return err
 	}
-	defer server.Close()
+	store, err := registrationstore.Open(stateDirectory)
+	if err != nil {
+		return err
+	}
+	registrations, err := store.Load()
+	if err != nil {
+		return errors.Join(err, store.Close())
+	}
+	logger := daemonLogger(stderr)
+	service := hub.NewWithRegistrationStore(logger, store)
+	var server *control.Server
+	defer func() {
+		if server != nil {
+			if closeErr := server.Close(); closeErr != nil {
+				returnErr = errors.Join(returnErr, closeErr)
+			}
+		}
+		service.Shutdown()
+		service.StopPlugins(context.Background())
+		if closeErr := store.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
 
 	for _, configured := range settings.Plugins {
 		process := pluginprocess.New(pluginprocess.Config{
 			Name: configured.Name, Role: configured.Role, Executable: configured.Executable, Args: configured.Args,
 		}, logger)
 		if err := service.AddPlugin(configured.Name, configured.Role, process); err != nil {
-			service.Shutdown()
-			service.StopPlugins(context.Background())
 			return err
 		}
+	}
+	if err := service.PrepareRestorations(registrations); err != nil {
+		return err
+	}
+	server, err = control.NewServer(address, service, logger)
+	if err != nil {
+		return err
 	}
 
 	ctx, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopSignal()
-	serveErr := runDaemonLifecycle(ctx, service.StartPlugins, func(ctx context.Context) error {
+	serveErr := runDaemonLifecycle(ctx, func(ctx context.Context) error {
+		service.StartPlugins(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err := service.Restore(ctx); err != nil {
+			return err
+		}
 		logger.Info("registration_available", "available", true)
-		return server.Serve(ctx)
-	}, func() {
+		logger.Info("daemon_ready", "restored_registrations", len(registrations))
+		return nil
+	}, server.Serve, func() {
 		service.Shutdown()
 		service.StopPlugins(context.Background())
 	})
@@ -163,11 +196,27 @@ func runDaemon(configPath, address string, stderr io.Writer) error {
 	return nil
 }
 
-func runDaemonLifecycle(ctx context.Context, start func(context.Context), serve func(context.Context) error, shutdown func()) error {
-	start(ctx)
+func runDaemonLifecycle(ctx context.Context, start func(context.Context) error, serve func(context.Context) error, shutdown func()) error {
+	if err := start(ctx); err != nil {
+		shutdown()
+		return err
+	}
 	serveErr := serve(ctx)
 	shutdown()
 	return serveErr
+}
+
+func resolveStateDirectory(configPath, selected string) (string, error) {
+	if selected == "" {
+		if !filepath.IsAbs(configPath) {
+			return "", errors.New("configuration path must be absolute")
+		}
+		return filepath.Clean(configPath) + ".state", nil
+	}
+	if !filepath.IsAbs(selected) {
+		return "", errors.New("state directory path must be absolute")
+	}
+	return filepath.Clean(selected), nil
 }
 
 func daemonLogger(stderr io.Writer) *slog.Logger {

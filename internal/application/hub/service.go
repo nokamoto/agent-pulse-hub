@@ -93,13 +93,22 @@ type queuedEvent struct {
 	outputPort PluginPort
 }
 
+// RegistrationStore commits an accepted route before the Hub reports success.
+type RegistrationStore interface {
+	Commit(domain.Subscription) error
+}
+
 type Hub struct {
 	mu sync.Mutex
 
 	plugins       map[string]*pluginState
 	registrations map[domain.SubscriptionID]domain.Subscription
+	retained      map[domain.SubscriptionID]struct{}
 	activeByKey   map[string]domain.SubscriptionID
 	pendingByKey  map[string]*pendingRegistration
+	store         RegistrationStore
+	restore       []domain.Subscription
+	admissionOpen bool
 	queue         chan queuedEvent
 	pendingEvents int
 	stopping      bool
@@ -119,6 +128,7 @@ func New(logger *slog.Logger) *Hub {
 	hub := &Hub{
 		plugins:       make(map[string]*pluginState),
 		registrations: make(map[domain.SubscriptionID]domain.Subscription),
+		retained:      make(map[domain.SubscriptionID]struct{}),
 		activeByKey:   make(map[string]domain.SubscriptionID),
 		pendingByKey:  make(map[string]*pendingRegistration),
 		queue:         make(chan queuedEvent, MaxDeliveries),
@@ -127,9 +137,145 @@ func New(logger *slog.Logger) *Hub {
 		ctx:           ctx,
 		cancel:        cancel,
 		logger:        logger,
+		admissionOpen: true,
 	}
 	go hub.deliveryWorker()
 	return hub
+}
+
+// NewWithRegistrationStore keeps registration and event admission closed until
+// every saved route has been restored successfully.
+func NewWithRegistrationStore(logger *slog.Logger, store RegistrationStore) *Hub {
+	hub := New(logger)
+	hub.store = store
+	hub.admissionOpen = false
+	return hub
+}
+
+// PrepareRestorations validates all saved routes before any configured plugin
+// is launched and retains their IDs for capacity accounting.
+func (h *Hub) PrepareRestorations(registrations []domain.Subscription) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.store == nil {
+		return errors.New("registration store is required for restoration")
+	}
+	if len(registrations) > MaxRegistrations {
+		return fmt.Errorf("saved registrations exceed capacity %d", MaxRegistrations)
+	}
+	retained := make(map[domain.SubscriptionID]struct{}, len(registrations))
+	keys := make(map[string]struct{}, len(registrations))
+	for _, registration := range registrations {
+		if registration.ID == "" || registration.InputPlugin == "" || registration.OutputPlugin == "" || registration.WatchArgs == nil || registration.WatchArgs.Kind() != jsonvalue.Object || registration.DestinationArgs == nil || registration.DestinationArgs.Kind() != jsonvalue.Object {
+			return fmt.Errorf("saved registration %q is invalid", registration.ID)
+		}
+		if _, exists := retained[registration.ID]; exists {
+			return fmt.Errorf("saved registration ID %s is duplicated", registration.ID)
+		}
+		input := h.plugins[registration.InputPlugin]
+		if input == nil || input.role != domain.InputRole {
+			return fmt.Errorf("saved registration %s references an unavailable input plugin %q", registration.ID, registration.InputPlugin)
+		}
+		output := h.plugins[registration.OutputPlugin]
+		if output == nil || output.role != domain.OutputRole {
+			return fmt.Errorf("saved registration %s references an unavailable output plugin %q", registration.ID, registration.OutputPlugin)
+		}
+		if !registrationPayloadsFit(registration.WatchArgs, registration.DestinationArgs, string(registration.ID), "00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000") {
+			return fmt.Errorf("saved registration %s exceeds the plugin protocol payload limit", registration.ID)
+		}
+		key := registrationKey(registration.InputPlugin, registration.WatchArgs, registration.OutputPlugin, registration.DestinationArgs)
+		if _, exists := keys[key]; exists {
+			return fmt.Errorf("saved registration %s duplicates a route", registration.ID)
+		}
+		keys[key] = struct{}{}
+		retained[registration.ID] = struct{}{}
+	}
+	h.retained = retained
+	h.restore = append([]domain.Subscription(nil), registrations...)
+	return nil
+}
+
+// Restore validates saved destinations and watches in order. Routes remain
+// staged and events are discarded until every saved route has succeeded.
+func (h *Hub) Restore(ctx context.Context) error {
+	h.mu.Lock()
+	registrations := append([]domain.Subscription(nil), h.restore...)
+	if h.store == nil {
+		h.mu.Unlock()
+		return errors.New("registration store is required for restoration")
+	}
+	h.mu.Unlock()
+
+	for _, registration := range registrations {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		h.mu.Lock()
+		if h.stopping {
+			h.mu.Unlock()
+			return errors.New("daemon stopped during registration restoration")
+		}
+		input := h.plugins[registration.InputPlugin]
+		output := h.plugins[registration.OutputPlugin]
+		if input == nil || input.role != domain.InputRole || !input.available || output == nil || output.role != domain.OutputRole || !output.available {
+			h.mu.Unlock()
+			return fmt.Errorf("restore registration %s: a referenced plugin is unavailable", registration.ID)
+		}
+		inputPort, outputPort := input.port, output.port
+		h.mu.Unlock()
+
+		destinationRequestID, err := newID()
+		if err != nil {
+			return fmt.Errorf("restore registration %s: could not create destination request ID", registration.ID)
+		}
+		watchRequestID, err := newID()
+		if err != nil {
+			return fmt.Errorf("restore registration %s: could not create watch request ID", registration.ID)
+		}
+		if err := outputPort.ValidateDestination(ctx, DestinationRequest{RequestID: destinationRequestID, Arguments: registration.DestinationArgs}); err != nil {
+			var destinationErr *DestinationError
+			if errors.As(err, &destinationErr) && destinationErr.Unavailable {
+				h.pluginUnavailable(registration.OutputPlugin, outputPort, err)
+			}
+			return fmt.Errorf("restore registration %s: destination validation failed: %s", registration.ID, safeError(err))
+		}
+		if err := inputPort.Watch(ctx, WatchRequest{RequestID: watchRequestID, SubscriptionID: registration.ID, Arguments: registration.WatchArgs}, func() error { return nil }); err != nil {
+			var watchErr *WatchError
+			if errors.As(err, &watchErr) && watchErr.Unavailable {
+				h.pluginUnavailable(registration.InputPlugin, inputPort, err)
+			}
+			return fmt.Errorf("restore registration %s: watch validation failed: %s", registration.ID, safeError(err))
+		}
+		h.mu.Lock()
+		available := !h.stopping && h.plugins[registration.InputPlugin] != nil && h.plugins[registration.InputPlugin].port == inputPort && h.plugins[registration.InputPlugin].available && h.plugins[registration.OutputPlugin] != nil && h.plugins[registration.OutputPlugin].port == outputPort && h.plugins[registration.OutputPlugin].available
+		h.mu.Unlock()
+		if !available {
+			return fmt.Errorf("restore registration %s: a referenced plugin became unavailable", registration.ID)
+		}
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if h.stopping {
+		return errors.New("daemon stopped during registration restoration")
+	}
+	for _, registration := range registrations {
+		input, output := h.plugins[registration.InputPlugin], h.plugins[registration.OutputPlugin]
+		if input == nil || !input.available || output == nil || !output.available {
+			return fmt.Errorf("restore registration %s: a referenced plugin became unavailable", registration.ID)
+		}
+	}
+	for _, registration := range registrations {
+		registration.Active = true
+		key := registrationKey(registration.InputPlugin, registration.WatchArgs, registration.OutputPlugin, registration.DestinationArgs)
+		h.registrations[registration.ID] = registration
+		h.activeByKey[key] = registration.ID
+	}
+	h.admissionOpen = true
+	return nil
 }
 
 func (h *Hub) AddPlugin(name string, role domain.PluginRole, port PluginPort) error {
@@ -257,9 +403,9 @@ func (h *Hub) Register(inputName string, watchArgs *jsonvalue.Value, outputName 
 	key := registrationKey(inputName, watchArgs, outputName, destinationArgs)
 
 	h.mu.Lock()
-	if h.stopping {
+	if h.stopping || !h.admissionOpen {
 		h.mu.Unlock()
-		return "", &Error{Code: "plugin_unavailable", Message: "Daemon is shutting down."}
+		return "", &Error{Code: "plugin_unavailable", Message: "Daemon is not accepting registrations."}
 	}
 	inputState := h.plugins[inputName]
 	if inputState == nil {
@@ -296,11 +442,11 @@ func (h *Hub) Register(inputName string, watchArgs *jsonvalue.Value, outputName 
 		h.mu.Unlock()
 		return id, resultErr
 	}
-	if len(h.registrations)+len(h.pendingByKey) >= MaxRegistrations {
+	if h.registrationCountLocked() >= MaxRegistrations {
 		h.mu.Unlock()
 		return "", &Error{Code: "resource_exhausted", Message: "Registration capacity is exhausted."}
 	}
-	id, err := newID()
+	id, err := h.newUniqueSubscriptionIDLocked()
 	if err != nil {
 		h.mu.Unlock()
 		return "", &Error{Code: "resource_exhausted", Message: "A subscription identifier could not be created."}
@@ -407,6 +553,16 @@ func (h *Hub) activate(pending *pendingRegistration) error {
 		Active:          false,
 	}
 	if outputState != nil && outputState.port == pending.output && outputState.available && !h.stopping {
+		if h.store != nil {
+			if err := h.store.Commit(registration); err != nil {
+				message := "Registration could not be saved: " + bounded(safeError(err), defaultOperationMax-34)
+				h.registrations[pending.id] = registration
+				h.finishPendingLocked(pending, &Error{Code: "storage_error", Message: message}, true)
+				h.logger.Error("registration_storage_error", "subscription_id", pending.id, "reason", safeError(err))
+				return nil
+			}
+			h.retained[pending.id] = struct{}{}
+		}
 		registration.Active = true
 		h.activeByKey[pending.key] = pending.id
 		pending.activated = true
@@ -461,6 +617,10 @@ func (h *Hub) acceptEvent(pluginName string, port PluginPort, subscriptionID, ev
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if !h.admissionOpen {
+		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "daemon admission is closed")
+		return
+	}
 	state := h.plugins[pluginName]
 	if h.stopping || state == nil || state.role != domain.InputRole || state.port != port || !state.available {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "input plugin unavailable")
@@ -506,6 +666,47 @@ func (h *Hub) acceptEvent(pluginName string, port PluginPort, subscriptionID, ev
 		h.pendingEvents--
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery queue is full")
 	}
+}
+
+func (h *Hub) registrationCountLocked() int {
+	ids := make(map[domain.SubscriptionID]struct{}, len(h.retained)+len(h.registrations)+len(h.pendingByKey))
+	for id := range h.retained {
+		ids[id] = struct{}{}
+	}
+	for id := range h.registrations {
+		ids[id] = struct{}{}
+	}
+	for _, pending := range h.pendingByKey {
+		ids[pending.id] = struct{}{}
+	}
+	return len(ids)
+}
+
+func (h *Hub) newUniqueSubscriptionIDLocked() (string, error) {
+	for attempt := 0; attempt < 8; attempt++ {
+		id, err := newID()
+		if err != nil {
+			return "", err
+		}
+		candidate := domain.SubscriptionID(id)
+		if _, exists := h.retained[candidate]; exists {
+			continue
+		}
+		if _, exists := h.registrations[candidate]; exists {
+			continue
+		}
+		used := false
+		for _, pending := range h.pendingByKey {
+			if pending.id == candidate {
+				used = true
+				break
+			}
+		}
+		if !used {
+			return id, nil
+		}
+	}
+	return "", errors.New("unique subscription ID unavailable")
 }
 
 func deliveryFits(event domain.Event) bool {
