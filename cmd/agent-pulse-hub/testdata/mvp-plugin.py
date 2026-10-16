@@ -46,7 +46,7 @@ def serve(directory, role):
                 while gate and not (directory / gate).exists() and context.is_active() and not stopped.is_set():
                     time.sleep(0.005)
                 if kind == "deliver":
-                    if args.get("hold"):
+                    if args.get("hold") or args.get("hold_context") == frame.get("context"):
                         while context.is_active() and not stopped.is_set():
                             time.sleep(0.005)
                         return

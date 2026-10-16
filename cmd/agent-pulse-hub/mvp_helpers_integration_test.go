@@ -219,9 +219,25 @@ func freeMVPAddress(t mvpReporter) string {
 	return address
 }
 
-func (e *mvpCaseEnv) startDaemon(t mvpReporter, directory, configPath, address string, readyPlugins int) *mvpDaemon {
+func (e *mvpCaseEnv) startDaemon(t mvpReporter, directory, configPath, address string, _ int) *mvpDaemon {
+	return e.startDaemonWithState(t, directory, configPath, address, "")
+}
+
+func (e *mvpCaseEnv) startDaemonWithState(t mvpReporter, directory, configPath, address, stateDirectory string) *mvpDaemon {
+	child := e.launchDaemonWithState(t, directory, configPath, address, stateDirectory)
+	if !waitMVP(t, 10*time.Second, func() bool { return countMVPLog(child.logPath, "daemon_ready") > 0 || !child.alive() }) {
+		child.cleanup()
+		t.Fatalf("daemon did not complete its startup barrier: %s", readMVPFile(child.logPath))
+	}
+	if !child.alive() {
+		t.Fatalf("daemon exited during startup: error=%v log=%s", child.error(), readMVPFile(child.logPath))
+	}
+	return child
+}
+
+func (e *mvpCaseEnv) launchDaemonWithState(t mvpReporter, directory, configPath, address, stateDirectory string) *mvpDaemon {
 	t.Helper()
-	logPath := filepath.Join(directory, "daemon.jsonl")
+	logPath := filepath.Join(directory, fmt.Sprintf("daemon-%d.jsonl", time.Now().UnixNano()))
 	stdoutPath := filepath.Join(directory, "daemon.stdout")
 	stdout, err := os.Create(stdoutPath)
 	if err != nil {
@@ -232,7 +248,11 @@ func (e *mvpCaseEnv) startDaemon(t mvpReporter, directory, configPath, address s
 		stdout.Close()
 		t.Fatalf("create daemon log: %v", err)
 	}
-	command := exec.Command(e.hub, "daemon", "--config", configPath, "--address", address)
+	args := []string{"daemon", "--config", configPath, "--address", address}
+	if stateDirectory != "" {
+		args = append(args, "--state-dir", stateDirectory)
+	}
+	command := exec.Command(e.hub, args...)
 	command.Stdout, command.Stderr = stdout, stderr
 	if err := command.Start(); err != nil {
 		stdout.Close()
@@ -249,13 +269,6 @@ func (e *mvpCaseEnv) startDaemon(t mvpReporter, directory, configPath, address s
 		child.mu.Unlock()
 		close(child.done)
 	}()
-	if !waitMVP(t, 10*time.Second, func() bool { return countMVPLog(child.logPath, "plugin_ready") >= readyPlugins || !child.alive() }) {
-		child.cleanup()
-		t.Fatalf("daemon did not report readiness: %s", readMVPFile(child.logPath))
-	}
-	if !child.alive() {
-		t.Fatalf("daemon exited during startup: error=%v log=%s", child.error(), readMVPFile(child.logPath))
-	}
 	return child
 }
 
@@ -273,6 +286,26 @@ func (d *mvpDaemon) error() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.waitErr
+}
+
+func waitMVPDaemonExit(t mvpReporter, daemon *mvpDaemon, timeout time.Duration) int {
+	t.Helper()
+	select {
+	case <-daemon.done:
+	case <-time.After(timeout):
+		daemon.cleanup()
+		t.Fatalf("daemon did not exit within %s: %s", timeout, readMVPFile(daemon.logPath))
+	}
+	err := daemon.error()
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	t.Fatalf("daemon wait failed: %v", err)
+	return -1
 }
 
 func (d *mvpDaemon) stop(t mvpReporter, hubBinary string) {

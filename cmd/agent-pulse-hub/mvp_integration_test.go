@@ -310,28 +310,133 @@ var _ = Describe("MVP input/output routing command acceptance", Serial, func() {
 		}
 	})
 
-	It("restores completed routes without replaying volatile work after normal restart", Label("case:MVP-V05-RESTART"), Pending, func() {
-		// Governing design: docs/design/state-persistence.md; state-persistence
-		// FR-006/AC-005 and MVP NFR-004/AC-005. Use the actual daemon/control and
-		// existing controlled Python input/output plugins; no live services.
-		// Isolate config/storage; await daemon_ready. Register accepted route S.
-		// Hold one delivery result after its deliver journal entry (possibly sent
-		// in-flight E1), then admit distinct E2 and await event_admitted so E2 is
-		// queued behind E1. Separately gate a new registration P before watch
-		// acceptance; journal barriers must establish that P is incomplete.
-		// Normal stop, await daemon and every configured plugin_process_exit;
-		// require E1's existing unknown-result observation, no E2 attempt and no
-		// committed P record. Completed S remains saved with its original ID.
-		// Remove consumed Python command-N.json stimulus files after stop, restart
-		// sequence at 1, release fixture gates and restart same config/storage.
-		// Await daemon_ready restored_registrations=1: no queued E2, retry of E1,
-		// or resumed P acceptance/watch/delivery. Retain pre-stop journals and use
-		// distinct contexts so fixture re-emission cannot masquerade as hub replay.
-		// Emit fresh E3 on S without re-registering; one delivery with S and exact
-		// E3 context succeeds. No old context appears after restart. Repeat normal
-		// shutdown and observe all configured exits. Bound waits and cleanup.
-		// Lifecycle unit tests cover pre/post-commit races without process matrices.
-		// Budget: 10s case, shared warmed build <=20s, suite <=2 minutes.
+	It("restores completed routes without replaying volatile work after normal restart", Label("case:MVP-V05-RESTART"), func() {
+		t := GinkgoT()
+		root := mvpEnv.newCase(t)
+		input := mvpEnv.pythonPlugin(t, root, "P", "input")
+		output := mvpEnv.pythonPlugin(t, root, "O", "output")
+		pendingOutput := mvpEnv.pythonPlugin(t, root, "pending-output", "output")
+		config := writeMVPConfig(t, root, mvpConfig{Plugins: []mvpPluginConfig{input, output, pendingOutput}})
+		address := freeMVPAddress(t)
+		first := mvpEnv.startDaemon(t, root, config, address, 2)
+		DeferCleanup(first.cleanup)
+		inputDirectory, outputDirectory := filepath.Join(root, "P"), filepath.Join(root, "O")
+		pendingOutputDirectory := filepath.Join(root, "pending-output")
+		watchArgs := map[string]any{"phase": "restart"}
+		destinationArgs := map[string]any{"hold_context": "PULSE-IN-FLIGHT"}
+		registered := mvpEnv.register(t, 5*time.Second, address, "P", "O", watchArgs, destinationArgs)
+		if registered.code() != 0 {
+			t.Fatalf("register saved route: %s", registered.stderr)
+		}
+		subscriptionID, _ := parseMVPResponse(t, registered)["subscription_id"].(string)
+		if subscriptionID == "" {
+			t.Fatal("registration returned no ID")
+		}
+		stateDirectory := filepath.Clean(config) + ".state"
+		stateRecords := readStateRegistrationFiles(t, filepath.Join(stateDirectory, "registrations"))
+		if len(stateRecords) != 1 || stateRecords[0]["subscription_id"] != subscriptionID {
+			t.Fatalf("saved route before shutdown = %v", stateRecords)
+		}
+
+		writeFixtureEvent(t, inputDirectory, 1, subscriptionID, "PULSE-IN-FLIGHT")
+		awaitMVPLogCount(t, first.logPath, "event_admitted", 1, 3*time.Second)
+		awaitMVPLogCount(t, first.logPath, "delivery_attempt", 1, 3*time.Second)
+		awaitMVPJournal(t, filepath.Join(outputDirectory, "journal.jsonl"), "deliver", 1, 3*time.Second)
+		writeFixtureEvent(t, inputDirectory, 2, subscriptionID, "PULSE-QUEUED")
+		awaitMVPLogCount(t, first.logPath, "event_admitted", 2, 3*time.Second)
+		if countMVPLog(first.logPath, "delivery_attempt") != 1 {
+			t.Fatalf("second event was not held behind the in-flight result: %s", readMVPFile(first.logPath))
+		}
+
+		gatePath := "pending-watch.gate"
+		watchPath := writeMVPObject(t, root, "pending-watch.json", map[string]any{"phase": "pending", "gate": gatePath})
+		destinationPath := writeMVPObject(t, root, "pending-destination.json", map[string]any{"output_file": filepath.Join(root, "unused.jsonl")})
+		pendingRegistration := startMVPCommand(t, mvpEnv.hub, "register", "--input-plugin", "P", "--watch-args-file", watchPath, "--output-plugin", "pending-output", "--destination-args-file", destinationPath, "--address", address)
+		if !waitMVP(t, 3*time.Second, func() bool {
+			rows := mvpRowsOfKind(filepath.Join(inputDirectory, "journal.jsonl"), "watch")
+			if len(rows) < 2 {
+				return false
+			}
+			frame, _ := rows[1]["frame"].(map[string]any)
+			args, _ := frame["watch_args"].(map[string]any)
+			return args["gate"] == gatePath
+		}) {
+			t.Fatalf("gated registration did not reach the input plugin: %v", readMVPJournal(filepath.Join(inputDirectory, "journal.jsonl")))
+		}
+		select {
+		case result := <-pendingRegistration.done:
+			t.Fatalf("gated registration completed before watch acceptance: %v", result)
+		default:
+		}
+		stateRecords = readStateRegistrationFiles(t, filepath.Join(stateDirectory, "registrations"))
+		if len(stateRecords) != 1 {
+			t.Fatalf("incomplete registration was committed: %v", stateRecords)
+		}
+
+		first.stop(t, mvpEnv.hub)
+		select {
+		case result := <-pendingRegistration.done:
+			if result.code() == 0 {
+				t.Fatalf("incomplete registration unexpectedly succeeded: %v", result)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("incomplete registration did not finish after daemon shutdown")
+		}
+		if !waitMVP(t, 3*time.Second, func() bool { return countMVPLog(first.logPath, "plugin_process_exit") == 3 }) {
+			t.Fatalf("configured plugin exits were not observed: %s", readMVPFile(first.logPath))
+		}
+		if !waitMVP(t, 3*time.Second, func() bool {
+			rows := mvpRowsOfMessage(first.logPath, "delivery_result")
+			return len(rows) == 1 && rows[0]["outcome"] == "unknown"
+		}) {
+			t.Fatalf("in-flight delivery outcome was not recorded as unknown: %s", readMVPFile(first.logPath))
+		}
+		if countMVPLog(first.logPath, "delivery_attempt") != 1 || countMVPLog(first.logPath, "delivery_discarded") != 1 {
+			t.Fatalf("queued event was attempted or not discarded: %s", readMVPFile(first.logPath))
+		}
+		if _, err := os.Stat(filepath.Join(stateDirectory, ".lock")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("normal stop retained state lock: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(inputDirectory, gatePath), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, directory := range []string{inputDirectory, outputDirectory, pendingOutputDirectory} {
+			entries, err := os.ReadDir(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), "command-") && strings.HasSuffix(entry.Name(), ".json") {
+					if err := os.Remove(filepath.Join(directory, entry.Name())); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		}
+
+		second := mvpEnv.startDaemon(t, root, config, address, 2)
+		DeferCleanup(second.cleanup)
+		ready := mvpRowsOfMessage(second.logPath, "daemon_ready")
+		if len(ready) != 1 || ready[0]["restored_registrations"] != float64(1) {
+			t.Fatalf("restart readiness = %v; log=%s", ready, readMVPFile(second.logPath))
+		}
+		if countMVPLog(second.logPath, "delivery_attempt") != 0 || countMVPLog(second.logPath, "event_admitted") != 0 {
+			t.Fatalf("volatile work was replayed at startup: %s", readMVPFile(second.logPath))
+		}
+		writeFixtureEvent(t, inputDirectory, 1, subscriptionID, "PULSE-FRESH-AFTER-RESTART")
+		rows := awaitMVPJournal(t, filepath.Join(outputDirectory, "journal.jsonl"), "deliver", 2, 3*time.Second)
+		secondFrame, _ := rows[1]["frame"].(map[string]any)
+		if secondFrame["context"] != "PULSE-FRESH-AFTER-RESTART" || secondFrame["subscription_id"] != subscriptionID {
+			t.Fatalf("fresh event after restart changed: %v", secondFrame)
+		}
+		awaitMVPLogCount(t, second.logPath, "delivery_result", 1, 3*time.Second)
+		if countMVPLog(second.logPath, "delivery_attempt") != 1 || countMVPLog(second.logPath, "delivery_result") != 1 {
+			t.Fatalf("fresh restored route did not deliver exactly once: %s", readMVPFile(second.logPath))
+		}
+		second.stop(t, mvpEnv.hub)
+		if !waitMVP(t, 3*time.Second, func() bool { return countMVPLog(second.logPath, "plugin_process_exit") == 3 }) {
+			t.Fatalf("restart plugin exits were not observed: %s", readMVPFile(second.logPath))
+		}
 	})
 
 	It("deduplicates identical registrations while keeping output plugin and destination changes distinct", Label("case:MVP-V10-DUPLICATE"), func() {
