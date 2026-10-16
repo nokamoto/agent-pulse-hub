@@ -37,12 +37,19 @@ existing configuration without adding a second settings store or editing API.
 New daemon-owned local storage retains registrations.
 
 The selected failure policy rejects a registration when saving fails, and
-fails startup when existing saved state cannot be read, validated, or restored.
+fails startup when existing saved registration state cannot be read, validated,
+or restored.
 There is no partial startup recovery. Restored registrations retain their
 subscription identifiers: this straightforward interpretation of restoring a
 saved registration avoids introducing identifier replacement or translation.
 These are proposed product decisions for human review, selected under the
 user's preference for simplicity.
+
+The separate [trigger runtime state extension](trigger-runtime-state.md) adds
+optional, core-managed watch progress. Its restoration failures are governed
+there; the all-or-nothing startup policy here concerns registration records
+and their plugin acceptance. Runtime-state failure must not be silently
+reported as successful restoration of the affected watch.
 
 The [MVP requirements](mvp.md) remain the routing baseline. This extension
 replaces their registration-loss behavior on adoption while preserving
@@ -59,8 +66,12 @@ manual trigger and model-output action are its bundled model plugins.
 - Out of scope: recovery after forced termination or power loss; restoration
   or replay of queued/in-flight events, pending registration attempts, or
   plugin process/session state; delivery retries; recovery of events occurring
-  while stopped; plugin-owned service checkpoints; remote storage, database
+  while stopped; plugin-owned service checkpoint storage; remote storage, database
   services, synchronization, and new configuration-management interfaces.
+
+Optional logical trigger progress stored by the core is governed separately by
+[trigger-runtime-state.md](trigger-runtime-state.md); its scope does not add
+process/session restoration or action runtime state to this concept.
 
 ## Use cases
 
@@ -68,7 +79,7 @@ manual trigger and model-output action are its bundled model plugins.
 | --- | --- | --- | --- |
 | UC-001 | Operator registers a trigger watch and action destination | Successful registration is saved locally | Rejected arguments or saving failure do not establish a successful active registration |
 | UC-002 | Operator normally stops and restarts using unchanged valid inputs | Saved registrations are restored with their identifiers and original destinations | No queued or interrupted work is replayed |
-| UC-003 | Existing saved state or a saved registration cannot be restored | Startup fails with an actionable diagnostic | The daemon does not claim partial restoration as successful startup |
+| UC-003 | Existing saved registration state or a saved registration cannot be restored | Startup fails with an actionable diagnostic | The daemon does not claim partial registration restoration as successful startup |
 
 ## Functional requirements
 
@@ -77,9 +88,9 @@ manual trigger and model-output action are its bundled model plugins.
 | FR-001 | Reuse the existing local daemon configuration JSON as the persistent source of configured plugin names, roles, executables, and arguments. Restarting with the unchanged file must not require re-entering those settings. | UC-002 | Required |
 | FR-002 | The daemon must save successful registrations in local files, retaining subscription identifier, selected trigger name, watch arguments, action name, and destination arguments. Preserve argument values without changing their routing meaning. Restoration must not depend on the original client argument files remaining present. | UC-001, UC-002 | Required |
 | FR-003 | Report registration success only after both plugins accept the registration and its local storage has succeeded. Rejected registration or a saving failure must fail the request without establishing an active subscription. Report the failure without claiming that the registration was saved. | UC-001 | Required |
-| FR-004 | After a normal stop, restart with the saved registrations and configured plugins automatically, retaining each subscription identifier and original routing information without another client registration. Establish current plugin acceptance before treating a restored route as active. Repeating an equivalent active registration must return that route's identifier without adding another watch or delivery, as required by MVP FR-007. | UC-002 | Required |
-| FR-005 | When existing saved state cannot be read or validated, or any saved registration cannot be restored with the configured plugins, fail daemon startup and identify the affected storage or registration and reason. Do not report successful startup with only a subset restored, choose another destination, or silently discard failed saved registrations. A first run with no saved registrations may initialize empty storage. | UC-003 | Required |
-| FR-006 | Restore registration information only. Do not replay queued/in-flight hub events, resume pending registration attempts, or treat saved process/session availability as current availability. Preserve MVP FR-006's one delivery attempt and no automatic retry. | UC-002 | Required |
+| FR-004 | After a normal stop, restart with the saved registrations and configured plugins automatically, retaining each subscription identifier and original routing information without another client registration. Establish current plugin acceptance before treating a restored route as active; participating triggers must also satisfy the runtime-state restoration policy in [trigger-runtime-state.md](trigger-runtime-state.md). Repeating an equivalent active registration must return that route's identifier without adding another watch or delivery, as required by MVP FR-007. | UC-002 | Required |
+| FR-005 | When existing saved registration state cannot be read or validated, or any saved registration cannot be restored with the configured plugins, fail daemon startup and identify the affected storage or registration and reason. Do not report successful startup with only a subset of registrations restored, choose another destination, or silently discard failed saved registrations. A first run with no saved registrations may initialize empty storage. Runtime-state restoration failures follow the separate policy in [trigger-runtime-state.md](trigger-runtime-state.md). | UC-003 | Required |
+| FR-006 | This concept restores registration information. Optional trigger progress and its restoration policy belong to [trigger-runtime-state.md](trigger-runtime-state.md). Do not replay queued/in-flight hub events, resume pending registration attempts, or treat saved process/session availability as current availability. Preserve MVP FR-006's one delivery attempt and no automatic retry. | UC-002 | Required |
 | FR-007 | Provide reproducible instructions for configuration reuse, registration storage selection, normal stop/restart restoration, identifier continuity, failure diagnostics and deliberate recovery, and the absence of event replay or forced-termination/power-loss recovery guarantees. | UC-001–UC-003 | Required |
 
 ## Nonfunctional requirements
@@ -108,7 +119,12 @@ this extension adds no guarantee for events arriving while stopped.
 Storage format, location-selection syntax, save mechanics, concurrent access
 prevention, and restoration sequencing are design decisions. Design must
 reconcile durable registration with plugin acceptance before client success;
-it must not weaken FR-003 or add partial-startup behavior.
+it must not weaken FR-003 or bypass FR-005's registration failure policy.
+
+The separate trigger runtime state extension governs whether a watch with a
+restored registration may start when its runtime-state restoration fails.
+Its failure policy does not permit partial loading of corrupt registration
+records under FR-005.
 
 ## Acceptance criteria
 
@@ -156,3 +172,9 @@ activation, restart, and verification. Review
 no daemon-owned Codex integration is introduced. Delivery updates the root
 README and affected plugin instructions. Design, implementation,
 test-inventory changes, and delivery materials remain separate phase changes.
+
+Adopting [trigger-runtime-state.md](trigger-runtime-state.md) revises this
+concept's scope explanation, UC-003, and FR-004–FR-006 while retaining all local
+IDs. FR-005's registration failure policy is preserved; runtime-state failure has its own
+affected-watch policy. Existing AC-001–AC-006 continue to verify registration
+restoration and volatile hub work, separately from trigger-progress continuity.
