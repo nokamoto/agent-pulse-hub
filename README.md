@@ -11,8 +11,8 @@ without polling from a coding agent. Plugins handle their own sources and destin
 
 Try the bundled local example below: publish a text file and see its contents
 appended to a JSON-lines file. It needs no live service, credentials, or Codex
-installation. The current MVP includes these model plugins; it does not include
-a Codex integration.
+installation. The optional [Codex Queue action](plugins/actions/codex-queue/readme.md)
+can instead send events to an existing Codex conversation.
 
 ## Requirements
 
@@ -36,8 +36,8 @@ mkdir ./pulse-demo
 run="$(python3 -c 'from pathlib import Path; print((Path.cwd() / "pulse-demo").as_posix())')"
 suffix="$(go env GOEXE)"
 go build -o "$run/agent-pulse-hub$suffix" ./cmd/agent-pulse-hub
-go build -o "$run/manual-plugin$suffix" ./cmd/manual-plugin
-go build -o "$run/model-output-plugin$suffix" ./cmd/model-output-plugin
+go build -o "$run/manual-plugin$suffix" ./plugins/triggers/manual
+go build -o "$run/model-output-plugin$suffix" ./plugins/actions/model-output
 ```
 
 ## Usage
@@ -55,13 +55,17 @@ from pathlib import Path
 
 run = Path(sys.argv[1])
 suffix = sys.argv[2]
-config = {"plugins": [
-    {"name": "manual", "role": "input", "executable": str(run / ("manual-plugin" + suffix)), "args": []},
-    {"name": "model", "role": "output", "executable": str(run / ("model-output-plugin" + suffix)), "args": []},
-]}
+config = json.loads(Path("plugins/triggers/manual/examples/daemon.json").read_text(encoding="utf-8"))
+executables = {"manual": "manual-plugin", "model": "model-output-plugin"}
+for plugin in config["plugins"]:
+    plugin["executable"] = str(run / (executables[plugin["name"]] + suffix))
+watch = json.loads(Path("plugins/triggers/manual/examples/watch.json").read_text(encoding="utf-8"))
+watch["trigger_file"] = str(run / "next.txt")
+destination = json.loads(Path("plugins/actions/model-output/examples/destination.json").read_text(encoding="utf-8"))
+destination["output_file"] = str(run / "events.jsonl")
 (run / "daemon.json").write_text(json.dumps(config), encoding="utf-8")
-(run / "watch.json").write_text(json.dumps({"trigger_file": str(run / "next.txt")}), encoding="utf-8")
-(run / "destination.json").write_text(json.dumps({"output_file": str(run / "events.jsonl")}), encoding="utf-8")
+(run / "watch.json").write_text(json.dumps(watch), encoding="utf-8")
+(run / "destination.json").write_text(json.dumps(destination), encoding="utf-8")
 PY
 printf 'Run directory: %s\n' "$run"
 "$run/agent-pulse-hub$suffix" daemon --config "$run/daemon.json" --address 127.0.0.1:47831
@@ -69,9 +73,17 @@ printf 'Run directory: %s\n' "$run"
 
 Note the printed run directory. In the first terminal's JSON diagnostics, wait
 for `msg: "plugin_ready"` with `available: true` for both `manual` and `model`,
-then `msg: "registration_available"` with `available: true`. If startup fails,
+then `msg: "daemon_ready"` with `restored_registrations: 0` for this fresh setup.
+If startup fails,
 inspect the diagnostic before continuing. Use the same address for every command; if that
 port is occupied, choose another loopback port consistently.
+
+Successful registrations are saved in `daemon.json.state` beside this example's
+configuration. By default the state directory is the absolute configuration
+pathname with `.state` appended; `daemon --state-dir <absolute-directory>`
+selects another dedicated local directory. Reuse the same configuration and
+state on restart. Do not edit, move, copy, or share a live state directory.
+Argument values are retained there, so protect it like configuration.
 
 ### Register and publish
 
@@ -118,17 +130,49 @@ From the second terminal, request shutdown:
 ```
 
 Alternatively, press Ctrl+C in the first terminal. Wait for daemon exit and
-the configured-plugin exit diagnostics. Stopping loses registrations and
-queued events. To resume, inspect leftover trigger files, start the daemon
-again with the same configuration, and register again. Existing output records
-remain, but do not restore subscriptions.
+the configured-plugin exit diagnostics before restarting. Normal shutdown
+retains completed registrations and their IDs. It discards queued and in-flight
+hub events and incomplete registrations; it cannot retract accepted output.
+
+To resume this example, inspect leftover triggers while stopped, including files
+the manual trigger renamed for processing (see claimed paths in diagnostics).
+Restore trigger absence deliberately. Start the same daemon command
+with the same configuration and state. Wait for `daemon_ready` with
+`restored_registrations: 1`, then publish a new distinct event as above without
+registering again. Its output must carry the saved subscription ID. The original
+watch and destination argument files are not needed for restoration. Equivalent
+explicit registration still returns that active ID.
+
+Startup revalidates every saved route. An invalid state record, unavailable
+referenced plugin, invalid destination, or already-present manual trigger
+prevents the whole daemon from becoming ready. Stop all owners and preserve
+state before deliberate repair; follow the [operation guide](docs/design/windows-operations.md#8-demonstrate-deliberate-saved-state-recovery)
+for recovery, including a leftover state lock after abnormal termination.
 
 There is no automatic retry or plugin restart. An `unknown` delivery outcome
 may already have appended a record; inspect the output before deliberately
-publishing another event. Output acceptance does not promise crash durability.
+publishing another event. There is no replay, stopped-event collection, or
+forced-termination/power-loss recovery guarantee. Output acceptance does not
+promise crash durability.
 The output file contains the event text, so choose its contents and retention
 accordingly. See the [operation guide](docs/design/windows-operations.md) for
 detailed diagnostics and recovery.
+
+### Send events to Codex
+
+Use the [Codex Queue action guide](plugins/actions/codex-queue/readme.md) to build
+and configure the optional action with the manual trigger. It requires a trusted
+native Codex executable supporting `queue --thread --message` and access to the
+target conversation's shared server. The guide covers deliberate installation
+and discovery of the bundled registration skill. Invoke it in the top-level
+conversation with the configuration values it requests; both inherited Codex
+identity variables must be present and equal. The skill never invents a target.
+
+Publish only after confirmed registration. An `accepted` result means the event
+was queued for the registered conversation; observe its later processing
+separately. Inspect the target after an `unknown` result before deliberately
+submitting another event. A restart restores saved routes and revalidates the
+destination; it does not replay Codex work.
 
 ## Writing plugins
 
