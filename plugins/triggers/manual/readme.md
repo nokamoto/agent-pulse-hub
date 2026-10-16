@@ -7,8 +7,8 @@ Its daemon configuration name remains `manual`.
 
 ## Prerequisites and build
 
-Use Go 1.26.0 or later from the repository root. Build the hub and both model
-plugins from the same revision. Build this executable with:
+Use Go 1.26.0 or later from the repository root. Build the hub, manual trigger,
+and model-output action from the same revision. Build this executable with:
 
 ```text
 go build -o MANUAL_EXECUTABLE_PATH ./plugins/triggers/manual
@@ -46,7 +46,14 @@ HUB_EXECUTABLE daemon --config DAEMON_CONFIG_PATH --address LOOPBACK_ADDRESS
 HUB_EXECUTABLE register --input-plugin manual --watch-args-file WATCH_ARGS_PATH --output-plugin model --destination-args-file DESTINATION_ARGS_PATH --address LOOPBACK_ADDRESS
 ```
 
-Wait for both plugins to report ready before registering. The watch is accepted
+By default, registrations are stored beside the configuration in a directory
+whose name is the absolute configuration pathname plus `.state`. Select another
+dedicated local directory with `daemon --state-dir ABSOLUTE_STATE_DIRECTORY`
+when needed, and reuse it on restart. Protect saved arguments like configuration;
+do not modify or copy live state.
+
+Wait for `daemon_ready` and its `restored_registrations` count before registering
+or publishing. The watch is accepted
 only when the trigger path is valid and not already watched. The complete
 build, paired registration, trigger publication, observation, and shutdown
 procedure is in the [model-plugin operations guide](../../../docs/design/windows-operations.md).
@@ -72,9 +79,14 @@ Once a trigger has been claimed, a failed read, validation, or removal does not
 retry that claim. The daemon attempts each admitted event once, and plugins are
 not restarted automatically. If the output action reports `unknown`, inspect
 its destination before publishing another event: the record may already be
-present or may be partial. Preserve damaged files, stop the daemon and wait for
-plugin exits, then choose fresh absent trigger and output paths in an existing
-writable directory. Register again and publish only a deliberately chosen
-distinct event. See the
+present or may be partial. Stop the daemon, wait for plugin exits, and preserve
+damaged files and the stopped state tree. Completed registrations survive normal
+shutdown with their IDs; queued/in-flight events and incomplete registrations do
+not. Inspect trigger/claim leftovers and restore trigger absence deliberately.
+Restore valid destination conditions at the saved path, or deliberately remove
+the affected saved registration while stopped before selecting fresh paths and
+registering a new route. Restart with the same configuration/state and wait for
+`daemon_ready` before publishing a distinct event. There is no stopped-event
+collection, replay, or crash-recovery guarantee. See the
 [operations guide](../../../docs/design/windows-operations.md) for the paired
 recovery procedure.

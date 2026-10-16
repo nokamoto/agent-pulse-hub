@@ -64,8 +64,14 @@ HUB_EXECUTABLE daemon --config DAEMON_CONFIG_PATH --address LOOPBACK_ADDRESS
 
 In the foreground hub's JSON logs, wait for `plugin_ready` records whose
 `plugin`, `role`, and `available:true` values match both configured plugins.
-Then wait for `registration_available` with `available:true` before creating a
-route.
+Then wait for `daemon_ready` and its `restored_registrations` count before
+creating a route or publishing. The count is zero with fresh state.
+
+By default, accepted registrations are stored in a directory named after the
+absolute configuration pathname with `.state` appended. The optional
+`daemon --state-dir ABSOLUTE_STATE_DIRECTORY` selects another dedicated local
+directory. Reuse the same configuration/state on restart, protect saved
+arguments like configuration, and do not edit or copy live state.
 
 ## Install the registration skill
 
@@ -73,7 +79,9 @@ The action ships the
 [`register-codex-queue` skill](skills/register-codex-queue/SKILL.md). Copy the
 entire `skills/register-codex-queue` directory into a skills directory used by
 your Codex installation, then follow that installation's procedure for
-discovering skills. In the current top-level conversation, ask for example:
+discovering skills in the official [Build skills guide](https://learn.chatgpt.com/docs/build-skills).
+Confirm that `register-codex-queue` is available in your installation before
+invoking it. In the current top-level conversation, ask for example:
 “Register this conversation with the configured Codex Queue route.” The
 skill's source in this repository is authoritative; there is no fixed home
 path or automatic installer.
@@ -163,9 +171,19 @@ it; the action never substitutes a steering or new-conversation command.
 ## Stop and recover
 
 Stop the hub with its existing `stop --address` command and wait for both
-configured plugin processes to exit. A hub restart loses registrations and
-queued hub events, so register again after restart. It cannot retract a message
-that Codex already accepted.
+configured plugin processes to exit. Completed registrations and their IDs
+survive normal shutdown. Reuse the same configuration/state, restore manual
+trigger absence deliberately while stopped, then restart and wait for
+`daemon_ready` with the saved route count before publishing a new event. No
+re-registration or original temporary destination file is needed. Startup
+revalidates the destination with the current action and re-establishes its
+watch; any saved route that cannot be restored prevents the whole startup.
+
+Queued/in-flight hub events and incomplete registrations are discarded. The hub
+cannot retract a message that Codex already accepted and does not replay Codex
+work, collect stopped events, or guarantee crash recovery. For invalid saved
+state or a leftover lock, stop all owners and preserve state before following
+the [offline recovery procedure](../../../docs/design/windows-operations.md).
 
 If the compatibility check fails, select a compatible CLI executable and
 shared server, then restart deliberately. If delivery is unknown, inspect the
