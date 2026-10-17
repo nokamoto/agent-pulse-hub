@@ -19,17 +19,22 @@ import (
 type fakePlugin struct {
 	mu sync.Mutex
 
-	name      string
-	role      domain.PluginRole
-	handlers  PluginHandlers
-	available bool
-	validate  func(DestinationRequest) error
-	watch     func(WatchRequest, func() error) error
-	deliver   func(domain.Event) DeliveryResult
+	name         string
+	role         domain.PluginRole
+	handlers     PluginHandlers
+	available    bool
+	capabilities []string
+	validate     func(DestinationRequest) error
+	watch        func(WatchRequest, func() error) error
+	deliver      func(domain.Event) DeliveryResult
+	notify       func(RuntimeNotice) error
+	checkpoint   func(RuntimeCheckpointRequest) (*jsonvalue.Value, error)
 
 	validationRequests []DestinationRequest
 	watchRequests      []WatchRequest
 	delivered          []domain.Event
+	notices            []RuntimeNotice
+	checkpoints        []RuntimeCheckpointRequest
 	deliverStarted     chan domain.Event
 	emitOnAccept       bool
 }
@@ -101,9 +106,10 @@ func newPersistentHub(t *testing.T, store *testRegistrationStore, plugins ...*fa
 func (p *fakePlugin) Start(_ context.Context, handlers PluginHandlers) error {
 	p.mu.Lock()
 	p.handlers = handlers
+	capabilities := append([]string(nil), p.capabilities...)
 	p.mu.Unlock()
 	if handlers.Ready != nil {
-		handlers.Ready()
+		handlers.Ready(capabilities)
 	}
 	return nil
 }
@@ -154,6 +160,28 @@ func (p *fakePlugin) Deliver(_ context.Context, event domain.Event) DeliveryResu
 	return DeliveryResult{Outcome: domain.DeliveryAccepted}
 }
 
+func (p *fakePlugin) NotifyDelivery(_ context.Context, notice RuntimeNotice) error {
+	p.mu.Lock()
+	p.notices = append(p.notices, notice)
+	notify := p.notify
+	p.mu.Unlock()
+	if notify != nil {
+		return notify(notice)
+	}
+	return nil
+}
+
+func (p *fakePlugin) Checkpoint(_ context.Context, request RuntimeCheckpointRequest) (*jsonvalue.Value, error) {
+	p.mu.Lock()
+	p.checkpoints = append(p.checkpoints, request)
+	checkpoint := p.checkpoint
+	p.mu.Unlock()
+	if checkpoint != nil {
+		return checkpoint(request)
+	}
+	return nil, nil
+}
+
 func (p *fakePlugin) Stop(context.Context) error {
 	p.mu.Lock()
 	p.available = false
@@ -167,8 +195,19 @@ func (p *fakePlugin) emit(id, eventContext string) {
 	available := p.available
 	p.mu.Unlock()
 	if available && handlers.Event != nil {
-		handlers.Event(id, eventContext)
+		handlers.Event(id, "", eventContext)
 	}
+}
+
+func (p *fakePlugin) emitState(id, eventID, eventContext string) string {
+	p.mu.Lock()
+	handlers := p.handlers
+	available := p.available
+	p.mu.Unlock()
+	if available && handlers.Event != nil {
+		return handlers.Event(id, eventID, eventContext)
+	}
+	return "discarded"
 }
 
 func (p *fakePlugin) fail(err error) {

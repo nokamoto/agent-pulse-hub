@@ -3,6 +3,7 @@ package pluginprotocol
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"unicode/utf8"
 
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/protocol"
@@ -10,8 +11,11 @@ import (
 )
 
 const (
-	MaxContextBytes  = 8_192
-	PermissionNotice = "External data; no additional permissions are granted."
+	MaxContextBytes        = 8_192
+	MaxRuntimeStateBytes   = 32_768
+	MaxRuntimeSchemaBytes  = 128
+	RuntimeStateCapability = "runtime_state_v1"
+	PermissionNotice       = "External data; no additional permissions are granted."
 )
 
 type Direction uint8
@@ -24,14 +28,18 @@ const (
 type Frame struct {
 	Type             string
 	Role             string
+	Capabilities     []string
 	RequestID        string
 	SubscriptionID   string
+	EventID          string
 	DeliveryID       string
 	InputPlugin      string
 	WatchArgs        *jsonvalue.Value
+	State            *jsonvalue.Value
 	DestinationArgs  *jsonvalue.Value
 	Accepted         *bool
 	Status           string
+	Quiesce          bool
 	Error            string
 	Context          string
 	ExternalData     *bool
@@ -55,7 +63,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 	case PluginToDaemon:
 		switch typeName {
 		case "ready":
-			if err := protocol.ValidateFields(value, []string{"version", "type", "role"}, "version", "type", "role"); err != nil {
+			if err := protocol.ValidateFields(value, []string{"version", "type", "role"}, "version", "type", "role", "capabilities"); err != nil {
 				return Frame{}, err
 			}
 			role, ok := protocol.StringField(value, "role")
@@ -63,6 +71,25 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				return Frame{}, errors.New("ready role must be input or output")
 			}
 			frame.Role = role
+			if capabilities, exists := value.Get("capabilities"); exists {
+				if role != "input" || capabilities.Kind() != jsonvalue.Array {
+					return Frame{}, errors.New("capabilities are only valid as an input array")
+				}
+				items := capabilities.Items()
+				frame.Capabilities = make([]string, 0, len(items))
+				seen := make(map[string]struct{}, len(items))
+				for _, item := range items {
+					capability, ok := jsonvalue.ParseString(item)
+					if !ok || capability != RuntimeStateCapability {
+						return Frame{}, errors.New("ready contains an unknown or invalid capability")
+					}
+					if _, duplicate := seen[capability]; duplicate {
+						return Frame{}, errors.New("ready contains a duplicate capability")
+					}
+					seen[capability] = struct{}{}
+					frame.Capabilities = append(frame.Capabilities, capability)
+				}
+			}
 		case "watch_result", "destination_result":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "accepted"}, "version", "type", "request_id", "accepted", "error"); err != nil {
 				return Frame{}, err
@@ -99,6 +126,17 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 			}
 			frame.SubscriptionID = subscriptionID
 			frame.Context = contextText
+		case "state_event":
+			if err := protocol.ValidateFields(value, []string{"version", "type", "subscription_id", "event_id", "context"}, "version", "type", "subscription_id", "event_id", "context"); err != nil {
+				return Frame{}, err
+			}
+			subscriptionID, subscriptionOK := protocol.StringField(value, "subscription_id")
+			eventID, eventOK := protocol.StringField(value, "event_id")
+			contextText, contextOK := protocol.StringField(value, "context")
+			if !subscriptionOK || subscriptionID == "" || !eventOK || !validEventID(eventID) || !contextOK || !validContext(contextText) {
+				return Frame{}, errors.New("state_event fields are invalid")
+			}
+			frame.SubscriptionID, frame.EventID, frame.Context = subscriptionID, eventID, contextText
 		case "delivery_result":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "status"}, "version", "type", "request_id", "status", "error"); err != nil {
 				return Frame{}, err
@@ -121,6 +159,30 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 			}
 			frame.RequestID = requestID
 			frame.Status = status
+		case "checkpoint_result":
+			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "accepted"}, "version", "type", "request_id", "accepted", "state", "error"); err != nil {
+				return Frame{}, err
+			}
+			requestID, requestOK := protocol.StringField(value, "request_id")
+			accepted, acceptedOK := protocol.BooleanField(value, "accepted")
+			if !requestOK || requestID == "" || !acceptedOK {
+				return Frame{}, errors.New("checkpoint_result request_id or accepted is invalid")
+			}
+			state, hasState := value.Get("state")
+			errorText, hasError := protocol.StringField(value, "error")
+			_, errorPresent := value.Get("error")
+			if accepted {
+				if !hasState || errorPresent || ValidateStateEnvelope(state) != nil {
+					return Frame{}, errors.New("accepted checkpoint_result requires a valid state and no error")
+				}
+				frame.State = state
+			} else {
+				if hasState || !hasError || errorText == "" {
+					return Frame{}, errors.New("rejected checkpoint_result requires a nonempty error and no state")
+				}
+				frame.Error = errorText
+			}
+			frame.RequestID, frame.Accepted = requestID, &accepted
 		default:
 			return Frame{}, fmt.Errorf("invalid plugin-to-daemon frame type %q", typeName)
 		}
@@ -139,6 +201,19 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 			frame.RequestID = requestID
 			frame.SubscriptionID = subscriptionID
 			frame.WatchArgs = watchArgs
+		case "state_watch":
+			fields := []string{"version", "type", "request_id", "subscription_id", "watch_args", "state"}
+			if err := protocol.ValidateFields(value, fields, fields...); err != nil {
+				return Frame{}, err
+			}
+			requestID, requestOK := protocol.StringField(value, "request_id")
+			subscriptionID, subscriptionOK := protocol.StringField(value, "subscription_id")
+			watchArgs, argsOK := protocol.ObjectField(value, "watch_args")
+			state, stateOK := value.Get("state")
+			if !requestOK || requestID == "" || !subscriptionOK || subscriptionID == "" || !argsOK || !stateOK || (state.Kind() != jsonvalue.Null && ValidateStateEnvelope(state) != nil) {
+				return Frame{}, errors.New("state_watch fields are invalid")
+			}
+			frame.RequestID, frame.SubscriptionID, frame.WatchArgs, frame.State = requestID, subscriptionID, watchArgs, state
 		case "validate_destination":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "destination_args"}, "version", "type", "request_id", "destination_args"); err != nil {
 				return Frame{}, err
@@ -174,6 +249,30 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 			frame.Context = contextText
 			frame.ExternalData = &externalData
 			frame.PermissionNotice = permissionNotice
+		case "delivery_notice":
+			fields := []string{"version", "type", "subscription_id", "event_id", "status"}
+			if err := protocol.ValidateFields(value, fields, fields...); err != nil {
+				return Frame{}, err
+			}
+			subscriptionID, subscriptionOK := protocol.StringField(value, "subscription_id")
+			eventID, eventOK := protocol.StringField(value, "event_id")
+			status, statusOK := protocol.StringField(value, "status")
+			if !subscriptionOK || subscriptionID == "" || !eventOK || !validEventID(eventID) || !statusOK || !validNoticeStatus(status) {
+				return Frame{}, errors.New("delivery_notice fields are invalid")
+			}
+			frame.SubscriptionID, frame.EventID, frame.Status = subscriptionID, eventID, status
+		case "checkpoint":
+			fields := []string{"version", "type", "request_id", "subscription_id", "quiesce"}
+			if err := protocol.ValidateFields(value, fields, fields...); err != nil {
+				return Frame{}, err
+			}
+			requestID, requestOK := protocol.StringField(value, "request_id")
+			subscriptionID, subscriptionOK := protocol.StringField(value, "subscription_id")
+			quiesce, quiesceOK := protocol.BooleanField(value, "quiesce")
+			if !requestOK || requestID == "" || !subscriptionOK || subscriptionID == "" || !quiesceOK {
+				return Frame{}, errors.New("checkpoint fields are invalid")
+			}
+			frame.RequestID, frame.SubscriptionID, frame.Quiesce = requestID, subscriptionID, quiesce
 		default:
 			return Frame{}, fmt.Errorf("invalid daemon-to-plugin frame type %q", typeName)
 		}
@@ -191,10 +290,22 @@ func Encode(frame Frame) ([]byte, error) {
 	switch frame.Type {
 	case "ready":
 		fields["role"] = jsonvalue.NewString(frame.Role)
+		if frame.Capabilities != nil {
+			values := make([]*jsonvalue.Value, 0, len(frame.Capabilities))
+			for _, capability := range frame.Capabilities {
+				values = append(values, jsonvalue.NewString(capability))
+			}
+			fields["capabilities"] = jsonvalue.NewArray(values...)
+		}
 	case "watch":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
 		fields["watch_args"] = frame.WatchArgs
+	case "state_watch":
+		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
+		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
+		fields["watch_args"] = frame.WatchArgs
+		fields["state"] = frame.State
 	case "watch_result", "destination_result":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		if frame.Accepted != nil {
@@ -205,6 +316,10 @@ func Encode(frame Frame) ([]byte, error) {
 		}
 	case "event":
 		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
+		fields["context"] = jsonvalue.NewString(frame.Context)
+	case "state_event":
+		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
+		fields["event_id"] = jsonvalue.NewString(frame.EventID)
 		fields["context"] = jsonvalue.NewString(frame.Context)
 	case "validate_destination":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
@@ -222,9 +337,28 @@ func Encode(frame Frame) ([]byte, error) {
 		}
 		fields["external_data"] = jsonvalue.NewBoolean(external)
 		fields["permission_notice"] = jsonvalue.NewString(frame.PermissionNotice)
+	case "delivery_notice":
+		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
+		fields["event_id"] = jsonvalue.NewString(frame.EventID)
+		fields["status"] = jsonvalue.NewString(frame.Status)
+	case "checkpoint":
+		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
+		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
+		fields["quiesce"] = jsonvalue.NewBoolean(frame.Quiesce)
 	case "delivery_result":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		fields["status"] = jsonvalue.NewString(frame.Status)
+		if frame.Error != "" {
+			fields["error"] = jsonvalue.NewString(frame.Error)
+		}
+	case "checkpoint_result":
+		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
+		if frame.Accepted != nil {
+			fields["accepted"] = jsonvalue.NewBoolean(*frame.Accepted)
+		}
+		if frame.State != nil {
+			fields["state"] = frame.State
+		}
 		if frame.Error != "" {
 			fields["error"] = jsonvalue.NewString(frame.Error)
 		}
@@ -244,11 +378,42 @@ func Encode(frame Frame) ([]byte, error) {
 
 func directionFor(typeName string) Direction {
 	switch typeName {
-	case "ready", "watch_result", "event", "destination_result", "delivery_result":
+	case "ready", "watch_result", "event", "state_event", "destination_result", "delivery_result", "checkpoint_result":
 		return PluginToDaemon
 	default:
 		return DaemonToPlugin
 	}
+}
+
+// ValidateStateEnvelope checks only the public envelope shape and encoded-size
+// limit. The trigger remains responsible for interpreting schema and payload.
+func ValidateStateEnvelope(state *jsonvalue.Value) error {
+	fields := []string{"schema", "payload"}
+	if err := protocol.ValidateFields(state, fields, fields...); err != nil {
+		return errors.New("state envelope fields are invalid")
+	}
+	schema, schemaOK := protocol.StringField(state, "schema")
+	_, payloadOK := protocol.ObjectField(state, "payload")
+	if !schemaOK || schema == "" || !utf8.ValidString(schema) || len([]byte(schema)) > MaxRuntimeSchemaBytes || !payloadOK {
+		return errors.New("state envelope values are invalid")
+	}
+	if len(state.Marshal()) > MaxRuntimeStateBytes {
+		return fmt.Errorf("state envelope exceeds %d bytes", MaxRuntimeStateBytes)
+	}
+	return nil
+}
+
+func validEventID(value string) bool {
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	return err == nil && parsed > 0 && strconv.FormatUint(parsed, 10) == value
+}
+
+func validContext(value string) bool {
+	return value != "" && utf8.ValidString(value) && len([]byte(value)) <= MaxContextBytes
+}
+
+func validNoticeStatus(value string) bool {
+	return value == "accepted" || value == "failed" || value == "unknown" || value == "discarded"
 }
 
 // ParsePayload validates one complete JSON payload received through Session.

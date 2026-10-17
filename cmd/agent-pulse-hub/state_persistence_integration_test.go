@@ -403,31 +403,6 @@ func readStateFiles(t mvpReporter, directory string) map[string][]byte {
 	return files
 }
 
-func copyStateDirectory(t mvpReporter, source, destination string) {
-	t.Helper()
-	if err := os.MkdirAll(destination, 0o700); err != nil {
-		t.Fatalf("create state copy %s: %v", destination, err)
-	}
-	for _, name := range []string{"registrations", "staging"} {
-		if err := os.Mkdir(filepath.Join(destination, name), 0o700); err != nil {
-			t.Fatalf("create copied state directory %s: %v", name, err)
-		}
-		entries, err := os.ReadDir(filepath.Join(source, name))
-		if err != nil {
-			t.Fatalf("read source state directory %s: %v", name, err)
-		}
-		for _, entry := range entries {
-			data, err := os.ReadFile(filepath.Join(source, name, entry.Name()))
-			if err != nil {
-				t.Fatalf("read source state entry %s: %v", entry.Name(), err)
-			}
-			if err := os.WriteFile(filepath.Join(destination, name, entry.Name()), data, 0o600); err != nil {
-				t.Fatalf("copy state entry %s: %v", entry.Name(), err)
-			}
-		}
-	}
-}
-
 func awaitMVPLogCount(t mvpReporter, path, message string, count int, timeout time.Duration) {
 	t.Helper()
 	if !waitMVP(t, timeout, func() bool { return countMVPLog(path, message) >= count }) {
