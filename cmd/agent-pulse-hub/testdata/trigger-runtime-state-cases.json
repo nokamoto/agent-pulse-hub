@@ -1,0 +1,14 @@
+{
+  "suites": [
+    {
+      "package": "./cmd/agent-pulse-hub",
+      "cases": [
+        "TRS-V01-RESTART-ISOLATION",
+        "TRS-V02-RESTORE-RECOVERY",
+        "TRS-V03-SAVE-FAILURE",
+        "SP-V01-RESTORE",
+        "MVP-V05-RESTART"
+      ]
+    }
+  ]
+}

@@ -7,6 +7,8 @@ sources:
     resource: design/mvp.md
   - id: bundled-design
     resource: design/bundled-plugins.md
+  - id: runtime-state-design
+    resource: design/trigger-runtime-state.md
 ---
 
 # Agent Pulse Hub plugin protocol v2
@@ -20,6 +22,9 @@ which owns configuration, registration control, subscription identity, event
 admission, routing decisions, and the bundled model-plugin profiles. This
 specification owns handshake configuration, the gRPC application service,
 message encoding, exchange ordering, and application deadlines.
+The optional runtime-state extension derives from
+[trigger runtime state](trigger-runtime-state.md), which owns state storage,
+checkpoint scheduling, coordinated shutdown, and recovery.
 
 The daemon owns integration-independent control and decisions. Plugins carry
 out requested service-specific operations and report results. An input plugin
@@ -47,7 +52,7 @@ Use module-pinned `github.com/hashicorp/go-plugin` v1.8.0, gRPC v1.84.0, and
 protobuf v1.36.12. Only `plugin.ProtocolGRPC` is allowed. The framework launches
 the executable with its configured argument array and stops the configured
 process. Do not introduce a product-owned launcher, containment mechanism,
-stdio application transport, or shutdown RPC. Dependency-internal OS handling
+stdio application transport, or process-shutdown RPC. Dependency-internal OS handling
 is permitted; descendant-process termination is not a product guarantee.
 
 | Setting | Required value |
@@ -124,7 +129,7 @@ not manufacture them.
 
 | Direction / role / type | Additional fields | Meaning |
 | --- | --- | --- |
-| Plugin to host / either / `ready` | `role`: `input` or `output`, matching configuration and dispense name | First message, exactly once, when the instance can serve its role. |
+| Plugin to host / either / `ready` | `role`: `input` or `output`, matching configuration and dispense name; input may additionally include `capabilities` as specified below | First message, exactly once, when the instance can serve its role. |
 | Host to plugin / input / `watch` | `request_id`, `subscription_id`: nonempty strings; `watch_args`: object | Request a continuing watch. |
 | Plugin to host / input / `watch_result` | `request_id`: nonempty string; `accepted`: boolean; `error`: nonempty string only when false | Accept or reject the requested watch. |
 | Plugin to host / input / `event` | `subscription_id`: nonempty string; `context`: nonempty string, at most 8,192 decoded UTF-8 bytes | Report external data from an accepted watch. |
@@ -214,10 +219,77 @@ is no per-watch cancellation or new rollback RPC.
 
 Events before activation, with an unknown ID, belonging to another input
 instance, or involving an unavailable input/output instance are discarded and
-logged. Events have no acknowledgement and expose no delivery result to the
-input. Repeated valid events remain distinct; plugins do not retransmit for
+logged. Ordinary events have no acknowledgement and expose no delivery result
+to the input. Repeated valid events remain distinct; plugins do not retransmit for
 confirmation. The daemon's [routing rules](mvp.md) bind each admitted event
 to its registered output and arguments.
+
+## Optional trigger runtime state
+
+An input opts in by adding exactly `"capabilities":["runtime_state_v1"]` to
+`ready`. Omission means the ordinary v2 contract above; an empty array is also
+nonparticipating. Duplicate or unknown capabilities, other array values, or a
+capabilities field on output readiness are malformed. The host sends new
+messages only to participating inputs. Old v2 inputs keep their exact artifacts
+and message shapes. A participating input requires a host supporting this
+extension; old strict hosts can reject the additional readiness field.
+
+Every message below includes `version: 2` and `type`. Existing strict encoding,
+size, request-ID and subscription ownership rules apply. The state envelope,
+32,768-byte bound, schema ownership, storage and recovery are defined by
+[runtime state](trigger-runtime-state.md#interfaces-and-data).
+
+| Direction / input message | Exact additional fields | Meaning |
+| --- | --- | --- |
+| Host to plugin / `state_watch` | `request_id`, `subscription_id`, `watch_args` as for `watch`; `state`: null or state envelope | Replaces ordinary `watch` for participating inputs, even without prior state. Validate and apply state before starting the watch; reply with ordinary `watch_result`. |
+| Plugin to host / `state_event` | `subscription_id`, `context` as for `event`; `event_id`: canonical positive decimal string through uint64 maximum | Replaces ordinary `event`; counter strictly increases per watch within this Session. |
+| Host to plugin / `delivery_notice` | `subscription_id`, `event_id`: matching strings; `status`: `accepted`, `failed`, `unknown`, or `discarded` | One terminal outcome per valid fresh participating event. `accepted` alone establishes confirmed delivery; `discarded` means not admitted/attempted. |
+| Host to plugin / `checkpoint` | `request_id`, `subscription_id`: nonempty strings; `quiesce`: boolean | Apply all earlier notices for this watch before extracting a restorable snapshot. When true, stop emitting before returning and remain quiescent until Session closure. |
+| Plugin to host / `checkpoint_result` | `request_id`: nonempty string; `accepted`: boolean; `state`: envelope required only when true; `error`: nonempty bounded string required only when false | Complete only the matching pending checkpoint. Snapshot includes all preceding accepted notices; incompatible/oversized/unextractable state is a failure. |
+
+Checkpoint and restoration error text must identify the operation and reason
+without including state payload values or external event context.
+
+The host never sends ordinary `watch` to a participating input or new messages
+to a nonparticipant. Participating inputs never send ordinary `event`. An
+ordinary nonparticipating input has no delivery notices or progress guarantee.
+Input and host serialize processing as well as emission where ordering affects
+state: finishing a result send precedes first event emission; consuming a notice
+precedes its following checkpoint snapshot. The input may serialize these
+operations around its service tasks without pausing other watches.
+
+Each valid fresh `state_event` receives one terminal notice while the Session
+remains usable, including `discarded` for a staged startup watch or closed gate.
+Notice failure during shutdown is a visible continuity failure, never success.
+Invalid, foreign, repeated and pre-watch events are discarded/logged without a
+notice. A failed/unknown/discarded update has no completed-notification guarantee;
+the host never retries it. An input must not wait indefinitely for its acceptance
+or treat a discarded startup event as completed progress. At uint64 exhaustion
+report a visible watch failure; never wrap the event counter.
+
+Checkpoint requests are pipelined with one outstanding per watch. A single
+ten-second batch deadline includes notice/request sending and all responses;
+the [governing design](trigger-runtime-state.md#periodic-checkpoints-and-save-failures)
+defines batching and final-stop ordering. A checkpoint rejection or timeout
+reports unsaved progress but does not kill an otherwise healthy input; expire
+the correlation and ignore late replies. Malformed replies never extend the
+deadline. Actual stream/transport failure keeps existing instance-unavailability
+behavior. This checkpoint-specific rule does not change ten-second watch/
+destination or thirty-second delivery deadlines.
+The host drops unsent expired checkpoint requests and ignores late replies;
+expired queued requests cannot appear in a later batch. Size validation reserves
+the full state allowance with watch arguments at registration/restoration as
+specified by the governing design, preserving the overall application bound.
+
+```json
+{"version":2,"type":"ready","role":"input","capabilities":["runtime_state_v1"]}
+{"version":2,"type":"state_watch","request_id":"r1","subscription_id":"s1","watch_args":{"source":"A"},"state":null}
+{"version":2,"type":"watch_result","request_id":"r1","accepted":true}
+{"version":2,"type":"state_event","subscription_id":"s1","event_id":"1","context":"U1"}
+{"version":2,"type":"delivery_notice","subscription_id":"s1","event_id":"1","status":"accepted"}
+{"version":2,"type":"checkpoint","request_id":"r2","subscription_id":"s1","quiesce":true}
+{"version":2,"type":"checkpoint_result","request_id":"r2","accepted":true,"state":{"schema":"cursor-v1","payload":{"confirmed":["U1"]}}}
+```
 
 ## Delivery outcomes and failures
 
@@ -251,13 +323,16 @@ exit make the corresponding instance unavailable and invoke `Client.Kill()`.
 Other available routes continue. No instance reconnects or restarts automatically.
 
 On normal shutdown, close registration and event admission, discard queued
-events under the governing shutdown rules, cancel stream activity, and call
+events under the governing shutdown rules, complete the
+[participating-input outcome/checkpoint fence](trigger-runtime-state.md#normal-stop-and-confirmed-delivery-fence),
+then cancel stream activity and call
 `Client.Kill()` for every started or partially started instance. Input plugins
 release watches and outputs cease operations when their stream/server stops.
 The framework provides graceful shutdown and fallback termination. Observe
 configured-process exit; stream closure alone is insufficient. No product
-shutdown message, additional grace timer, or descendant termination guarantee
-is added. An interrupted delivery whose acceptance is unconfirmed is unknown.
+shutdown message or descendant termination guarantee is added. The optional
+checkpoint phase has its own bounded protocol deadline; it is not a process
+shutdown RPC. An interrupted delivery whose acceptance is unconfirmed is unknown.
 
 ## Cross-language and standalone callers
 
@@ -307,7 +382,8 @@ arguments together with the revised daemon/client. The document path remains
 stable, but the service, cookie, role selection, and payload version change.
 There is no dual-interface support or migration of registrations that an older
 nonpersistent daemon never saved. Saved-state compatibility and restoration
-follow [local persistence](state-persistence.md); the v2 wire format is unchanged.
+follow [local persistence](state-persistence.md). Nonparticipating v2 messages
+remain unchanged; runtime-state participation uses the optional extension above.
 Unsupported framework/application versions fail visibly.
 An incompatible future interface requires a distinct version.
 

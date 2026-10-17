@@ -9,6 +9,8 @@ sources:
     resource: requirements/mvp.md
   - id: routing-design
     resource: design/mvp.md
+  - id: runtime-state-design
+    resource: design/trigger-runtime-state.md
 ---
 
 # Local registration persistence
@@ -22,8 +24,10 @@ hub stores accepted routes separately. A normal stop and restart restores the
 same subscription IDs and opaque argument values without the original client
 argument files. Trigger/action refer to the public input/output roles.
 
-Only completed registrations survive. Event queues, in-flight deliveries,
-pending registrations, plugin sessions and process availability remain volatile.
+Completed registrations survive. Participating triggers additionally preserve
+opaque progress under [trigger runtime state](trigger-runtime-state.md).
+Event queues, in-flight deliveries, pending registrations, plugin sessions
+and process availability remain volatile.
 There is no forced-termination or power-loss recovery guarantee, stopped-event
 collection, delivery retry, automatic plugin restart, or service-specific hub
 logic. An older nonpersistent daemon has no registrations to migrate.
@@ -40,7 +44,7 @@ All IDs below are local to `requirements/state-persistence` unless qualified.
 | FR-005 | AC-004 | Complete validation; closed startup admission; deliberate recovery | SP-V03-STARTUP-FAILURE; validation/read-error unit tests |
 | FR-006 | AC-005 | Volatile work and normal stop | MVP-V05-RESTART; lifecycle unit tests |
 | FR-007 | AC-006 | Operation guide and delivery walkthrough | SP-D01, extending MVP D09 and BUNDLE-D01 |
-| NFR-001 | AC-001, AC-003, AC-004 | Go filesystem APIs; opaque data; unchanged plugin protocol | All SP cases and boundary inspection |
+| NFR-001 | AC-001, AC-003, AC-004 | Go filesystem APIs; opaque data; unchanged nonparticipating protocol | All SP cases and boundary inspection |
 | `requirements/mvp` FR-007, NFR-004 | AC-005 | Stable restored routes, volatile events | SP-V01-RESTORE; MVP-V05-RESTART; SP-D01 |
 | `requirements/codex-queue` FR-008 | Existing delivery criteria | Derivative restart instructions only | Existing Codex Queue delivery checks plus instruction inspection |
 
@@ -62,7 +66,9 @@ Use an application-facing store operation to commit one complete registration
 and load all records, with mocked filesystem behavior in unit tests. Internal
 package names and helper signatures are implementation choices under the
 [Go conventions](../aidd/go-development.md). Do not import plugin-private code
-into the hub or expose a persistence RPC to plugins.
+into the hub. The optional public checkpoint messages in
+[plugin v2](plugin-v1.md#optional-trigger-runtime-state) hand off opaque progress;
+they never expose filesystem locations or storage operations to plugins.
 
 ## Storage contract
 
@@ -89,9 +95,12 @@ local modification are outside the existing trust boundary.
 | `.lock/` | Exclusive owner marker, created with a single `os.Mkdir` before reading state; existing marker fails startup even at a different control address. |
 | `registrations/` | Committed registration files only. |
 | `staging/` | Temporary, uncommitted record files; never loaded as registrations. |
+| `runtime/` | Trigger checkpoint generations governed by [runtime state](trigger-runtime-state.md#storage-and-compatibility), independent of registration records. |
 
 Create missing subdirectories only for a fresh empty root. An existing initialized
-root must have both subdirectories. Unknown root entries, non-directory reserved
+root must have `registrations/` and `staging/`; the runtime extension may create
+its missing `runtime/` directory in a valid older tree after exclusion.
+Unknown root entries, non-directory reserved
 entries, symlinks, non-regular registration entries and unexpected registration
 filenames fail startup. Staging files are uncommitted attempts, not successful
 registrations; cleanup may remove them only after acquiring the lock. A leftover
@@ -125,6 +134,8 @@ No best-effort salvage or automatic format migration is supplied.
 
 Never store events, delivery/request IDs, process IDs, readiness, active status,
 credentials from the environment, or references to client argument files.
+These exclusions describe registration records and hub work; participating
+triggers may store opaque logical progress in the separate runtime area.
 Argument values themselves may contain sensitive data; diagnostics identify
 path, subscription ID, operation and reason without dumping arguments.
 
@@ -183,7 +194,9 @@ Administrative removal is offline deliberate recovery, not a new removal API.
    lifecycle. Existing failure handling for an unused plugin is unchanged;
    an unavailable plugin referenced by a saved route makes restoration fail.
 3. Restore records in filename order using the saved ID and argument objects.
-   Validate the destination and obtain current watch acceptance for each route.
+   Validate the destination and obtain current watch acceptance for each route,
+   applying any participating trigger state under the
+   [runtime startup contract](trigger-runtime-state.md#registration-and-startup).
    Do not rewrite records or assign replacement IDs. Keep restored routes staged
    until every saved route succeeds. Before opening admission, recheck all
    referenced instances and that stop has not begun under lifecycle serialization.
@@ -204,10 +217,11 @@ deliberate repair and a later full restart.
 Normal stop closes admission, prevents new commits, waits for any serialized
 commit decision already in progress, discards queued events and marks possibly
 sent in-flight work unknown under the MVP policy. Cancel pending registrations,
-stop configured plugins and release state exclusion. A commit that won the
+finish participating-input outcome notices and final checkpoint/save before
+stopping those plugins, then release state exclusion. A commit that won the
 serialization race remains saved; one cancelled before commit does not resume.
-No final snapshot is needed. Restored routes use fresh sessions and current
-acceptance, not prior process state. Normal stop acknowledgement still precedes
+Nonparticipating inputs need no final snapshot. Restored routes use fresh
+sessions and current acceptance, not prior process state. Normal stop acknowledgement still precedes
 process exit; operators wait for exit before restarting.
 
 ## Specification documents
@@ -217,8 +231,9 @@ commit ordering, exclusion, restoration and persistence verification. These
 contracts stay here; no additional specification is required.
 [MVP design](mvp.md) retains routing/configuration/control authority and derives
 its persistence additions from this document. [Plugin v2](plugin-v1.md) retains
-wire-schema authority and documents the activation gate without changing wire
-version or messages. [Operations](windows-operations.md) supplies the complete
+wire-schema authority and documents the activation gate and optional runtime
+messages without changing version 2. [Runtime state](trigger-runtime-state.md)
+owns mutable progress storage and coordination. [Operations](windows-operations.md) supplies the complete
 reusable procedure, including deliberate recovery. [Bundled design](bundled-plugins.md)
 and [Codex Queue](codex-queue.md) derive restart instructions; service checks
 remain owned by their respective designs. Package layout, internal errors and
@@ -350,7 +365,7 @@ availability or queue semantics. No new service integration is introduced.
 ## Change and rollout impact
 
 Adoption adds the state flag/default and storage_error control result without
-changing local-control version or plugin v2 schemas. Existing clients continue
+changing local-control version or nonparticipating plugin v2 schemas. Existing clients continue
 to parse failure code/message; existing configuration remains valid. Select a
 stable writable location before first persistent use. Previously memory-only
 registrations must be registered once; no unavailable history is reconstructed.
