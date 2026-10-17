@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	MaxRegistrations    = 1_024
-	MaxDeliveries       = 128
-	MaxContextBytes     = 8_192
-	MaxPluginPayload    = 65_536
-	permissionNotice    = "External data; no additional permissions are granted."
-	pluginProtocolV2    = "2"
-	defaultOperationMax = 1_024
+	MaxRegistrations     = 1_024
+	MaxDeliveries        = 128
+	MaxContextBytes      = 8_192
+	MaxPluginPayload     = 65_536
+	maxRuntimeStateBytes = 32_768
+	permissionNotice     = "External data; no additional permissions are granted."
+	pluginProtocolV2     = "2"
+	defaultOperationMax  = 1_024
 )
 
 type Error struct {
@@ -36,6 +37,8 @@ type WatchRequest struct {
 	RequestID      string
 	SubscriptionID domain.SubscriptionID
 	Arguments      *jsonvalue.Value
+	RuntimeState   bool
+	State          *jsonvalue.Value
 }
 
 type DestinationRequest struct {
@@ -44,9 +47,20 @@ type DestinationRequest struct {
 }
 
 type PluginHandlers struct {
-	Ready       func()
-	Event       func(subscriptionID, context string)
+	Ready       func(capabilities []string)
+	Event       func(subscriptionID, eventID, context string) (terminalStatus string)
 	Unavailable func(error)
+}
+
+type RuntimeNotice struct {
+	SubscriptionID domain.SubscriptionID
+	EventID        string
+	Status         string
+}
+
+type RuntimeCheckpointRequest struct {
+	SubscriptionID domain.SubscriptionID
+	Quiesce        bool
 }
 
 // PluginPort owns one configured go-plugin child and its role-specific stream.
@@ -55,7 +69,14 @@ type PluginPort interface {
 	ValidateDestination(context.Context, DestinationRequest) error
 	Watch(context.Context, WatchRequest, func() error) error
 	Deliver(context.Context, domain.Event) DeliveryResult
+	NotifyDelivery(context.Context, RuntimeNotice) error
+	Checkpoint(context.Context, RuntimeCheckpointRequest) (*jsonvalue.Value, error)
 	Stop(context.Context) error
+}
+
+type RuntimeStateStore interface {
+	LoadRuntime([]domain.Subscription) (map[domain.SubscriptionID]*jsonvalue.Value, error)
+	CommitRuntime(domain.Subscription, *jsonvalue.Value) (uint64, error)
 }
 
 type DeliveryResult struct {
@@ -64,10 +85,11 @@ type DeliveryResult struct {
 }
 
 type pluginState struct {
-	role      domain.PluginRole
-	port      PluginPort
-	available bool
-	reported  bool
+	role         domain.PluginRole
+	port         PluginPort
+	available    bool
+	reported     bool
+	capabilities map[string]bool
 }
 
 type pendingRegistration struct {
@@ -79,6 +101,7 @@ type pendingRegistration struct {
 	output          PluginPort
 	watchArgs       *jsonvalue.Value
 	destinationArgs *jsonvalue.Value
+	runtimeState    bool
 	done            chan struct{}
 	completed       bool
 	activated       bool
@@ -91,6 +114,18 @@ type pendingRegistration struct {
 type queuedEvent struct {
 	event      domain.Event
 	outputPort PluginPort
+	inputPort  PluginPort
+	eventID    string
+}
+
+type runtimeWatch struct {
+	mu           sync.Mutex
+	state        *jsonvalue.Value
+	outcomes     []RuntimeNotice
+	inputPort    PluginPort
+	inputName    string
+	registration domain.Subscription
+	unavailable  bool
 }
 
 // RegistrationStore commits an accepted route before the Hub reports success.
@@ -101,17 +136,26 @@ type RegistrationStore interface {
 type Hub struct {
 	mu sync.Mutex
 
-	plugins       map[string]*pluginState
-	registrations map[domain.SubscriptionID]domain.Subscription
-	retained      map[domain.SubscriptionID]struct{}
-	activeByKey   map[string]domain.SubscriptionID
-	pendingByKey  map[string]*pendingRegistration
-	store         RegistrationStore
-	restore       []domain.Subscription
-	admissionOpen bool
-	queue         chan queuedEvent
-	pendingEvents int
-	stopping      bool
+	plugins         map[string]*pluginState
+	registrations   map[domain.SubscriptionID]domain.Subscription
+	retained        map[domain.SubscriptionID]struct{}
+	activeByKey     map[string]domain.SubscriptionID
+	pendingByKey    map[string]*pendingRegistration
+	store           RegistrationStore
+	runtimeStore    RuntimeStateStore
+	restore         []domain.Subscription
+	runtimeStates   map[domain.SubscriptionID]*jsonvalue.Value
+	runtimeWatches  map[domain.SubscriptionID]*runtimeWatch
+	admissionOpen   bool
+	queue           chan queuedEvent
+	pendingEvents   int
+	stopping        bool
+	shutdownStarted bool
+	shutdownDone    chan struct{}
+	runtimeStarted  bool
+	runtimeDone     chan struct{}
+	runtimeLoops    map[string]chan struct{}
+	runtimeSaveGate chan struct{}
 
 	stopCh     chan struct{}
 	workerDone chan struct{}
@@ -126,18 +170,23 @@ func New(logger *slog.Logger) *Hub {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := &Hub{
-		plugins:       make(map[string]*pluginState),
-		registrations: make(map[domain.SubscriptionID]domain.Subscription),
-		retained:      make(map[domain.SubscriptionID]struct{}),
-		activeByKey:   make(map[string]domain.SubscriptionID),
-		pendingByKey:  make(map[string]*pendingRegistration),
-		queue:         make(chan queuedEvent, MaxDeliveries),
-		stopCh:        make(chan struct{}),
-		workerDone:    make(chan struct{}),
-		ctx:           ctx,
-		cancel:        cancel,
-		logger:        logger,
-		admissionOpen: true,
+		plugins:         make(map[string]*pluginState),
+		registrations:   make(map[domain.SubscriptionID]domain.Subscription),
+		retained:        make(map[domain.SubscriptionID]struct{}),
+		activeByKey:     make(map[string]domain.SubscriptionID),
+		pendingByKey:    make(map[string]*pendingRegistration),
+		runtimeStates:   make(map[domain.SubscriptionID]*jsonvalue.Value),
+		runtimeWatches:  make(map[domain.SubscriptionID]*runtimeWatch),
+		queue:           make(chan queuedEvent, MaxDeliveries),
+		stopCh:          make(chan struct{}),
+		workerDone:      make(chan struct{}),
+		shutdownDone:    make(chan struct{}),
+		runtimeLoops:    make(map[string]chan struct{}),
+		runtimeSaveGate: make(chan struct{}, runtimeSaveWorkers),
+		ctx:             ctx,
+		cancel:          cancel,
+		logger:          logger,
+		admissionOpen:   true,
 	}
 	go hub.deliveryWorker()
 	return hub
@@ -148,6 +197,7 @@ func New(logger *slog.Logger) *Hub {
 func NewWithRegistrationStore(logger *slog.Logger, store RegistrationStore) *Hub {
 	hub := New(logger)
 	hub.store = store
+	hub.runtimeStore, _ = store.(RuntimeStateStore)
 	hub.admissionOpen = false
 	return hub
 }
@@ -190,8 +240,17 @@ func (h *Hub) PrepareRestorations(registrations []domain.Subscription) error {
 		keys[key] = struct{}{}
 		retained[registration.ID] = struct{}{}
 	}
+	runtimeStates := make(map[domain.SubscriptionID]*jsonvalue.Value)
+	if h.runtimeStore != nil {
+		var err error
+		runtimeStates, err = h.runtimeStore.LoadRuntime(registrations)
+		if err != nil {
+			return fmt.Errorf("load trigger runtime state: %w", err)
+		}
+	}
 	h.retained = retained
 	h.restore = append([]domain.Subscription(nil), registrations...)
+	h.runtimeStates = runtimeStates
 	return nil
 }
 
@@ -222,7 +281,18 @@ func (h *Hub) Restore(ctx context.Context) error {
 			return fmt.Errorf("restore registration %s: a referenced plugin is unavailable", registration.ID)
 		}
 		inputPort, outputPort := input.port, output.port
+		stateful := input.capabilities["runtime_state_v1"]
+		runtimeState := h.runtimeStates[registration.ID]
 		h.mu.Unlock()
+		if runtimeState != nil && !stateful {
+			return fmt.Errorf("restore registration %s: runtime state requires input plugin %q to advertise runtime_state_v1", registration.ID, registration.InputPlugin)
+		}
+		if stateful && h.runtimeStore == nil {
+			return fmt.Errorf("restore registration %s input plugin %q: runtime state storage is unavailable", registration.ID, registration.InputPlugin)
+		}
+		if stateful && !runtimeStateWatchFits(registration.WatchArgs, string(registration.ID), "00000000-0000-4000-8000-000000000000") {
+			return fmt.Errorf("restore registration %s input plugin %q: participating watch exceeds the reserved runtime state payload limit", registration.ID, registration.InputPlugin)
+		}
 
 		destinationRequestID, err := newID()
 		if err != nil {
@@ -239,12 +309,12 @@ func (h *Hub) Restore(ctx context.Context) error {
 			}
 			return fmt.Errorf("restore registration %s: destination validation failed: %s", registration.ID, safeError(err))
 		}
-		if err := inputPort.Watch(ctx, WatchRequest{RequestID: watchRequestID, SubscriptionID: registration.ID, Arguments: registration.WatchArgs}, func() error { return nil }); err != nil {
+		if err := inputPort.Watch(ctx, WatchRequest{RequestID: watchRequestID, SubscriptionID: registration.ID, Arguments: registration.WatchArgs, RuntimeState: stateful, State: runtimeState}, func() error { return nil }); err != nil {
 			var watchErr *WatchError
 			if errors.As(err, &watchErr) && watchErr.Unavailable {
 				h.pluginUnavailable(registration.InputPlugin, inputPort, err)
 			}
-			return fmt.Errorf("restore registration %s: watch validation failed: %s", registration.ID, safeError(err))
+			return fmt.Errorf("restore registration %s input plugin %q: watch validation failed: %s", registration.ID, registration.InputPlugin, safeError(err))
 		}
 		h.mu.Lock()
 		available := !h.stopping && h.plugins[registration.InputPlugin] != nil && h.plugins[registration.InputPlugin].port == inputPort && h.plugins[registration.InputPlugin].available && h.plugins[registration.OutputPlugin] != nil && h.plugins[registration.OutputPlugin].port == outputPort && h.plugins[registration.OutputPlugin].available
@@ -273,6 +343,11 @@ func (h *Hub) Restore(ctx context.Context) error {
 		key := registrationKey(registration.InputPlugin, registration.WatchArgs, registration.OutputPlugin, registration.DestinationArgs)
 		h.registrations[registration.ID] = registration
 		h.activeByKey[key] = registration.ID
+		if input := h.plugins[registration.InputPlugin]; input.capabilities["runtime_state_v1"] {
+			h.runtimeWatches[registration.ID] = &runtimeWatch{
+				state: h.runtimeStates[registration.ID], inputPort: input.port, inputName: registration.InputPlugin, registration: registration,
+			}
+		}
 	}
 	h.admissionOpen = true
 	return nil
@@ -311,9 +386,9 @@ func (h *Hub) StartPlugins(ctx context.Context) {
 		go func() {
 			defer wait.Done()
 			handlers := PluginHandlers{
-				Ready: func() { h.pluginReady(item.name, item.port) },
-				Event: func(subscriptionID, eventContext string) {
-					h.acceptEvent(item.name, item.port, subscriptionID, eventContext)
+				Ready: func(capabilities []string) { h.pluginReady(item.name, item.port, capabilities) },
+				Event: func(subscriptionID, eventID, eventContext string) string {
+					return h.acceptEvent(item.name, item.port, subscriptionID, eventID, eventContext)
 				},
 				Unavailable: func(err error) { h.pluginUnavailable(item.name, item.port, err) },
 			}
@@ -332,7 +407,7 @@ func (h *Hub) StartPlugins(ctx context.Context) {
 	wait.Wait()
 }
 
-func (h *Hub) pluginReady(name string, port PluginPort) {
+func (h *Hub) pluginReady(name string, port PluginPort, capabilities []string) {
 	h.mu.Lock()
 	state := h.plugins[name]
 	if state == nil || state.port != port || h.stopping {
@@ -341,6 +416,10 @@ func (h *Hub) pluginReady(name string, port PluginPort) {
 	}
 	state.available = true
 	state.reported = false
+	state.capabilities = make(map[string]bool, len(capabilities))
+	for _, capability := range capabilities {
+		state.capabilities[capability] = true
+	}
 	role := state.role
 	h.mu.Unlock()
 	h.logger.Info("plugin_ready", "plugin", name, "role", role, "available", true)
@@ -385,6 +464,9 @@ func (h *Hub) pluginUnavailable(name string, port PluginPort, cause error) {
 		}
 	}
 	h.mu.Unlock()
+	if role == domain.InputRole {
+		h.discardRuntimeOutcomesForInput(name, port)
+	}
 	h.logger.Error("plugin_unavailable", "plugin", name, "role", role, "reason", safeError(cause))
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -465,6 +547,15 @@ func (h *Hub) Register(inputName string, watchArgs *jsonvalue.Value, outputName 
 		h.mu.Unlock()
 		return "", &Error{Code: "resource_exhausted", Message: "Registration arguments exceed the plugin protocol payload limit."}
 	}
+	runtimeState := inputState.capabilities["runtime_state_v1"]
+	if runtimeState && h.runtimeStore == nil {
+		h.mu.Unlock()
+		return "", &Error{Code: "storage_error", Message: "Trigger runtime state storage is unavailable."}
+	}
+	if runtimeState && !runtimeStateWatchFits(watchArgs, id, watchRequestID) {
+		h.mu.Unlock()
+		return "", &Error{Code: "resource_exhausted", Message: "Participating watch arguments exceed the reserved runtime state payload limit."}
+	}
 	pending := &pendingRegistration{
 		key:             key,
 		id:              domain.SubscriptionID(id),
@@ -474,6 +565,7 @@ func (h *Hub) Register(inputName string, watchArgs *jsonvalue.Value, outputName 
 		output:          outputState.port,
 		watchArgs:       watchArgs,
 		destinationArgs: destinationArgs,
+		runtimeState:    runtimeState,
 		done:            make(chan struct{}),
 	}
 	h.pendingByKey[key] = pending
@@ -507,6 +599,7 @@ func (h *Hub) Register(inputName string, watchArgs *jsonvalue.Value, outputName 
 		RequestID:      watchRequestID,
 		SubscriptionID: pending.id,
 		Arguments:      watchArgs,
+		RuntimeState:   pending.runtimeState,
 	}, func() error { return h.activate(pending) })
 	h.mu.Lock()
 	pending.watchFinished = true
@@ -567,6 +660,12 @@ func (h *Hub) activate(pending *pendingRegistration) error {
 		h.activeByKey[pending.key] = pending.id
 		pending.activated = true
 		h.registrations[pending.id] = registration
+		if pending.runtimeState {
+			h.runtimeWatches[pending.id] = &runtimeWatch{
+				inputPort: pending.input, inputName: pending.inputName, registration: registration,
+			}
+			h.ensureRuntimeLoopLocked(pending.inputName)
+		}
 		h.finishPendingLocked(pending, nil, false)
 		h.logger.Info("subscription_active", "input_plugin", pending.inputName, "output_plugin", pending.outputName, "subscription_id", pending.id)
 		return nil
@@ -610,40 +709,53 @@ func (h *Hub) pendingResult(pending *pendingRegistration) (domain.SubscriptionID
 	return pending.resultID, pending.resultErr
 }
 
-func (h *Hub) acceptEvent(pluginName string, port PluginPort, subscriptionID, eventContext string) {
+func (h *Hub) acceptEvent(pluginName string, port PluginPort, subscriptionID, eventID, eventContext string) string {
+	discard := func(status string) string {
+		if eventID != "" {
+			return status
+		}
+		return ""
+	}
 	if subscriptionID == "" || eventContext == "" || !utf8.ValidString(eventContext) || len([]byte(eventContext)) > MaxContextBytes {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "invalid event")
-		return
+		return discard("discarded")
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.admissionOpen {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "daemon admission is closed")
-		return
+		return discard("discarded")
 	}
 	state := h.plugins[pluginName]
 	if h.stopping || state == nil || state.role != domain.InputRole || state.port != port || !state.available {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "input plugin unavailable")
-		return
+		return discard("discarded")
 	}
 	registration, ok := h.registrations[domain.SubscriptionID(subscriptionID)]
 	if !ok || !registration.Active || registration.InputPlugin != pluginName {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "inactive or foreign subscription")
-		return
+		return discard("discarded")
+	}
+	if eventID != "" {
+		runtimeWatch := h.runtimeWatches[registration.ID]
+		if runtimeWatch == nil || runtimeWatch.inputPort != port {
+			h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "runtime state watch is not active")
+			return discard("discarded")
+		}
 	}
 	outputState := h.plugins[registration.OutputPlugin]
 	if outputState == nil || outputState.role != domain.OutputRole || !outputState.available {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "reason", "output plugin unavailable")
-		return
+		return discard("failed")
 	}
 	if h.pendingEvents >= MaxDeliveries {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery queue is full")
-		return
+		return discard("discarded")
 	}
 	deliveryID, err := newID()
 	if err != nil {
 		h.logger.Error("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery identifier unavailable")
-		return
+		return discard("discarded")
 	}
 	event := domain.Event{
 		ID:              domain.DeliveryID(deliveryID),
@@ -655,16 +767,18 @@ func (h *Hub) acceptEvent(pluginName string, port PluginPort, subscriptionID, ev
 	}
 	if !deliveryFits(event) {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "reason", "delivery payload exceeds protocol limit")
-		return
+		return discard("discarded")
 	}
 	h.pendingEvents++
 	receivedAt := time.Now().UTC()
 	select {
-	case h.queue <- queuedEvent{event: event, outputPort: outputState.port}:
+	case h.queue <- queuedEvent{event: event, outputPort: outputState.port, inputPort: port, eventID: eventID}:
 		h.logger.Info("event_admitted", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "delivery_id", event.ID, "received_at", receivedAt)
+		return ""
 	default:
 		h.pendingEvents--
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "delivery queue is full")
+		return discard("discarded")
 	}
 }
 
@@ -742,6 +856,18 @@ func registrationPayloadsFit(watchArgs, destinationArgs *jsonvalue.Value, subscr
 	return len(destination.Marshal()) <= MaxPluginPayload && len(watch.Marshal()) <= MaxPluginPayload
 }
 
+func runtimeStateWatchFits(watchArgs *jsonvalue.Value, subscriptionID, requestID string) bool {
+	watch := jsonvalue.NewObject(map[string]*jsonvalue.Value{
+		"version":         jsonvalue.NewNumber(pluginProtocolV2),
+		"type":            jsonvalue.NewString("state_watch"),
+		"request_id":      jsonvalue.NewString(requestID),
+		"subscription_id": jsonvalue.NewString(subscriptionID),
+		"watch_args":      watchArgs,
+		"state":           jsonvalue.NewNull(),
+	})
+	return len(watch.Marshal())-len("null")+maxRuntimeStateBytes <= MaxPluginPayload
+}
+
 func (h *Hub) deliveryWorker() {
 	defer close(h.workerDone)
 	for {
@@ -754,7 +880,7 @@ func (h *Hub) deliveryWorker() {
 			stopping := h.stopping
 			h.mu.Unlock()
 			if stopping {
-				h.discardEvent(item.event, "shutdown")
+				h.discardEvent(item, "shutdown")
 				h.discardQueued()
 				return
 			}
@@ -775,27 +901,37 @@ func (h *Hub) deliver(item queuedEvent) {
 	if available {
 		result = item.outputPort.Deliver(h.ctx, event)
 	}
+	h.mu.Lock()
+	if h.stopping && result.Outcome == domain.DeliveryAccepted {
+		result = DeliveryResult{Outcome: domain.DeliveryUnknown, Detail: "output acceptance was not processed before shutdown cutoff"}
+	}
+	h.mu.Unlock()
 	if result.Outcome != domain.DeliveryAccepted && result.Outcome != domain.DeliveryFailed && result.Outcome != domain.DeliveryUnknown {
 		result.Outcome = domain.DeliveryUnknown
 	}
 	h.logger.Info("delivery_result", "input_plugin", event.InputPlugin, "output_plugin", event.OutputPlugin, "subscription_id", event.SubscriptionID, "delivery_id", event.ID, "outcome", result.Outcome, "detail", bounded(result.Detail, defaultOperationMax), "completed_at", time.Now().UTC())
-	h.mu.Lock()
-	h.pendingEvents--
-	h.mu.Unlock()
+	if item.eventID == "" {
+		h.releasePendingEvents(1)
+	} else {
+		h.finishRuntimeOutcome(item, string(result.Outcome))
+	}
 }
 
-func (h *Hub) discardEvent(event domain.Event, reason string) {
+func (h *Hub) discardEvent(item queuedEvent, reason string) {
+	event := item.event
 	h.logger.Warn("delivery_discarded", "input_plugin", event.InputPlugin, "output_plugin", event.OutputPlugin, "subscription_id", event.SubscriptionID, "delivery_id", event.ID, "reason", reason)
-	h.mu.Lock()
-	h.pendingEvents--
-	h.mu.Unlock()
+	if item.eventID == "" {
+		h.releasePendingEvents(1)
+	} else {
+		h.finishRuntimeOutcome(item, "discarded")
+	}
 }
 
 func (h *Hub) discardQueued() {
 	for {
 		select {
 		case item := <-h.queue:
-			h.discardEvent(item.event, "shutdown")
+			h.discardEvent(item, "shutdown")
 		default:
 			return
 		}
@@ -804,18 +940,30 @@ func (h *Hub) discardQueued() {
 
 func (h *Hub) Shutdown() {
 	h.mu.Lock()
-	if !h.stopping {
-		h.stopping = true
-		close(h.stopCh)
-		h.cancel()
-		for _, pending := range h.pendingByKey {
-			if !pending.completed {
-				h.finishPendingLocked(pending, &Error{Code: "plugin_unavailable", Message: "Daemon is shutting down."}, false)
-			}
+	if h.shutdownStarted {
+		done := h.shutdownDone
+		h.mu.Unlock()
+		<-done
+		return
+	}
+	h.shutdownStarted = true
+	h.stopping = true
+	h.admissionOpen = false
+	close(h.stopCh)
+	h.cancel()
+	runtimeDone := h.runtimeDone
+	for _, pending := range h.pendingByKey {
+		if !pending.completed {
+			h.finishPendingLocked(pending, &Error{Code: "plugin_unavailable", Message: "Daemon is shutting down."}, false)
 		}
 	}
 	h.mu.Unlock()
 	<-h.workerDone
+	if runtimeDone != nil {
+		<-runtimeDone
+	}
+	h.finalRuntimeCheckpoints()
+	close(h.shutdownDone)
 }
 
 func (h *Hub) StopPlugins(ctx context.Context) {

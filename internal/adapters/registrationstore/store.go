@@ -63,6 +63,7 @@ type Store struct {
 	lockPath  string
 	records   string
 	staging   string
+	runtime   string
 	lockOwned bool
 	closed    bool
 }
@@ -102,6 +103,7 @@ func open(root string, files fileSystem) (*Store, error) {
 		lockPath: filepath.Join(root, ".lock"),
 		records:  filepath.Join(root, "registrations"),
 		staging:  filepath.Join(root, "staging"),
+		runtime:  filepath.Join(root, "runtime"),
 	}
 	if err := files.Mkdir(store.lockPath, 0o700); err != nil {
 		cause := fmt.Errorf("acquire state directory lock %s: %w", store.lockPath, err)
@@ -141,17 +143,17 @@ func open(root string, files fileSystem) (*Store, error) {
 		return fail(fmt.Errorf("new state directory %s changed during initialization", root))
 	}
 	if freshRoot {
-		for _, path := range []string{store.records, store.staging} {
+		for _, path := range []string{store.records, store.staging, store.runtime} {
 			if err := files.Mkdir(path, 0o700); err != nil {
 				return fail(fmt.Errorf("create state directory %s: %w", path, err))
 			}
 			createdDirectories = append(createdDirectories, path)
 		}
 	} else {
-		seen := make(map[string]bool, 3)
+		seen := make(map[string]bool, 4)
 		for _, entry := range entries {
 			name := entry.Name()
-			if name != ".lock" && name != "registrations" && name != "staging" {
+			if name != ".lock" && name != "registrations" && name != "staging" && name != "runtime" {
 				return fail(fmt.Errorf("state directory %s contains unknown entry %q", root, name))
 			}
 			seen[name] = true
@@ -167,6 +169,20 @@ func open(root string, files fileSystem) (*Store, error) {
 			if !isDirectory(info) {
 				return fail(fmt.Errorf("state path %s must be a real directory", path))
 			}
+		}
+		if seen["runtime"] {
+			info, err := files.Lstat(store.runtime)
+			if err != nil {
+				return fail(fmt.Errorf("inspect state directory %s: %w", store.runtime, err))
+			}
+			if !isDirectory(info) {
+				return fail(fmt.Errorf("state path %s must be a real directory", store.runtime))
+			}
+		} else {
+			if err := files.Mkdir(store.runtime, 0o700); err != nil {
+				return fail(fmt.Errorf("create state directory %s: %w", store.runtime, err))
+			}
+			createdDirectories = append(createdDirectories, store.runtime)
 		}
 	}
 	if err := store.cleanStaging(); err != nil {
@@ -253,6 +269,12 @@ func (s *Store) Commit(registration domain.Subscription) error {
 	}
 	if !validID(string(registration.ID)) || registration.InputPlugin == "" || registration.OutputPlugin == "" || registration.WatchArgs == nil || registration.WatchArgs.Kind() != jsonvalue.Object || registration.DestinationArgs == nil || registration.DestinationArgs.Kind() != jsonvalue.Object {
 		return errors.New("registration record is invalid")
+	}
+	runtimePath := filepath.Join(s.runtime, string(registration.ID))
+	if _, err := s.files.Lstat(runtimePath); err == nil {
+		return fmt.Errorf("runtime state directory %s already exists for a new registration", runtimePath)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("inspect runtime state directory %s: %w", runtimePath, err)
 	}
 	data := encodeRecord(registration)
 	if len(data) > MaxRecordBytes {

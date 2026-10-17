@@ -183,6 +183,7 @@ func runDaemon(configPath, selectedStateDirectory, address string, stderr io.Wri
 		if err := service.Restore(ctx); err != nil {
 			return err
 		}
+		service.StartRuntimeCheckpoints()
 		logger.Info("registration_available", "available", true)
 		logger.Info("daemon_ready", "restored_registrations", len(registrations))
 		return nil

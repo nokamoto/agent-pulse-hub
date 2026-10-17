@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,7 +111,7 @@ func readFrame(t *testing.T, session *memorySession) pluginprotocol.Frame {
 func TestWatchAcceptanceActivatesBeforeImmediateEventAndRejectsDuplicates(t *testing.T) {
 	var activated atomic.Int32
 	events := make(chan string, 2)
-	p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{Event: func(_, context string) { events <- context }})
+	p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{Event: func(_, _, context string) string { events <- context; return "" }})
 	result := make(chan error, 1)
 	go func() {
 		result <- p.Watch(context.Background(), hub.WatchRequest{
@@ -128,6 +130,259 @@ func TestWatchAcceptanceActivatesBeforeImmediateEventAndRejectsDuplicates(t *tes
 	if got := await(t, events); got != "immediate" || activated.Load() != 1 {
 		t.Fatalf("activation=%d event=%q", activated.Load(), got)
 	}
+}
+
+func TestRuntimeWatchOrdersNoticeBeforeCheckpointAndQuiesces(t *testing.T) {
+	events := make(chan string, 1)
+	p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{
+		Event: func(_, eventID, context string) string {
+			events <- eventID + ":" + context
+			return ""
+		},
+	})
+	p.capabilities[pluginprotocol.RuntimeStateCapability] = true
+	watchResult := make(chan error, 1)
+	go func() {
+		watchResult <- p.Watch(context.Background(), hub.WatchRequest{
+			RequestID: "state-watch-1", SubscriptionID: "subscription-state", Arguments: jsonObject(t, `{}`),
+			RuntimeState: true, State: jsonvalue.NewNull(),
+		}, func() error { return nil })
+	}()
+	watch := readFrame(t, session)
+	if watch.Type != "state_watch" || watch.State == nil || watch.State.Kind() != jsonvalue.Null {
+		t.Fatalf("initial state watch = %+v", watch)
+	}
+	accepted := true
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "state-watch-1", Accepted: &accepted})
+	if err := await(t, watchResult); err != nil {
+		t.Fatal(err)
+	}
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "state_event", SubscriptionID: "subscription-state", EventID: "1", Context: "U1"})
+	if got := await(t, events); got != "1:U1" {
+		t.Fatalf("state event callback = %q", got)
+	}
+	if err := p.NotifyDelivery(context.Background(), hub.RuntimeNotice{
+		SubscriptionID: "subscription-state", EventID: "1", Status: "accepted",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	notice := readFrame(t, session)
+	if notice.Type != "delivery_notice" || notice.EventID != "1" || notice.Status != "accepted" {
+		t.Fatalf("delivery notice = %+v", notice)
+	}
+
+	checkpointResult := make(chan struct {
+		state *jsonvalue.Value
+		err   error
+	}, 1)
+	go func() {
+		value, err := p.Checkpoint(context.Background(), hub.RuntimeCheckpointRequest{SubscriptionID: "subscription-state", Quiesce: true})
+		checkpointResult <- struct {
+			state *jsonvalue.Value
+			err   error
+		}{value, err}
+	}()
+	checkpoint := readFrame(t, session)
+	if checkpoint.Type != "checkpoint" || !checkpoint.Quiesce || checkpoint.SubscriptionID != "subscription-state" {
+		t.Fatalf("checkpoint request = %+v", checkpoint)
+	}
+	checkpointState := jsonObject(t, `{"schema":"probe-v1","payload":{"confirmed":["U1"]}}`)
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "checkpoint_result", RequestID: checkpoint.RequestID, Accepted: &accepted, State: checkpointState})
+	result := await(t, checkpointResult)
+	if result.err != nil || result.state == nil || !result.state.Equivalent(checkpointState) {
+		t.Fatalf("checkpoint result state=%v error=%v", result.state, result.err)
+	}
+	p.mu.Lock()
+	watchState := p.watches["subscription-state"]
+	quiesced := watchState != nil && watchState.quiesced
+	p.mu.Unlock()
+	if !quiesced {
+		t.Fatal("positive quiesce checkpoint left the watch active")
+	}
+}
+
+func TestRuntimeCheckpointTimeoutDoesNotInvalidateInput(t *testing.T) {
+	p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{})
+	p.capabilities[pluginprotocol.RuntimeStateCapability] = true
+	watchResult := make(chan error, 1)
+	go func() {
+		watchResult <- p.Watch(context.Background(), hub.WatchRequest{
+			RequestID: "state-watch-timeout", SubscriptionID: "subscription-timeout", Arguments: jsonObject(t, `{}`),
+			RuntimeState: true,
+		}, func() error { return nil })
+	}()
+	readFrame(t, session)
+	accepted := true
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "state-watch-timeout", Accepted: &accepted})
+	if err := await(t, watchResult); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	checkpointResult := make(chan error, 1)
+	var requestID string
+	go func() {
+		_, err := p.Checkpoint(ctx, hub.RuntimeCheckpointRequest{SubscriptionID: "subscription-timeout"})
+		checkpointResult <- err
+	}()
+	checkpoint := readFrame(t, session)
+	requestID = checkpoint.RequestID
+	if err := await(t, checkpointResult); err == nil {
+		t.Fatal("expired checkpoint unexpectedly succeeded")
+	}
+	if processFailed(p) {
+		t.Fatal("checkpoint-only timeout invalidated a healthy input")
+	}
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "checkpoint_result", RequestID: requestID, Accepted: &accepted, State: jsonObject(t, `{"schema":"probe-v1","payload":{}}`)})
+	time.Sleep(10 * time.Millisecond)
+	if processFailed(p) {
+		t.Fatal("late checkpoint result invalidated a healthy input")
+	}
+}
+
+func TestStateEventNoticeSendFailureDoesNotDeadlockCallbackOrCheckpoint(t *testing.T) {
+	unavailable := make(chan error, 1)
+	p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{
+		Event:       func(_, _, _ string) string { return "discarded" },
+		Unavailable: func(err error) { unavailable <- err },
+	})
+	p.capabilities[pluginprotocol.RuntimeStateCapability] = true
+	watchResult := make(chan error, 1)
+	go func() {
+		watchResult <- p.Watch(context.Background(), hub.WatchRequest{
+			RequestID: "state-watch-send-error", SubscriptionID: "subscription-send-error", Arguments: jsonObject(t, `{}`),
+			RuntimeState: true,
+		}, func() error { return nil })
+	}()
+	readFrame(t, session)
+	accepted := true
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "state-watch-send-error", Accepted: &accepted})
+	if err := await(t, watchResult); err != nil {
+		t.Fatal(err)
+	}
+	session.sendErr = errors.New("injected notice send failure")
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "state_event", SubscriptionID: "subscription-send-error", EventID: "1", Context: "rejected"})
+	if err := await(t, unavailable); err == nil || !strings.Contains(err.Error(), "delivery notice") {
+		t.Fatalf("notice send failure did not invalidate input: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := p.Checkpoint(ctx, hub.RuntimeCheckpointRequest{SubscriptionID: "subscription-send-error", Quiesce: true}); err == nil {
+		t.Fatal("checkpoint unexpectedly succeeded after notice transport failure")
+	}
+}
+
+func TestRuntimeOutstandingEventsAreBoundedWithoutBlockingCheckpointResults(t *testing.T) {
+	processed := make(chan struct{}, hub.MaxDeliveries+1)
+	p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{
+		Event: func(_, _, _ string) string {
+			processed <- struct{}{}
+			return ""
+		},
+	})
+	p.capabilities[pluginprotocol.RuntimeStateCapability] = true
+	watchResult := make(chan error, 1)
+	go func() {
+		watchResult <- p.Watch(context.Background(), hub.WatchRequest{
+			RequestID: "state-watch-capacity", SubscriptionID: "subscription-capacity", Arguments: jsonObject(t, `{}`),
+			RuntimeState: true,
+		}, func() error { return nil })
+	}()
+	readFrame(t, session)
+	accepted := true
+	session.incoming <- payload(t, pluginprotocol.Frame{Type: "watch_result", RequestID: "state-watch-capacity", Accepted: &accepted})
+	if err := await(t, watchResult); err != nil {
+		t.Fatal(err)
+	}
+	checkpointResult := make(chan error, 1)
+	go func() {
+		_, err := p.Checkpoint(context.Background(), hub.RuntimeCheckpointRequest{SubscriptionID: "subscription-capacity"})
+		checkpointResult <- err
+	}()
+	checkpoint := readFrame(t, session)
+	if checkpoint.Type != "checkpoint" || checkpoint.SubscriptionID != "subscription-capacity" {
+		t.Fatalf("checkpoint request = %+v", checkpoint)
+	}
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		for eventID := 1; eventID <= hub.MaxDeliveries+1; eventID++ {
+			session.incoming <- payload(t, pluginprotocol.Frame{
+				Type: "state_event", SubscriptionID: "subscription-capacity", EventID: strconv.Itoa(eventID), Context: "update",
+			})
+		}
+	}()
+	for i := 0; i < hub.MaxDeliveries; i++ {
+		await(t, processed)
+	}
+	overflowNotice := readFrame(t, session)
+	if overflowNotice.Type != "delivery_notice" || overflowNotice.EventID != strconv.Itoa(hub.MaxDeliveries+1) || overflowNotice.Status != "discarded" {
+		t.Fatalf("capacity overflow notice = %+v", overflowNotice)
+	}
+	await(t, sendDone)
+	session.incoming <- payload(t, pluginprotocol.Frame{
+		Type: "checkpoint_result", RequestID: checkpoint.RequestID, Accepted: &accepted,
+		State: jsonObject(t, `{"schema":"probe-v1","payload":{}}`),
+	})
+	if err := await(t, checkpointResult); err != nil {
+		t.Fatalf("checkpoint result after event overflow = %v", err)
+	}
+	p.mu.Lock()
+	watch := p.watches["subscription-capacity"]
+	gotPending := len(watch.pending)
+	p.mu.Unlock()
+	p.mu.Lock()
+	gotOutstanding := p.runtimePendingCount
+	p.mu.Unlock()
+	if gotPending != hub.MaxDeliveries || gotOutstanding != hub.MaxDeliveries {
+		t.Fatalf("outstanding event count = pending %d, reserved %d", gotPending, gotOutstanding)
+	}
+	if err := p.NotifyDelivery(context.Background(), hub.RuntimeNotice{
+		SubscriptionID: "subscription-capacity", EventID: "1", Status: "accepted",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if notice := readFrame(t, session); notice.Type != "delivery_notice" || notice.EventID != "1" {
+		t.Fatalf("capacity releasing notice = %+v", notice)
+	}
+}
+
+func TestMalformedStatePayloadDiagnosticDoesNotExposePayloadKeys(t *testing.T) {
+	logs := &lockedBuffer{}
+	p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{})
+	p.logger = slog.New(slog.NewJSONHandler(logs, nil))
+	session.incoming <- []byte(`{"version":2,"type":"checkpoint_result","request_id":"r1","accepted":true,"state":{"schema":"v1","payload":{"private-token":1,"private-token":2}}}`)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(logs.String(), "plugin_frame_rejected") {
+		time.Sleep(time.Millisecond)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "plugin_frame_rejected") || strings.Contains(got, "private-token") {
+		t.Fatalf("malformed state diagnostic = %s", got)
+	}
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(value []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(value)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
+}
+
+func processFailed(p *Process) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.failed
 }
 
 func TestDestinationAndWatchRejectionsDoNotInvalidateProcess(t *testing.T) {
