@@ -1,7 +1,7 @@
 {
   "suites": [
     {
-      "package": "./cmd/github-review-request-verification",
+      "package": "./plugins/triggers/github-review-request",
       "cases": ["GRR-V01-AUTH", "GRR-V02-OBSERVATION", "GRR-V03-RESTART"]
     }
   ]
