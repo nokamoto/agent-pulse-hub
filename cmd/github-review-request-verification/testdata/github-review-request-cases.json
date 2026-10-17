@@ -1,0 +1,8 @@
+{
+  "suites": [
+    {
+      "package": "./cmd/github-review-request-verification",
+      "cases": ["GRR-V01-AUTH", "GRR-V02-OBSERVATION", "GRR-V03-RESTART"]
+    }
+  ]
+}
