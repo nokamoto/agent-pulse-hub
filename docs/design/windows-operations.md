@@ -10,6 +10,8 @@ sources:
   - id: mvp-requirements
     resource: requirements/mvp.md
     title: Plugin-based event routing MVP
+  - id: runtime-state-design
+    resource: design/trigger-runtime-state.md
 ---
 
 # Model-plugin operations
@@ -545,6 +547,11 @@ PID/timeout. This procedure adds no forced-termination recovery guarantee.
 
 ## Failures, retention, and verification boundaries
 
+The manual/model walkthrough uses nonparticipating triggers. For an optional
+participating trigger, follow the additional procedure below and its documented
+initial/stopped-period behavior; unchanged manual/model artifacts gain no
+runtime-progress guarantee.
+
 | Observation | Meaning and operator action |
 | --- | --- |
 | Invalid configuration, executable, role, or endpoint | Correct the reported input and retain diagnostics; require both model roles before continuing. |
@@ -597,6 +604,102 @@ contract rather than editing live state. Publish only a deliberately chosen
 subsequent distinct event; this procedure does not retry the uncertain event
 or repair its output. An `unknown` outcome can also leave a complete valid
 record, so inspect it before deciding whether damaged-file recovery applies.
+
+## Trigger runtime state recovery
+
+This procedure derives from [trigger runtime state](trigger-runtime-state.md).
+Participating inputs advertise `runtime_state_v1`; their authors implement the
+[public wire contract](plugin-v1.md#optional-trigger-runtime-state) and document
+initial state, schema compatibility, confirmed progress and stopped-period
+behavior. They supply/restore opaque JSON and handle outcome notices, without
+opening runtime-state files or managing storage locations. Action plugins do
+not participate.
+
+Reuse the same configuration/state directory and wait for `daemon_ready` before
+publishing updates. To verify continuity, record a unique update and its
+confirmed action `accepted` outcome; stop normally using the command in step 7
+and wait for daemon/configured-plugin exit and lock release. Retain checkpoint
+success diagnostics for the normal-stop final snapshot containing that update's
+confirmed outcome, identifying registration and committed generation. Restart
+without registration and present the same logical update followed by a fresh
+one: the first must not be notified again and the fresh update must be notified
+once. Successful stop acknowledgement alone does not prove checkpoint success.
+Queued, in-progress, failed and unknown outcomes have no completed-notification
+guarantee; neither restoration nor initial-state recovery retries hub work.
+Stopped-period retrieval follows the trigger's own instructions.
+
+A save failure identifies the input/registration and reason and warns
+`runtime continuity at next restart cannot be guaranteed`. Monitoring and
+notifications continue while the plugin remains healthy. Correct storage
+conditions deliberately; a later successful checkpoint covers its own saved
+progress. Do not claim unsaved progress survives restart. An unreadable,
+malformed or trigger-incompatible existing checkpoint prevents startup; retain
+the reported state and reason, repair from a valid preserved copy or deliberately
+reset as below. Changing to a nonparticipating input while saved runtime state
+exists also requires explicit repair/reset rather than silent state loss.
+
+For repair, reset or deletion, stop every owner and await exits first. Preserve
+the entire tree before changing it. The following standalone Python 3 procedure
+performs an explicit reset or registration deletion using absolute paths.
+It refuses a remaining lock; use the earlier stale-lock procedure only after
+independently confirming no owner exists. The backup path must be new, outside
+the state tree, with an existing parent. Enter the saved UUID shown by the
+registration response/diagnostics, never a client argument or logical event ID.
+
+```python
+import json
+import re
+import shutil
+from pathlib import Path
+
+state = Path(input("Absolute stopped state directory: "))
+backup = Path(input("Absolute new backup directory: "))
+subscription = input("Saved subscription UUID: ")
+operation = input("Type RESET to reset progress or DELETE to remove registration: ")
+assert state.is_absolute() and backup.is_absolute()
+assert state.is_dir() and not state.is_symlink()
+assert not (state / ".lock").exists(), "An owner or stale lock still requires investigation"
+assert re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", subscription)
+assert operation in ("RESET", "DELETE")
+state = state.resolve()
+backup = backup.resolve()
+assert backup != state and state not in backup.parents and backup not in state.parents
+assert backup.parent.is_dir() and not backup.exists()
+registration = state / "registrations" / (subscription + ".json")
+runtime = state / "runtime" / subscription
+assert registration.is_file() and not registration.is_symlink()
+assert json.loads(registration.read_text(encoding="utf-8"))["subscription_id"] == subscription
+assert not runtime.is_symlink()
+assert not runtime.exists() or runtime.is_dir()
+assert input("Confirm every daemon owner has exited by typing STOPPED: ") == "STOPPED"
+shutil.copytree(state, backup)
+if runtime.exists():
+    shutil.rmtree(runtime)
+if operation == "DELETE":
+    registration.unlink()
+print(operation, subscription, "Backup:", backup)
+```
+
+`RESET` keeps the registration ID, arguments and destination but removes its
+entire runtime directory. Restart using the same daemon command and wait for
+readiness: the trigger receives initial state (`null`) and may notify previously
+completed updates again. This is the operator's explicit continuity reset.
+Do not remove just the latest generation, which could select older progress.
+
+`DELETE` removes both saved registration and runtime directory. Restart, wait
+for readiness, then repeat the original register command with the chosen
+arguments. Even identical arguments create a new UUID with initial state;
+other retained registrations keep their own progress. No live deletion command
+is introduced. If interrupted between offline removals, finish the chosen
+procedure while still stopped or restore the complete backup before restarting.
+
+For repair that preserves continuity, keep every owner stopped and restore a
+known-valid complete backup and compatible configuration/plugin rather than
+resetting or editing payloads. Keep saved IDs, ownership and generation names
+together. Old daemons reject `runtime/`; deliberate rollback requires preserving
+it separately from a stopped working tree and using old-compatible trigger
+artifacts. An old daemon cannot maintain the newer runtime progress; returning
+to the new daemon requires an explicit restore/reset decision.
 
 ## Source-layout migration
 

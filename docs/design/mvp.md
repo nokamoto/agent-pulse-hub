@@ -8,6 +8,8 @@ sources:
     title: Plugin-based event routing MVP
   - id: bundled-design
     resource: design/bundled-plugins.md
+  - id: runtime-state-design
+    resource: design/trigger-runtime-state.md
 ---
 
 # Plugin-based event routing MVP
@@ -28,7 +30,9 @@ plugin continues a requested watch until shutdown. This C-002 boundary also
 applies to future extensions without defining additional features here.
 
 Persist accepted subscriptions under the [local persistence design](state-persistence.md);
-retain memory-only queues, one delivery attempt, no automatic plugin restart,
+participating inputs additionally restore opaque logical progress under
+[trigger runtime state](trigger-runtime-state.md).
+Retain memory-only queues, one delivery attempt, no automatic plugin restart,
 no individual cancellation and the other MVP exclusions.
 Actual Codex integration and its registration skill are outside this contract.
 Use `hashicorp/go-plugin` v1.8.0, gRPC v1.84.0 and protobuf v1.36.12 for both
@@ -48,6 +52,7 @@ relocation without changing the runtime contracts below.
 | --- | --- | --- |
 | This document | System implementers and maintainers | Architecture, configuration, registration, state, model-plugin profiles, routing, verification and migration. |
 | [Local persistence](state-persistence.md) | System implementers and maintainers | Registration storage, selection, exclusion, commit, restoration and persistence verification. |
+| [Trigger runtime state](trigger-runtime-state.md) | Trigger authors and maintainers | Optional progress checkpoints, delivery-outcome coordination, runtime storage and recovery. |
 | [Plugin protocol](plugin-v1.md) | Plugin authors in any language and adapter implementers | Version 2 application service, schemas, bounds, ordering and framework lifecycle, derived from this design. Its stable filename does not select the wire version. |
 | [Operation guide](windows-operations.md) | Operators and delivery evaluators | Derivative build/start/register/trigger/observe/stop procedure for the model plugins; the stable path does not restrict the operating system. |
 
@@ -276,10 +281,13 @@ any affected route are rejected. Other available routes remain usable.
 Normal stop closes admission/listener, prevents new commits and waits for an
 already serialized commit decision. Saved registrations survive; pending
 registrations do not resume. Stop discards queued events with reasons,
-marks a possibly sent in-flight delivery unknown, cancels Sessions and calls
+marks a possibly sent in-flight delivery unknown. For participating inputs,
+complete the [ordered notices and final checkpoint/save](trigger-runtime-state.md#normal-stop-and-confirmed-delivery-fence)
+before cancelling their Sessions. Then cancel Sessions and call
 `Client.Kill` for every started or partially started client. Await configured
-clients and record their `Exited` states, then release state exclusion. There is no application shutdown RPC,
-product grace timer or descendant enumeration. Stop and Ctrl+C enter the same
+clients and record their `Exited` states, then release state exclusion. There is no process-shutdown RPC,
+process grace timer or descendant enumeration. The optional checkpoint phase
+has a bounded protocol deadline. Stop and Ctrl+C enter the same
 coordinator. CI exercises public stop and unit interrupt dispatch; delivery
 observes a foreground interrupt with configured-process exit evidence.
 

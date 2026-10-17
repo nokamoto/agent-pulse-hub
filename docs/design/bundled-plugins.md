@@ -9,6 +9,8 @@ sources:
     resource: requirements/mvp.md
   - id: mvp-design
     resource: design/mvp.md
+  - id: runtime-state-design
+    resource: design/trigger-runtime-state.md
 ---
 
 # Bundled model plugin migration
@@ -80,7 +82,10 @@ need change only when the operator chooses different build outputs.
 
 The [local persistence design](state-persistence.md) governs committed
 subscriptions, storage selection and restart restoration. Queued/in-flight
-events and pending registrations remain memory-only. Source relocation itself
+events and pending registrations remain memory-only. The separate
+[runtime-state design](trigger-runtime-state.md) adds optional trigger checkpoints;
+manual and model-output remain nonparticipating with unchanged artifacts and
+no logical-progress guarantee. Source relocation itself
 adds no storage format or plugin-owned persistence. Destination records and
 unconsumed trigger files
 remain operator-owned data. The daemon still validates destinations before
