@@ -213,8 +213,8 @@ GitHub documents a usual authenticated search limit of 30 requests per minute;
 other clients can consume the same allowance and secondary limits also apply.
 Do not treat that figure as a reserved plugin quota. Operators can increase
 the interval to reduce load. Rate-limit responses control the actual retry
-schedule below. This cost and the lack of cross-watch sharing are part of
-the retrieval proposal requiring human review.
+schedule below. This per-watch cost and lack of cross-watch sharing are
+accepted tradeoffs of the selected retrieval strategy.
 
 ### Scheduling and failures
 
@@ -506,7 +506,7 @@ use the established offline restore/reset procedure rather than ignoring state.
 | Question or risk | Impact | Owner | Resolve before | Status |
 | --- | --- | --- | --- | --- |
 | Q-001: GHES environment and tested patch version | Documentary 3.19.x API support does not establish service compatibility | Responsible human and delivery maintainer | Design approval for environment plan; delivery for execution | API target and permissions specified; actual environment unassigned and real-service verification deferred. |
-| Q-002: Search domain and capacity | At most 1,000 matches within GitHub-selected 4,000-repository coverage; exceeding repository coverage cannot reliably be detected | Design reviewer | Design approval | Proposed bounded search and exact-ID status encoding; approve these explicit coverage limits. |
+| Q-002: Search domain and capacity | At most 1,000 matches within GitHub-selected 4,000-repository coverage; exceeding repository coverage cannot reliably be detected | Design reviewer | Design approval | Bounded search and exact-ID status encoding selected with the explicit coverage limits; per-watch API cost accepted. |
 | Eventual indexing and non-atomic pagination | Brief changes and some concurrent churn are not observable | Operator | Usage | Accepted observation-model limit; detect reported/observable incompleteness and preserve state. |
 | Instrumented CI versus live services | Controlled TLS/process success cannot certify deployed GitHub behavior | Delivery maintainer | Delivery completion | D01/D02 remain required and separate. |
 
