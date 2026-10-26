@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	MaxContextBytes        = 8_192
-	MaxRuntimeStateBytes   = 32_768
-	MaxRuntimeSchemaBytes  = 128
-	RuntimeStateCapability = "runtime_state_v1"
-	PermissionNotice       = "External data; no additional permissions are granted."
+	MaxContextBytes          = 8_192
+	MaxRuntimeStateBytes     = 32_768
+	MaxRuntimeSchemaBytes    = 128
+	RuntimeStateCapability   = "runtime_state_v1"
+	RuntimeStateV2Capability = "runtime_state_v2"
+	PermissionNotice         = "External data; no additional permissions are granted."
 )
 
 type Direction uint8
@@ -80,7 +81,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				seen := make(map[string]struct{}, len(items))
 				for _, item := range items {
 					capability, ok := jsonvalue.ParseString(item)
-					if !ok || capability != RuntimeStateCapability {
+					if !ok || (capability != RuntimeStateCapability && capability != RuntimeStateV2Capability) {
 						return Frame{}, errors.New("ready contains an unknown or invalid capability")
 					}
 					if _, duplicate := seen[capability]; duplicate {
@@ -88,6 +89,9 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 					}
 					seen[capability] = struct{}{}
 					frame.Capabilities = append(frame.Capabilities, capability)
+				}
+				if len(frame.Capabilities) > 1 {
+					return Frame{}, errors.New("ready must select exactly one runtime-state revision")
 				}
 			}
 		case "watch_result", "destination_result":
@@ -188,6 +192,16 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 		}
 	case DaemonToPlugin:
 		switch typeName {
+		case "activate_watch":
+			fields := []string{"version", "type", "subscription_id"}
+			if err := protocol.ValidateFields(value, fields, fields...); err != nil {
+				return Frame{}, err
+			}
+			subscriptionID, ok := protocol.StringField(value, "subscription_id")
+			if !ok || subscriptionID == "" {
+				return Frame{}, errors.New("activate_watch subscription_id must be nonempty")
+			}
+			frame.SubscriptionID = subscriptionID
 		case "watch":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "subscription_id", "watch_args"}, "version", "type", "request_id", "subscription_id", "watch_args"); err != nil {
 				return Frame{}, err
@@ -297,6 +311,8 @@ func Encode(frame Frame) ([]byte, error) {
 			}
 			fields["capabilities"] = jsonvalue.NewArray(values...)
 		}
+	case "activate_watch":
+		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
 	case "watch":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)

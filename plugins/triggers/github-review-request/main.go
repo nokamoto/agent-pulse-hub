@@ -19,7 +19,7 @@ func main() {
 	serve()
 }
 
-func serve() {
+func serve(serverOptions ...grpc.ServerOption) {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: pluginprocess.HandshakeConfig,
@@ -30,6 +30,7 @@ func serve() {
 		},
 		GRPCServer: func(options []grpc.ServerOption) *grpc.Server {
 			options = append(options, pluginprotocol.ServerOptions()...)
+			options = append(options, serverOptions...)
 			return grpc.NewServer(options...)
 		},
 		Logger: hclog.NewNullLogger(),

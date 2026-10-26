@@ -19,6 +19,8 @@ const coverageNotice = "Search covers at most 4,000 GitHub-selected repositories
 
 const maxConcurrentValidations = 1_024
 
+//go:generate go run go.uber.org/mock/mockgen -source=../../application/github.go -destination=github_mock_test.go -package=githubplugin
+
 type Plugin struct {
 	logger      *slog.Logger
 	credentials application.Credentials
@@ -34,6 +36,7 @@ type watch struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	done           chan struct{}
+	activated      bool
 	quiesced       bool
 	eventCounter   uint64
 	outstanding    string
@@ -82,7 +85,7 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 		p.active = false
 		p.mu.Unlock()
 	}()
-	if err := p.send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.RuntimeStateCapability}}); err != nil {
+	if err := p.send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.RuntimeStateV2Capability}}); err != nil {
 		return fmt.Errorf("send readiness: %w", err)
 	}
 
@@ -212,6 +215,18 @@ func (p *Plugin) handleFrame(ctx context.Context, stream pluginprotocol.SessionS
 		return nil
 	case "watch":
 		return p.send(stream, pluginprotocol.Frame{Type: "watch_result", RequestID: frame.RequestID, Accepted: boolPointer(false), Error: "github-review-request requires runtime-state protocol support"})
+	case "activate_watch":
+		current := watches[frame.SubscriptionID]
+		if current == nil {
+			p.logger.Warn("github_review_request_activation_ignored", "registration_id", fmt.Sprintf("%.128s", frame.SubscriptionID), "reason", "watch has not been accepted in this Session")
+			return nil
+		}
+		if current.activated || current.quiesced || current.ctx.Err() != nil {
+			return nil
+		}
+		current.activated = true
+		go p.poll(current, observations)
+		return nil
 	case "delivery_notice":
 		current := watches[frame.SubscriptionID]
 		if current == nil {
@@ -292,7 +307,6 @@ func (p *Plugin) applyValidation(ctx context.Context, stream pluginprotocol.Sess
 	}
 	watches[result.subscriptionID] = current
 	p.logger.Warn("github_review_request_coverage_limit", "registration_id", result.subscriptionID, "host", result.validated.Config.Host, "notice", coverageNotice)
-	go p.poll(current, observations)
 	return nil
 }
 
@@ -373,7 +387,7 @@ func (p *Plugin) applyObservation(stream pluginprotocol.SessionServer, watches m
 }
 
 func (p *Plugin) emitNext(stream pluginprotocol.SessionServer, current *watch) error {
-	if current.quiesced || current.outstanding != "" || current.ctx.Err() != nil {
+	if !current.activated || current.quiesced || current.outstanding != "" || current.ctx.Err() != nil {
 		return nil
 	}
 	if current.eventCounter == math.MaxUint64 {
@@ -412,7 +426,9 @@ func stopWatches(watches map[string]*watch) {
 		current.cancel()
 	}
 	for _, current := range watches {
-		<-current.done
+		if current.activated {
+			<-current.done
+		}
 	}
 }
 

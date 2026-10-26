@@ -68,6 +68,7 @@ type PluginPort interface {
 	Start(context.Context, PluginHandlers) error
 	ValidateDestination(context.Context, DestinationRequest) error
 	Watch(context.Context, WatchRequest, func() error) error
+	ActivateWatch(context.Context, domain.SubscriptionID) error
 	Deliver(context.Context, domain.Event) DeliveryResult
 	NotifyDelivery(context.Context, RuntimeNotice) error
 	Checkpoint(context.Context, RuntimeCheckpointRequest) (*jsonvalue.Value, error)
@@ -136,26 +137,28 @@ type RegistrationStore interface {
 type Hub struct {
 	mu sync.Mutex
 
-	plugins         map[string]*pluginState
-	registrations   map[domain.SubscriptionID]domain.Subscription
-	retained        map[domain.SubscriptionID]struct{}
-	activeByKey     map[string]domain.SubscriptionID
-	pendingByKey    map[string]*pendingRegistration
-	store           RegistrationStore
-	runtimeStore    RuntimeStateStore
-	restore         []domain.Subscription
-	runtimeStates   map[domain.SubscriptionID]*jsonvalue.Value
-	runtimeWatches  map[domain.SubscriptionID]*runtimeWatch
-	admissionOpen   bool
-	queue           chan queuedEvent
-	pendingEvents   int
-	stopping        bool
-	shutdownStarted bool
-	shutdownDone    chan struct{}
-	runtimeStarted  bool
-	runtimeDone     chan struct{}
-	runtimeLoops    map[string]chan struct{}
-	runtimeSaveGate chan struct{}
+	plugins           map[string]*pluginState
+	registrations     map[domain.SubscriptionID]domain.Subscription
+	retained          map[domain.SubscriptionID]struct{}
+	activeByKey       map[string]domain.SubscriptionID
+	pendingByKey      map[string]*pendingRegistration
+	store             RegistrationStore
+	runtimeStore      RuntimeStateStore
+	restore           []domain.Subscription
+	runtimeStates     map[domain.SubscriptionID]*jsonvalue.Value
+	runtimeWatches    map[domain.SubscriptionID]*runtimeWatch
+	admissionOpen     bool
+	queue             chan queuedEvent
+	pendingEvents     int
+	stopping          bool
+	shutdownStarted   bool
+	shutdownDone      chan struct{}
+	runtimeStarted    bool
+	runtimeDone       chan struct{}
+	runtimeLoops      map[string]chan struct{}
+	runtimeSaveGate   chan struct{}
+	activationBatches map[string]*activationBatch
+	activationWait    sync.WaitGroup
 
 	stopCh     chan struct{}
 	workerDone chan struct{}
@@ -170,23 +173,24 @@ func New(logger *slog.Logger) *Hub {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := &Hub{
-		plugins:         make(map[string]*pluginState),
-		registrations:   make(map[domain.SubscriptionID]domain.Subscription),
-		retained:        make(map[domain.SubscriptionID]struct{}),
-		activeByKey:     make(map[string]domain.SubscriptionID),
-		pendingByKey:    make(map[string]*pendingRegistration),
-		runtimeStates:   make(map[domain.SubscriptionID]*jsonvalue.Value),
-		runtimeWatches:  make(map[domain.SubscriptionID]*runtimeWatch),
-		queue:           make(chan queuedEvent, MaxDeliveries),
-		stopCh:          make(chan struct{}),
-		workerDone:      make(chan struct{}),
-		shutdownDone:    make(chan struct{}),
-		runtimeLoops:    make(map[string]chan struct{}),
-		runtimeSaveGate: make(chan struct{}, runtimeSaveWorkers),
-		ctx:             ctx,
-		cancel:          cancel,
-		logger:          logger,
-		admissionOpen:   true,
+		plugins:           make(map[string]*pluginState),
+		registrations:     make(map[domain.SubscriptionID]domain.Subscription),
+		retained:          make(map[domain.SubscriptionID]struct{}),
+		activeByKey:       make(map[string]domain.SubscriptionID),
+		pendingByKey:      make(map[string]*pendingRegistration),
+		runtimeStates:     make(map[domain.SubscriptionID]*jsonvalue.Value),
+		runtimeWatches:    make(map[domain.SubscriptionID]*runtimeWatch),
+		queue:             make(chan queuedEvent, MaxDeliveries),
+		stopCh:            make(chan struct{}),
+		workerDone:        make(chan struct{}),
+		shutdownDone:      make(chan struct{}),
+		runtimeLoops:      make(map[string]chan struct{}),
+		runtimeSaveGate:   make(chan struct{}, runtimeSaveWorkers),
+		activationBatches: make(map[string]*activationBatch),
+		ctx:               ctx,
+		cancel:            cancel,
+		logger:            logger,
+		admissionOpen:     true,
 	}
 	go hub.deliveryWorker()
 	return hub
@@ -281,11 +285,11 @@ func (h *Hub) Restore(ctx context.Context) error {
 			return fmt.Errorf("restore registration %s: a referenced plugin is unavailable", registration.ID)
 		}
 		inputPort, outputPort := input.port, output.port
-		stateful := input.capabilities["runtime_state_v1"]
+		stateful := input.participates()
 		runtimeState := h.runtimeStates[registration.ID]
 		h.mu.Unlock()
 		if runtimeState != nil && !stateful {
-			return fmt.Errorf("restore registration %s: runtime state requires input plugin %q to advertise runtime_state_v1", registration.ID, registration.InputPlugin)
+			return fmt.Errorf("restore registration %s: runtime state requires input plugin %q to advertise a runtime-state capability", registration.ID, registration.InputPlugin)
 		}
 		if stateful && h.runtimeStore == nil {
 			return fmt.Errorf("restore registration %s input plugin %q: runtime state storage is unavailable", registration.ID, registration.InputPlugin)
@@ -343,13 +347,19 @@ func (h *Hub) Restore(ctx context.Context) error {
 		key := registrationKey(registration.InputPlugin, registration.WatchArgs, registration.OutputPlugin, registration.DestinationArgs)
 		h.registrations[registration.ID] = registration
 		h.activeByKey[key] = registration.ID
-		if input := h.plugins[registration.InputPlugin]; input.capabilities["runtime_state_v1"] {
+		if input := h.plugins[registration.InputPlugin]; input.participates() {
 			h.runtimeWatches[registration.ID] = &runtimeWatch{
 				state: h.runtimeStates[registration.ID], inputPort: input.port, inputName: registration.InputPlugin, registration: registration,
 			}
 		}
 	}
 	h.admissionOpen = true
+	h.logger.Info("daemon_ready", "restored_registrations", len(registrations))
+	for _, registration := range registrations {
+		if input := h.plugins[registration.InputPlugin]; input.capabilities["runtime_state_v2"] {
+			h.queueActivationLocked(registration.InputPlugin, input.port, registration.ID)
+		}
+	}
 	return nil
 }
 
@@ -547,7 +557,7 @@ func (h *Hub) Register(inputName string, watchArgs *jsonvalue.Value, outputName 
 		h.mu.Unlock()
 		return "", &Error{Code: "resource_exhausted", Message: "Registration arguments exceed the plugin protocol payload limit."}
 	}
-	runtimeState := inputState.capabilities["runtime_state_v1"]
+	runtimeState := inputState.participates()
 	if runtimeState && h.runtimeStore == nil {
 		h.mu.Unlock()
 		return "", &Error{Code: "storage_error", Message: "Trigger runtime state storage is unavailable."}
@@ -668,6 +678,9 @@ func (h *Hub) activate(pending *pendingRegistration) error {
 		}
 		h.finishPendingLocked(pending, nil, false)
 		h.logger.Info("subscription_active", "input_plugin", pending.inputName, "output_plugin", pending.outputName, "subscription_id", pending.id)
+		if inputState.capabilities["runtime_state_v2"] {
+			h.queueActivationLocked(pending.inputName, pending.input, pending.id)
+		}
 		return nil
 	}
 	// The input accepted a watch after its destination became unavailable. Keep
@@ -959,6 +972,7 @@ func (h *Hub) Shutdown() {
 	}
 	h.mu.Unlock()
 	<-h.workerDone
+	h.activationWait.Wait()
 	if runtimeDone != nil {
 		<-runtimeDone
 	}

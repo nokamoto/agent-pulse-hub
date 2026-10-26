@@ -91,6 +91,9 @@ type grrFixture struct {
 	searchCount uint64
 	authCalls   []grrRequest
 	searchCalls chan grrRequest
+	holdAuthAt  int
+	authArrived chan struct{}
+	authRelease chan struct{}
 }
 
 var (
@@ -205,7 +208,17 @@ func (f *grrFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		id, accepted := f.validTokens[token]
 		f.authCalls = append(f.authCalls, grrRequest{Host: r.Host, Path: r.URL.Path, Token: token, Accept: r.Header.Get("Accept"), APIVersion: r.Header.Get("X-GitHub-Api-Version"), At: time.Now()})
+		hold := f.holdAuthAt != 0 && len(f.authCalls) == f.holdAuthAt
+		arrived, release := f.authArrived, f.authRelease
 		f.mu.Unlock()
+		if hold {
+			close(arrived)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if !accepted {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = io.WriteString(w, `{"message":"Bad credentials"}`)
@@ -279,6 +292,20 @@ func (f *grrFixture) holdSearchResponses() {
 	f.mu.Lock()
 	f.holdSearch = true
 	f.mu.Unlock()
+}
+
+func (f *grrFixture) holdSecondRestoredIdentity() (<-chan struct{}, chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authCalls = nil
+	f.searchCount = 0
+	for len(f.searchCalls) > 0 {
+		<-f.searchCalls
+	}
+	f.holdAuthAt = 2
+	f.authArrived = make(chan struct{})
+	f.authRelease = make(chan struct{})
+	return f.authArrived, f.authRelease
 }
 
 func grrReleaseSearch(t grrReporter, request grrRequest) time.Time {
@@ -414,7 +441,7 @@ func startGRRPluginHost(t grrReporter, directory string, fixture *grrFixture, ov
 	}()
 	select {
 	case result := <-readyChannel:
-		if result.err != nil || result.frame.Type != "ready" || !reflect.DeepEqual(result.frame.Capabilities, []string{pluginprotocol.RuntimeStateCapability}) {
+		if result.err != nil || result.frame.Type != "ready" || !reflect.DeepEqual(result.frame.Capabilities, []string{pluginprotocol.RuntimeStateV2Capability}) {
 			cancel()
 			client.Kill()
 			_ = logFile.Close()

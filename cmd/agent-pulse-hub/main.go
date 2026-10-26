@@ -185,7 +185,6 @@ func runDaemon(configPath, selectedStateDirectory, address string, stderr io.Wri
 		}
 		service.StartRuntimeCheckpoints()
 		logger.Info("registration_available", "available", true)
-		logger.Info("daemon_ready", "restored_registrations", len(registrations))
 		return nil
 	}, server.Serve, func() {
 		service.Shutdown()

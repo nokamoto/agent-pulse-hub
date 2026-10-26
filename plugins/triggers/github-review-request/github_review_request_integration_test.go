@@ -121,6 +121,7 @@ var _ = Describe("GitHub review request acceptance", Serial, func() {
 		if enterpriseResult.Accepted == nil || !*enterpriseResult.Accepted {
 			t.Fatalf("saved GHES credential result = %+v plugin-log=%s auth=%+v gh-journal=%s started=%s path-probe=%s", enterpriseResult, readGRRFile(enterpriseHost.logPath), enterpriseFixture.authSnapshot(), readGRRFile(journal), readGRRFile(startedJournal), lookupText)
 		}
+		enterpriseHost.send(t, pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: "grr-auth-saved-gh"})
 		search := grrWaitSearch(t, enterpriseFixture, 1, 3*time.Second)
 		if search.Host != "ghes.example.test" || search.Path != "/api/v3/search/issues" || search.Token != "fixture-saved-token" {
 			t.Fatalf("GHES search request = %+v", search)
@@ -172,6 +173,15 @@ var _ = Describe("GitHub review request acceptance", Serial, func() {
 		if watchResult.Accepted == nil || !*watchResult.Accepted {
 			t.Fatalf("observation watch result = %+v", watchResult)
 		}
+		// A checkpoint is an ordered protocol barrier while the accepted watch
+		// is still dormant; it must perform no source observation or emission.
+		host.send(t, pluginprotocol.Frame{Type: "checkpoint", RequestID: "before-activation", SubscriptionID: "grr-observation"})
+		prepared := host.receiveType(t, "checkpoint_result", "before-activation", 2*time.Second)
+		if prepared.Accepted == nil || !*prepared.Accepted || fixture.searchCountSnapshot() != 0 {
+			t.Fatalf("dormant watch performed source work: checkpoint=%+v searches=%d", prepared, fixture.searchCountSnapshot())
+		}
+		host.send(t, pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: "grr-observation"})
+		host.send(t, pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: "grr-observation"})
 		firstRequest := grrWaitSearch(t, fixture, 1, 3*time.Second)
 		query, err := url.ParseQuery(firstRequest.Query)
 		if err != nil || query.Get("q") != "is:pr is:open user-review-requested:@me" || query.Get("per_page") != "100" || query.Get("sort") != "created" || query.Get("order") != "asc" || firstRequest.Host != "api.github.com" || firstRequest.Token != "observation-token" {

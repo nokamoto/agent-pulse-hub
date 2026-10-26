@@ -3,7 +3,11 @@
 The GitHub review request trigger polls for open pull requests that request a
 review directly from the authenticated user. Each event context is the pull
 request URL. The plugin uses the public input protocol and the hub's
-`runtime_state_v1` checkpoint facility.
+`runtime_state_v2` checkpoint and activation facility. Use a hub from the same
+revision that supports this capability. The trigger validates credentials and
+saved state before accepting a watch, then automatically starts searching when
+the hub signals that registration restoration is complete and events can be
+received.
 
 ## Prerequisites and build
 

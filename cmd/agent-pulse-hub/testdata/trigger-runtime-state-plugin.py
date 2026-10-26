@@ -16,7 +16,7 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 SCHEMA = "probe-v1"
 
 
-def serve(directory):
+def serve(directory, activation_v2=False):
     if os.environ.get("AGENT_PULSE_HUB_PLUGIN") != "plugin-v2":
         raise RuntimeError("fixture requires the framework launch cookie")
     directory = Path(directory)
@@ -43,6 +43,8 @@ def serve(directory):
     def read_source(watch):
         position = 0
         source = Path(watch["args"]["source_file"])
+        if activation_v2:
+            record("source_read", subscription_id=watch["subscription_id"])
         while not stopped.is_set():
             with state_lock:
                 if watch["quiesced"]:
@@ -88,12 +90,34 @@ def serve(directory):
                 record("state_event", subscription_id=watch["subscription_id"], event_id=event_id, update_id=update_id)
                 outgoing.put(encode(frame))
 
+    def accept_watch(frame, watch, control=None):
+        subscription_id = watch["subscription_id"]
+        if control is not None:
+            while not stopped.is_set() and not Path(control["release_file"]).exists():
+                stopped.wait(0.01)
+            if stopped.is_set():
+                return
+            if control.get("reject"):
+                record("watch_rejected", subscription_id=subscription_id, reason="controlled later watch rejection")
+                outgoing.put(encode({"version": 2, "type": "watch_result", "request_id": frame["request_id"], "accepted": False, "error": "controlled later watch rejection"}))
+                return
+        with state_lock:
+            watches[subscription_id] = watch
+        response = encode({"version": 2, "type": "watch_result", "request_id": frame["request_id"], "accepted": True})
+        if activation_v2:
+            outgoing.put((response, watch))
+        else:
+            outgoing.put(response)
+            record("watch_started", subscription_id=subscription_id)
+            threading.Thread(target=read_source, args=(watch,), daemon=True).start()
+
     def reader(requests, context):
         try:
             for request in requests:
                 frame = json.loads(request.value.decode("utf-8", errors="strict"))
                 kind = frame.get("type")
-                if frame.get("version") != 2 or kind not in ("state_watch", "delivery_notice", "checkpoint"):
+                allowed = ("state_watch", "delivery_notice", "checkpoint", "activate_watch") if activation_v2 else ("state_watch", "delivery_notice", "checkpoint")
+                if frame.get("version") != 2 or kind not in allowed:
                     context.abort(grpc.StatusCode.INVALID_ARGUMENT, "fixture received an unsupported message")
                 subscription_id = frame.get("subscription_id", "")
                 if kind == "state_watch":
@@ -117,12 +141,33 @@ def serve(directory):
                         "pending": {},
                         "event_id": 0,
                         "quiesced": False,
+                        "active": False,
+                        "accepted": threading.Event(),
                     }
-                    outgoing.put(encode({"version": 2, "type": "watch_result", "request_id": frame["request_id"], "accepted": True}))
+                    if activation_v2:
+                        control_path = directory / "activation-control.json"
+                        control = json.loads(control_path.read_text(encoding="utf-8")) if control_path.exists() else {}
+                        if control.get("held_subscription_id") == subscription_id:
+                            record("watch_result_held", subscription_id=subscription_id)
+                            threading.Thread(target=accept_watch, args=(frame, watch, control), daemon=True).start()
+                            continue
+                    accept_watch(frame, watch)
+                elif kind == "activate_watch":
                     with state_lock:
-                        watches[subscription_id] = watch
-                    record("watch_started", subscription_id=subscription_id)
-                    threading.Thread(target=read_source, args=(watch,), daemon=True).start()
+                        watch = watches.get(subscription_id)
+                    if watch is None:
+                        record("activate_watch", subscription_id=subscription_id)
+                        record("activation_ignored", subscription_id=subscription_id)
+                        continue
+                    watch["accepted"].wait(1)
+                    record("activate_watch", subscription_id=subscription_id)
+                    with state_lock:
+                        if not watch["accepted"].is_set() or watch["active"] or watch["quiesced"] or stopped.is_set():
+                            record("activation_ignored", subscription_id=subscription_id)
+                            continue
+                        watch["active"] = True
+                        record("watch_started", subscription_id=subscription_id)
+                        threading.Thread(target=read_source, args=(watch,), daemon=True).start()
                 elif kind == "delivery_notice":
                     with state_lock:
                         watch = watches.get(subscription_id)
@@ -154,7 +199,7 @@ def serve(directory):
                 context.abort(grpc.StatusCode.ALREADY_EXISTS, "one Session only")
             active = True
         record("session")
-        yield encode({"version": 2, "type": "ready", "role": "input", "capabilities": ["runtime_state_v1"]})
+        yield encode({"version": 2, "type": "ready", "role": "input", "capabilities": ["runtime_state_v2" if activation_v2 else "runtime_state_v1"]})
         threading.Thread(target=reader, args=(requests, context), daemon=True).start()
         try:
             while context.is_active() and not stopped.is_set():
@@ -164,7 +209,13 @@ def serve(directory):
                     continue
                 if item is None:
                     return
-                yield item
+                if isinstance(item, tuple):
+                    response, watch = item
+                    yield response
+                    record("watch_prepared", subscription_id=watch["subscription_id"])
+                    watch["accepted"].set()
+                else:
+                    yield item
         finally:
             record("session_closed")
             with active_lock:
@@ -204,4 +255,4 @@ def serve(directory):
 
 if __name__ == "__main__":
     import sys
-    serve(sys.argv[1])
+    serve(sys.argv[1], "--activation-v2" in sys.argv[2:])

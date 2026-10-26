@@ -12,9 +12,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
+	. "github.com/onsi/ginkgo/v2"
 )
 
 type grrPluginConfig struct {
@@ -29,12 +31,13 @@ type grrDaemonConfig struct {
 }
 
 type grrDaemon struct {
-	command   *exec.Cmd
-	address   string
-	logPath   string
-	logFile   *os.File
-	done      chan struct{}
-	waitError error
+	command     *exec.Cmd
+	address     string
+	logPath     string
+	journalPath string
+	logFile     *os.File
+	done        chan struct{}
+	waitError   error
 }
 
 func runGRRRestartAcceptance(t grrReporter) {
@@ -57,7 +60,8 @@ func runGRRRestartAcceptance(t grrReporter) {
 
 	first := startGRRDaemon(t, caseDirectory, configPath, address, stateDirectory, fixture)
 	firstA := registerGRR(t, caseDirectory, address, destinationA, watchArgs)
-	firstB := registerGRR(t, caseDirectory, address, destinationB, watchArgs)
+	secondWatchArgs := map[string]any{"host": "github.com", "poll_interval": "120ms"}
+	firstB := registerGRR(t, caseDirectory, address, destinationB, secondWatchArgs)
 	if firstA == "" || firstB == "" || firstA == firstB {
 		t.Fatalf("registration IDs were not isolated: A=%q B=%q", firstA, firstB)
 	}
@@ -73,12 +77,41 @@ func runGRRRestartAcceptance(t grrReporter) {
 	assertGRRCheckpoint(t, stateDirectory, firstB, "301", 2)
 
 	fixture.setSearch([]grrItem{{ID: 301, URL: urlA}, {ID: 302, URL: urlB}}, "complete", "1")
-	second := startGRRDaemon(t, caseDirectory, configPath, freeGRRAddress(t), stateDirectory, fixture)
+	savedFiles, err := filepath.Glob(filepath.Join(stateDirectory, "registrations", "*.json"))
+	if err != nil || len(savedFiles) != 2 {
+		t.Fatalf("saved registration order missing: files=%v error=%v", savedFiles, err)
+	}
+	firstRestoredID := strings.TrimSuffix(filepath.Base(savedFiles[0]), ".json")
+	laterValidation, release := fixture.holdSecondRestoredIdentity()
+	releaseValidation := sync.OnceFunc(func() { close(release) })
+	defer releaseValidation()
+	second := launchGRRDaemon(t, caseDirectory, configPath, freeGRRAddress(t), stateDirectory, fixture)
+	select {
+	case <-laterValidation:
+	case <-time.After(4 * time.Second):
+		t.Fatalf("later watch validation did not reach its barrier: %s", readGRRFile(second.logPath))
+	}
+	if !waitGRR(t, time.Second, func() bool { return grrAcceptedWatchIndex(second.journalPath, firstRestoredID) >= 0 }) {
+		t.Fatalf("first restored watch did not reach its positive-result journal barrier: %s", readGRRFile(second.journalPath))
+	}
+	window, cancelWindow := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	select {
+	case request := <-fixture.searchCalls:
+		cancelWindow()
+		t.Fatalf("watch searched before complete restoration: %+v journal=%s", request, readGRRFile(second.journalPath))
+	case <-window.Done():
+	}
+	cancelWindow()
+	if fixture.searchCountSnapshot() != 0 || strings.Contains(readGRRFile(second.journalPath), `"type":"activate_watch"`) || strings.Contains(readGRRFile(second.logPath), "daemon_ready") {
+		t.Fatalf("restoration crossed its barrier early: searches=%d journal=%s hub=%s", fixture.searchCountSnapshot(), readGRRFile(second.journalPath), readGRRFile(second.logPath))
+	}
+	releaseValidation()
 	if !waitGRR(t, 10*time.Second, func() bool { return len(readGRRRecords(destinationA)) == 2 && len(readGRRRecords(destinationB)) == 2 }) {
 		t.Fatalf("restored registrations did not emit only the new request: A=%v B=%v hub=%s", readGRRRecords(destinationA), readGRRRecords(destinationB), readGRRFile(second.logPath))
 	}
 	assertGRRRecord(t, destinationA, 1, firstA, urlB)
 	assertGRRRecord(t, destinationB, 1, firstB, urlB)
+	assertGRRGrantOrder(t, second.journalPath, firstA, firstB)
 	if len(readGRRRecords(destinationA)) != 2 || len(readGRRRecords(destinationB)) != 2 {
 		t.Fatal("restored request was emitted more than once")
 	}
@@ -159,12 +192,13 @@ func startGRRDaemon(t grrReporter, directory, configPath, address, stateDirector
 func launchGRRDaemon(t grrReporter, directory, configPath, address, stateDirectory string, fixture *grrFixture) *grrDaemon {
 	t.Helper()
 	logPath := filepath.Join(directory, fmt.Sprintf("hub-%d.jsonl", time.Now().UnixNano()))
+	journalPath := logPath + ".protocol.jsonl"
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		t.Fatalf("create daemon log: %v", err)
 	}
 	command := exec.Command(grrHubBinary, "daemon", "--config", configPath, "--address", address, "--state-dir", stateDirectory)
-	command.Env = grrEnvironment(grrTestEnvironment(fixture, map[string]string{"GH_TOKEN": "hub-token", "GITHUB_TOKEN": ""}))
+	command.Env = grrEnvironment(grrTestEnvironment(fixture, map[string]string{"GH_TOKEN": "hub-token", "GITHUB_TOKEN": "", "APH_GRR_PROTOCOL_JOURNAL": journalPath}))
 	command.Stderr = logFile
 	command.Stdout = ioDiscard{}
 	if err := command.Start(); err != nil {
@@ -174,12 +208,55 @@ func launchGRRDaemon(t grrReporter, directory, configPath, address, stateDirecto
 	if err := logFile.Close(); err != nil {
 		t.Fatalf("close daemon log handle: %v", err)
 	}
-	daemon := &grrDaemon{command: command, address: address, logPath: logPath, done: make(chan struct{})}
+	daemon := &grrDaemon{command: command, address: address, logPath: logPath, journalPath: journalPath, done: make(chan struct{})}
 	go func() {
 		daemon.waitError = command.Wait()
 		close(daemon.done)
 	}()
+	DeferCleanup(daemon.cleanup)
 	return daemon
+}
+
+func grrAcceptedWatchIndex(journalPath, subscriptionID string) int {
+	requestID := ""
+	for index, record := range readGRRRecords(journalPath) {
+		if record["type"] == "state_watch" && record["subscription_id"] == subscriptionID {
+			requestID, _ = record["request_id"].(string)
+		}
+		if requestID != "" && record["type"] == "watch_result" && record["request_id"] == requestID && record["accepted"] == true {
+			return index
+		}
+	}
+	return -1
+}
+
+func assertGRRGrantOrder(t grrReporter, journalPath string, subscriptionIDs ...string) {
+	t.Helper()
+	lastAccepted := -1
+	for _, id := range subscriptionIDs {
+		index := grrAcceptedWatchIndex(journalPath, id)
+		if index < 0 {
+			t.Fatalf("missing positive watch result for %s: %s", id, readGRRFile(journalPath))
+		}
+		if index > lastAccepted {
+			lastAccepted = index
+		}
+	}
+	grants := make(map[string]int)
+	for index, record := range readGRRRecords(journalPath) {
+		if record["type"] == "activate_watch" {
+			id, _ := record["subscription_id"].(string)
+			grants[id]++
+			if index <= lastAccepted {
+				t.Fatalf("grant preceded full restoration: %s", readGRRFile(journalPath))
+			}
+		}
+	}
+	for _, id := range subscriptionIDs {
+		if grants[id] != 1 {
+			t.Fatalf("grant count for %s = %d, want one", id, grants[id])
+		}
+	}
 }
 
 type ioDiscard struct{}

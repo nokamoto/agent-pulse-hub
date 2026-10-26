@@ -19,19 +19,21 @@ import (
 type fakePlugin struct {
 	mu sync.Mutex
 
-	name         string
-	role         domain.PluginRole
-	handlers     PluginHandlers
-	available    bool
-	capabilities []string
-	validate     func(DestinationRequest) error
-	watch        func(WatchRequest, func() error) error
-	deliver      func(domain.Event) DeliveryResult
-	notify       func(RuntimeNotice) error
-	checkpoint   func(RuntimeCheckpointRequest) (*jsonvalue.Value, error)
+	name          string
+	role          domain.PluginRole
+	handlers      PluginHandlers
+	available     bool
+	capabilities  []string
+	validate      func(DestinationRequest) error
+	watch         func(WatchRequest, func() error) error
+	activateWatch func(context.Context, domain.SubscriptionID) error
+	deliver       func(domain.Event) DeliveryResult
+	notify        func(RuntimeNotice) error
+	checkpoint    func(RuntimeCheckpointRequest) (*jsonvalue.Value, error)
 
 	validationRequests []DestinationRequest
 	watchRequests      []WatchRequest
+	activationRequests []domain.SubscriptionID
 	delivered          []domain.Event
 	notices            []RuntimeNotice
 	checkpoints        []RuntimeCheckpointRequest
@@ -158,6 +160,17 @@ func (p *fakePlugin) Deliver(_ context.Context, event domain.Event) DeliveryResu
 		return deliver(event)
 	}
 	return DeliveryResult{Outcome: domain.DeliveryAccepted}
+}
+
+func (p *fakePlugin) ActivateWatch(ctx context.Context, id domain.SubscriptionID) error {
+	p.mu.Lock()
+	p.activationRequests = append(p.activationRequests, id)
+	activate := p.activateWatch
+	p.mu.Unlock()
+	if activate != nil {
+		return activate(ctx, id)
+	}
+	return nil
 }
 
 func (p *fakePlugin) NotifyDelivery(_ context.Context, notice RuntimeNotice) error {

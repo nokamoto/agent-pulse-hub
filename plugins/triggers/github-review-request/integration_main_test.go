@@ -6,13 +6,19 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprotocol"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // The integration test executable also runs the actual product Session when
@@ -29,10 +35,69 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv("APH_GRR_PLUGIN_MODE") == "1" {
 		configureFixtureTransport()
-		serve()
+		serve(grpc.StreamInterceptor(journalGRRSession))
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+type grrJournalStream struct {
+	grpc.ServerStream
+	mu sync.Mutex
+}
+
+type grrProtocolRecord struct {
+	Type           string `json:"type"`
+	RequestID      string `json:"request_id"`
+	SubscriptionID string `json:"subscription_id"`
+	Accepted       *bool  `json:"accepted,omitempty"`
+}
+
+func journalGRRSession(server any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if info.FullMethod != pluginprotocol.SessionMethod || os.Getenv("APH_GRR_PROTOCOL_JOURNAL") == "" {
+		return handler(server, stream)
+	}
+	return handler(server, &grrJournalStream{ServerStream: stream})
+}
+
+func (s *grrJournalStream) SendMsg(message any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ServerStream.SendMsg(message); err != nil {
+		return err
+	}
+	return s.record(message, pluginprotocol.PluginToDaemon)
+}
+
+func (s *grrJournalStream) RecvMsg(message any) error {
+	if err := s.ServerStream.RecvMsg(message); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.record(message, pluginprotocol.DaemonToPlugin)
+}
+
+func (s *grrJournalStream) record(message any, direction pluginprotocol.Direction) error {
+	value, ok := message.(*wrapperspb.BytesValue)
+	if !ok {
+		return nil
+	}
+	frame, err := pluginprotocol.ParsePayload(value.Value, direction)
+	if err != nil {
+		return err
+	}
+	// Only protocol correlations are recorded, never credentials, state or URLs.
+	file, err := os.OpenFile(os.Getenv("APH_GRR_PROTOCOL_JOURNAL"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	writeErr := json.NewEncoder(file).Encode(grrProtocolRecord{Type: frame.Type, RequestID: frame.RequestID, SubscriptionID: frame.SubscriptionID, Accepted: frame.Accepted})
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }
 
 func configureFixtureTransport() {

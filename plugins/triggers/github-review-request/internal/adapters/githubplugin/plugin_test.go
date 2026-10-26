@@ -157,9 +157,11 @@ func receiveTestFrame(t *testing.T, stream *testSession) pluginprotocol.Frame {
 	}
 }
 
-var _ application.Credentials = (*blockingCredentials)(nil)
-var _ application.GitHub = testGitHub{}
-var _ pluginprotocol.SessionServer = (*testSession)(nil)
+var (
+	_ application.Credentials      = (*blockingCredentials)(nil)
+	_ application.GitHub           = testGitHub{}
+	_ pluginprotocol.SessionServer = (*testSession)(nil)
+)
 
 func TestSessionDoesNotStartValidationForDuplicatePendingSubscription(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
