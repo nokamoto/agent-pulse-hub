@@ -49,13 +49,16 @@ type pendingRequest struct {
 }
 
 type watchState struct {
-	orderMu   sync.Mutex
-	active    bool
-	stateful  bool
-	lastEvent uint64
-	pending   map[string]bool
-	notices   map[string]*noticeSend
-	quiesced  bool
+	orderMu            sync.Mutex
+	active             bool
+	stateful           bool
+	activationRequired bool
+	activationClosed   bool
+	granted            bool
+	lastEvent          uint64
+	pending            map[string]bool
+	notices            map[string]*noticeSend
+	quiesced           bool
 }
 
 type noticeSend struct {
@@ -244,7 +247,8 @@ func (p *Process) Watch(ctx context.Context, request hub.WatchRequest, activate 
 		return &hub.WatchError{Code: "invalid_request", Message: "Watch activation is required."}
 	}
 	p.mu.Lock()
-	participates := p.capabilities[pluginprotocol.RuntimeStateCapability]
+	activationRequired := p.capabilities[pluginprotocol.RuntimeStateV2Capability]
+	participates := p.capabilities[pluginprotocol.RuntimeStateCapability] || activationRequired
 	p.mu.Unlock()
 	if request.RuntimeState != participates {
 		return &hub.WatchError{Code: "invalid_request", Message: "Watch runtime-state mode does not match the input capability."}
@@ -255,7 +259,8 @@ func (p *Process) Watch(ctx context.Context, request hub.WatchRequest, activate 
 	}
 	watch := &watchState{
 		stateful: request.RuntimeState, pending: make(map[string]bool),
-		notices: make(map[string]*noticeSend),
+		activationRequired: activationRequired,
+		notices:            make(map[string]*noticeSend),
 	}
 	frame, err := p.requestWithWatch(ctx, pluginprotocol.Frame{
 		Type: frameType, RequestID: request.RequestID, SubscriptionID: string(request.SubscriptionID), WatchArgs: request.Arguments, State: request.State,
@@ -270,6 +275,58 @@ func (p *Process) Watch(ctx context.Context, request hub.WatchRequest, activate 
 	if !*frame.Accepted {
 		return &hub.WatchError{Code: "watch_rejected", Message: "Input plugin rejected the watch: " + safeText(frame.Error, 256)}
 	}
+	return nil
+}
+
+// ActivateWatch sends a one-way v2 grant. Its caller supplies the shared batch
+// deadline, so waiting for the serialized stream consumes that same budget.
+func (p *Process) ActivateWatch(ctx context.Context, id domain.SubscriptionID) error {
+	payload, err := pluginprotocol.Encode(pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: string(id)})
+	if err != nil {
+		return &hub.RuntimeError{Code: "invalid_watch", Message: "activation grant is invalid", Cause: err}
+	}
+	if err := p.acquireWrite(ctx); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			p.fail(err)
+		}
+		return &hub.RuntimeError{Code: "activation_send", Message: "activation grant could not enter the stream", Unavailable: !errors.Is(err, context.Canceled), Cause: err}
+	}
+	p.mu.Lock()
+	watch := p.watches[string(id)]
+	if !p.ready || p.failed || p.stopping || p.stream == nil || ctx.Err() != nil {
+		cause := ctx.Err()
+		p.mu.Unlock()
+		p.releaseWrite()
+		if errors.Is(cause, context.DeadlineExceeded) {
+			p.fail(cause)
+		}
+		return &hub.RuntimeError{Code: "activation_send", Message: "input plugin is unavailable before activation", Unavailable: !errors.Is(cause, context.Canceled), Cause: cause}
+	}
+	if watch == nil || !watch.active || !watch.activationRequired {
+		p.mu.Unlock()
+		p.releaseWrite()
+		return &hub.RuntimeError{Code: "invalid_watch", Message: "activation requires an accepted runtime-state v2 watch"}
+	}
+	if watch.granted || watch.activationClosed || watch.quiesced {
+		p.mu.Unlock()
+		p.releaseWrite()
+		return nil
+	}
+	// A source may respond before Send returns. Install admission before
+	// handing the grant to gRPC; a failed send invalidates this whole Session.
+	watch.granted = true
+	stream := p.stream
+	p.mu.Unlock()
+	if sendErr, pendingSend := p.sendUntil(ctx, stream, payload, nil); sendErr != nil {
+		if !pendingSend {
+			p.releaseWrite()
+		}
+		if !errors.Is(sendErr, context.Canceled) {
+			p.fail(fmt.Errorf("send activation grant: %w", sendErr))
+		}
+		return &hub.RuntimeError{Code: "activation_send", Message: "activation grant could not be sent", Unavailable: !errors.Is(sendErr, context.Canceled), Cause: sendErr}
+	}
+	p.releaseWrite()
 	return nil
 }
 
@@ -322,7 +379,14 @@ func (p *Process) Checkpoint(ctx context.Context, request hub.RuntimeCheckpointR
 	}
 	frame, err := p.requestWithSent(ctx, pluginprotocol.Frame{
 		Type: "checkpoint", RequestID: requestID, SubscriptionID: string(request.SubscriptionID), Quiesce: request.Quiesce,
-	}, "checkpoint_result", registrationTimeout, unlockOrder)
+	}, "checkpoint_result", registrationTimeout, func() {
+		if request.Quiesce && watch.activationRequired {
+			p.mu.Lock()
+			watch.activationClosed = true
+			p.mu.Unlock()
+		}
+		unlockOrder()
+	})
 	if err != nil {
 		if request.Quiesce && requestWasSent(err) {
 			p.mu.Lock()
@@ -447,10 +511,10 @@ func (p *Process) requestInternal(parent context.Context, frame pluginprotocol.F
 			unavailable: resultType != "checkpoint_result" || !errors.Is(sendErr, ctx.Err()),
 		}
 	}
-	p.releaseWrite()
 	if onSent != nil {
 		onSent()
 	}
+	p.releaseWrite()
 
 	select {
 	case result := <-pending.result:
@@ -775,6 +839,7 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 				return
 			}
 			overflow := p.runtimePendingCount >= hub.MaxDeliveries
+			dormant := watch.activationRequired && !watch.granted
 			watch.lastEvent = eventID
 			watch.pending[frame.EventID] = !overflow
 			if !overflow {
@@ -783,7 +848,7 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 			handler := p.handlers.Event
 			p.mu.Unlock()
 			status := "discarded"
-			if handler != nil && !overflow {
+			if handler != nil && !overflow && !dormant {
 				if terminal := handler(frame.SubscriptionID, frame.EventID, frame.Context); terminal != "" {
 					status = terminal
 				} else {
@@ -792,6 +857,9 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 			}
 			if overflow {
 				p.logger.Warn("event_rejected", "input_plugin", p.config.Name, "subscription_id", safeText(frame.SubscriptionID, 256), "event_id", safeText(frame.EventID, 256), "reason", "runtime event capacity is full")
+			}
+			if dormant {
+				p.rejectEvent(frame, "state event arrived before activation grant")
 			}
 			var noticeErr error
 			if status != "" {

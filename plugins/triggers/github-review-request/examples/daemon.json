@@ -1,0 +1,16 @@
+{
+  "plugins": [
+    {
+      "name": "github-review-request",
+      "role": "input",
+      "executable": "<ABSOLUTE_GITHUB_REVIEW_REQUEST_EXECUTABLE>",
+      "args": []
+    },
+    {
+      "name": "model",
+      "role": "output",
+      "executable": "<ABSOLUTE_MODEL_OUTPUT_EXECUTABLE>",
+      "args": []
+    }
+  ]
+}
