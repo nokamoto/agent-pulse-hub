@@ -160,8 +160,12 @@ For a new route:
    filesystem. Never replace an existing committed record. The successful rename
    is the commit point; do no further fallible storage work before activation.
 4. Activate under the same lifecycle serialization and return the normal
-   success response. A lost client response after commit is uncertain; an
-   explicit equivalent registration resolves it while the route is active.
+   success response. For `runtime_state_v2`, install routing/runtime correlations
+   and admission before the one-way activation grant under the
+   [runtime startup contract](trigger-runtime-state.md#registration-and-startup).
+   Failed commit sends no grant; post-commit grant failure keeps the record and
+   follows plugin unavailability rather than storage rollback. A lost client response after commit is uncertain;
+   an explicit equivalent registration resolves it while the route is active.
 
 The input stream cannot admit its next event until this decision finishes.
 Filesystem operations introduce no crash durability promise or new fsync
@@ -200,9 +204,16 @@ Administrative removal is offline deliberate recovery, not a new removal API.
    Do not rewrite records or assign replacement IDs. Keep restored routes staged
    until every saved route succeeds. Before opening admission, recheck all
    referenced instances and that stop has not begun under lifecycle serialization.
-4. Open registration and event admission together and report
+4. Install every restored active route/runtime correlation, then open
+   registration and event admission together under lifecycle serialization.
+   This is startup commit. Report
    `daemon_ready` with `restored_registrations` count. Empty storage reports zero.
-   Events received while restoration is incomplete are discarded with a reason;
+   After that record dispatch runtime-state v2 grants under the
+   [runtime startup contract](trigger-runtime-state.md#registration-and-startup).
+   Readiness does not promise grant receipt or completed source polling;
+   post-commit grant failure follows normal plugin unavailability. V2 watches
+   stay dormant until granted; v1 and ordinary watches keep their early-emission
+   behavior. Events received while restoration is incomplete are discarded with a reason;
    no buffered event is replayed when the gate opens. Operators publish new
    events only after readiness. A plugin's positive watch result is still sent
    before its first event, but does not itself promise hub-wide startup readiness.

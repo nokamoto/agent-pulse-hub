@@ -26,6 +26,12 @@ automatic retries, and collection of updates while stopped remain outside this
 guarantee. Actions have no new interface or state obligations.
 
 Participation is an optional capability in application/framework version 2.
+`runtime_state_v2` adds explicit activation once route admission is ready. The
+host also supports `runtime_state_v1` unchanged: accepted watches may start
+before hub-wide readiness and their early events can be discarded. A v1 input
+cannot assume preservation of fresh first-observation notifications across
+that gap. Inputs needing this coordination select v2, including the
+[GitHub review request trigger](github-review-request.md).
 An unchanged v2 input continues using its existing `ready`, `watch`, and `event`
 messages and receives no progress guarantee. Supporting an unchanged old input
 on the new host does not imply that a new participating input works on an old
@@ -76,10 +82,14 @@ delivery remain unchanged. State is distinct from watch/destination arguments.
 
 [Plugin v2](plugin-v1.md#optional-trigger-runtime-state) owns the schemas,
 directions, correlations, event counters and deadlines. Participating inputs
-advertise `runtime_state_v1`, receive `state_watch` with null or saved state,
+advertise exactly one of `runtime_state_v1` or `runtime_state_v2`, receive
+`state_watch` with null or saved state,
 emit `state_event`, consume terminal `delivery_notice`, and answer `checkpoint`.
-They validate/apply state before starting a watch and positive `watch_result`;
-incompatible state is a negative result, never initial-state fallback.
+They validate/apply state before positive `watch_result`; incompatible state
+is a negative result, never initial-state fallback. A v2 watch stays dormant
+until the host's one-way `activate_watch` grant. V1 retains its original start
+after positive acceptance. Runtime-state revision and application version 2
+are separate version axes; the wire specification owns their exact schemas.
 The transport event counter may restart in a new Session; it is not logical
 progress. The core stores only its last value and bounded outstanding work.
 
@@ -169,19 +179,50 @@ serialization. New participating watches receive `state: null`; a repeated
 equivalent active registration returns its existing ID without another watch,
 reset, or checkpoint. Registration storage failure retains the existing inert
 tombstone behavior and does not schedule runtime checkpoints for that route.
+A v2 accepted watch remains dormant on commit failure; send no grant. After a
+successful commit install routing/runtime correlations and make the route
+admissible under lifecycle serialization, then dispatch its grant. Client
+success means a committed active route, not grant receipt or completed polling.
+A post-commit grant failure retains the record and reports plugin unavailability,
+not storage rollback. Equivalent active registration sends no second grant.
 
 During startup validate registration records and runtime file envelopes before
 plugin launch. Negotiate capabilities, then restore each destination and watch
-with its saved ID and optional state. A trigger checks and applies state before
-starting the affected watch. Keep every route staged until all restorations
-succeed, recheck availability, then open the shared registration/event gate.
+with its saved ID and optional state. A trigger checks/applies state before
+acceptance; v2 retains a dormant watch. Keep every route staged until all
+restorations succeed. Under lifecycle serialization recheck all referenced
+instances and stop state, install every active route and runtime correlation,
+then open the shared registration/event gate. This is startup commit. Emit
+`daemon_ready` with restored count at commit before dispatching one
+`activate_watch` per accepted v2 watch. Readiness asserts admission, not grant
+receipt or source readiness. V1 retains legacy early emission; no v2 grant can
+precede the complete-set restoration barrier.
 Any runtime read, validation, capability, or application failure identifies the
 input, registration, path when applicable, and bounded reason; abort the whole
 startup and perform existing cleanup. No affected watch starts with fallback
-state and no earlier staged route delivers.
+state and no earlier staged route delivers. A failure or stop before commit
+sends no grant, retains committed records and performs failed-start cleanup
+without `daemon_ready`.
 
-An event emitted after positive watch acceptance but before activation/readiness
-receives `discarded`; it is not buffered or replayed. Events from tombstones or
+Bound activation dispatch by the existing 1,024-watch capacity: at most one
+pending grant per watch and no retry queue. Serialize grants with other host
+messages per input; dispatch different inputs concurrently. One ten-second
+per-input batch deadline covers queuing, flow control and all pending grant
+sends. Remove unsent grants if stop wins ordering or their input fails/expires.
+A failed/expired send makes that input unavailable under normal cleanup; this
+is a running-daemon failure after commit, not failed restoration. Retain saved
+records and healthy routes. An earlier granted watch may already deliver when
+a later send fails; activation is not an atomic all-watch delivery transaction.
+Do not retract readiness or roll back grants. Stop first prevents further
+dispatch; already dispatched grants can race with admission closure, using
+ordinary discard/notices and final checkpoint fencing. Quiescence is permanent
+until Session closure, even if a grant arrives late. No ACK, source-ready
+promise, replay, grant retry or post-commit loss recovery is introduced.
+
+A v1 event emitted after positive watch acceptance but before activation/readiness
+receives `discarded`. A v2 input must not emit before its grant; a valid fresh
+event from a dormant runtime-state v2 watch is discarded and diagnosed with a
+terminal notice; it is not buffered or replayed. Events from tombstones or
 closed admission are also discarded, with a notice when their participating
 watch and fresh ID are valid. An input must resolve this outcome without
 treating it as successful notification or waiting forever for acceptance.
@@ -299,6 +340,7 @@ remain routine implementation choices constrained by these contracts.
 
 | Decision | Alternatives | Rationale and tradeoff |
 | --- | --- | --- |
+| Runtime-state v2 one-way activation; preserve v1 | Silently strengthen v1; reject v1; add activation ACK or all-watch transaction | Explicit opt-in preserves existing authors and binary shapes; rejecting v1 expands migration scope. A grant suffices once admission is installed. An ACK cannot undo earlier delivery if a later watch fails; post-commit failure uses ordinary unavailability. |
 | Optional v2 capability and distinct participating messages | Mandatory wire version change; adding fields to every old message | Unchanged old inputs retain their artifacts and message shapes; new participating inputs require a new host. |
 | Ordered outcome notices plus coordinated snapshots | Snapshot after cancelling input; event receipt as successful progress; core service-cursor interpretation | Preserves confirmed delivery at normal stop while keeping service meaning inside the trigger. |
 | Per-registration bounded state envelope | Per-process shared state; arbitrary unbounded blobs | Ownership and reset are explicit; a trigger must bound/compact its own progress representation. |
@@ -328,12 +370,22 @@ Use mocked filesystem/plugin capabilities in unit tests for strict value/schema
 and exact-number matrices, all read/write/close/rename errors, identity/capability
 mismatches, generation selection/cleanup, duplicate and exhausted counters,
 late/malformed/negative/expired checkpoint responses, and acceptance/stop races.
+Add v1/v2/nonparticipant negotiation and incompatible capability combinations;
+no grant on storage/restore/availability failure; route/correlation installation
+before grant; duplicate/foreign/pre-accept grants; dormant checkpoints;
+quiesce-before-grant; stop before/after startup commit; blocked/failed grant
+send, batch expiry and cleanup. Mock stream/clock/storage boundaries to assert
+commit ordering, retained records, no v1 grant, unchanged v1 early-event discard,
+and no retry/restart.
 Assert a final snapshot follows every pre-cutoff accepted notice, while queued,
 unknown, failed, startup-discarded and tombstone events cannot establish success.
 Cover bounded batching, timeout continuation, opaque payload diagnostics,
 unchanged destination and old-state initialization without process-heavy matrices.
 
-Three new command cases cover actual file/process/restart and recovery boundaries.
+The three existing command cases cover file/process/restart and recovery.
+One additional case, TRS-V04-ACTIVATION, covers the public complete-restoration
+barrier with an actual daemon. Broad failure/race matrices remain in unit tests;
+unchanged v1 cases retain their implemented status and expectations.
 Combine restoration/isolation/duplicate/deletion into one case; combine deliberate
 reset with failed startup; retain save failure as a separate running-daemon case.
 Reuse SP-V01-RESTORE for unchanged nonparticipating artifacts and MVP-V05-RESTART
@@ -345,7 +397,8 @@ acceptance; implementation must pass all scoped approved cases.
 ### CI acceptance cases
 
 The governed files are
-`cmd/agent-pulse-hub/trigger_runtime_state_integration_test.go` and
+`cmd/agent-pulse-hub/trigger_runtime_state_integration_test.go`,
+`cmd/agent-pulse-hub/trigger_activation_integration_test.go`, and
 `cmd/agent-pulse-hub/testdata/trigger-runtime-state-cases.json`, using the existing
 `integration` tag and `TestIntegrationMVP` suite. Independent mechanism probes live in
 `cmd/agent-pulse-hub/trigger_runtime_state_feasibility_integration_test.go` and
@@ -364,6 +417,7 @@ fresh U2 remains observable. This fixture policy is not a common service promise
 | --- | --- | --- | --- |
 | TRS-V01-RESTART-ISOLATION | FR-001–FR-005, FR-009; NFR-001–NFR-003; AC-001, AC-002, AC-006 | Two registrations A/B with distinct sources/destinations. Just after a periodic batch completes, notify U1/V1, observe accepted delivery notices, repeat equivalent A, and stop before the next periodic checkpoint. Await exit, restart without registration, present U1/V1 then U2/V2. Stop, remove A registration/runtime directory by the offline procedure, restart and recreate identical A arguments. | Fixture journal proves no intervening periodic snapshot and final quiesce snapshot includes U1/V1. Same retained IDs and distinct state; U1/V1 are suppressed after restart, U2/V2 each notify once to their own destinations. Equivalent A retains ID/progress and one watch. Recreated A has a fresh UUID/null state and initial behavior; B retains progress. Source fixture performs no runtime-file operations; no recipient change or replay. |
 | TRS-V02-RESTORE-RECOVERY | FR-002, FR-006, FR-010; NFR-003; AC-003 | Save a checkpoint, stop; in copies corrupt the latest runtime file and separately use a syntactically valid incompatible schema. Start each copy, then explicitly reset by removing the complete runtime directory while stopped and restart. | Failed starts identify input/ID/reason without payload, no ready/affected watch/fallback delivery; files retained. Explicit reset permits initial behavior with the original ID/destination. Unreadable-file errors are deterministically injected in unit tests rather than relying on OS permissions. |
+| TRS-V04-ACTIVATION | FR-002–FR-004; NFR-001, NFR-002; AC-001; common coordination for GitHub review request FR-008/AC-005 | Actual daemon/client/model output and storage-free v2 input fixture. Retain two routes, order IDs by filename. On restart apply/accept the first watch; hold the later result with a fixture-controlled file barrier, offering fresh U2 to the first source while held. Release success. Repeat from stopped saved state, rejecting the held later watch. | Before release the journal shows prepared first watch, no grant/source read/event/output. Successful release grants only after all results; U2 delivers once with accepted notice on retained ID. Later rejection yields no grants/source reads/events/delivery/readiness, retained files and all configured-process exits. Unit tests own stop/send/storage/duplicate matrices. |
 | TRS-V03-SAVE-FAILURE | FR-007; AC-004 | Start a participating route, confirm U1; while running obstruct its runtime directory with a regular file as controlled fault injection; await a periodic failed save, then offer U2. Restore storage only after stopping. | Diagnostic identifies input/ID/path/reason and warns continuity cannot be guaranteed. U2 is still monitored and accepted once; failed operation has no successful generation/continuity claim. Fault injection is not supported live operator editing. |
 
 Each new case needs integration because mocked components cannot demonstrate
@@ -378,11 +432,23 @@ kill/await every child and remove temporary trees even on assertion failure.
 
 Use `go run build/mage.go -d build -w . test` for unit results and
 `go run build/mage.go -d build -w . integrationAll` for separate tagged results.
-The scoped Ginkgo focus `case:TRS-` registers exactly the three new IDs; include
+The scoped Ginkgo focus `case:TRS-` registers three existing IDs and the new
+static Pending TRS-V04-ACTIVATION; include
 SP-V01-RESTORE and MVP-V05-RESTART as retained regression evidence. The new scoped
 budget is 90 seconds after dependency cache warm-up: at most 30 seconds fixture/
 binary preparation, 40 seconds combined scenario runtime, ten seconds setup and
 ten seconds cleanup; peak six children. Existing acceptance ceilings remain.
+TRS-V04 has a separate 30-second scenario and five-second cleanup allowance,
+with shared 30-second warm build/setup and peak six children. Prepare two saved
+routes in one daemon, restart successfully, then reject restoration in a third
+launch. Extend only the command-local fixture with v2 mode, grant journaling,
+first-source-read journaling and a later-watch result barrier. Use journal rows
+and file releases, not fixed sleeps. Existing gRPC/process and file-barrier
+patterns plus the v2 standalone probe establish mechanisms without modifying
+shared harness, CI or dependency versions. The fixture's producer starts on
+grant, making absence of premature source work observable. Probe with
+`go test -tags=integration ./cmd/agent-pulse-hub -run '^TestTriggerRuntimeStateActivationFeasibility$' -count=1 -v`.
+These mechanisms do not establish the future product barrier.
 Compile/register every new static Pending case with the tag enabled and execute
 minimal real gRPC/process and generation-file feasibility probes before design
 readiness. Record actual commands, environment, times and outcomes in the PR;
@@ -403,6 +469,13 @@ service-plugin quality evidence remains with its governing design.
 
 Implement optional wire capability, outcome correlation, checkpoint lifecycle,
 runtime storage, diagnostics, and operator procedures together after approval.
+Capability revision changes no persistent format: registration v1 records,
+runtime generation version 1, state envelopes and plugin schemas stay identical.
+A compatible v1-to-v2 trigger upgrade loads the same saved checkpoint without
+rewrite. Do not persist/infer the negotiated capability from progress. New v2
+inputs require a v2-capable host; older strict hosts reject its unknown capability
+visibly. Use matching binaries and stopped-tree preservation for rollback. V1
+on the new host remains supported with its explicit pre-readiness discard limit.
 Old registration v1 files need no rewrite; absent runtime directories mean
 initial state. Manual/model plugins remain nonparticipating and unchanged.
 Existing pure-registration storage failure semantics remain intact.

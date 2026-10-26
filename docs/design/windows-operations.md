@@ -608,7 +608,13 @@ record, so inspect it before deciding whether damaged-file recovery applies.
 ## Trigger runtime state recovery
 
 This procedure derives from [trigger runtime state](trigger-runtime-state.md).
-Participating inputs advertise `runtime_state_v1`; their authors implement the
+Participating inputs select `runtime_state_v2` when first observation must wait
+until the host can admit events. They apply state and accept while dormant,
+then poll/emit only on `activate_watch`. Standalone callers prepare their event
+receiver after acceptance and send that grant. Existing `runtime_state_v1`
+remains supported with start-after-acceptance and possible startup discard;
+it receives no grant. The [public activation contract](plugin-v1.md#runtime-state-v2-activation)
+defines ordering, duplicates and quiescence. Participating authors implement the
 [public wire contract](plugin-v1.md#optional-trigger-runtime-state) and document
 initial state, schema compatibility, confirmed progress and stopped-period
 behavior. They supply/restore opaque JSON and handle outcome notices, without

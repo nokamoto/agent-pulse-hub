@@ -202,7 +202,9 @@ before activating it and processing the next message on that input stream,
 provided both plugins remain available. The
 [local persistence design](state-persistence.md#commit-and-activation) owns the
 save decision. During startup every saved route must be accepted before the
-hub opens its registration/event gate; earlier events are discarded, not buffered. Client
+hub opens its registration/event gate; earlier events are discarded, not buffered.
+Runtime-state v2 adds the explicit activation contract below; positive watch
+acceptance alone cannot start its source work. Client
 receipt of registration success is not a prerequisite for event emission.
 
 If saving fails, or the output becomes unavailable after the watch request has
@@ -226,10 +228,15 @@ to its registered output and arguments.
 
 ## Optional trigger runtime state
 
-An input opts in by adding exactly `"capabilities":["runtime_state_v1"]` to
-`ready`. Omission means the ordinary v2 contract above; an empty array is also
-nonparticipating. Duplicate or unknown capabilities, other array values, or a
-capabilities field on output readiness are malformed. The host sends new
+An input selects exactly one runtime-state revision by adding either
+`"capabilities":["runtime_state_v1"]` or
+`"capabilities":["runtime_state_v2"]` to `ready`. Omission means the ordinary
+v2 contract above; an empty array is also nonparticipating. Duplicate, combined
+v1/v2, or unknown capabilities, other array values, or a capabilities field on
+output readiness are malformed. The host supports both revisions without
+silently changing v1 semantics. New inputs needing activation coordination
+select v2. Selecting v1 retains its start-after-acceptance behavior and possible
+pre-readiness event discard. The host sends new
 messages only to participating inputs. Old v2 inputs keep their exact artifacts
 and message shapes. A participating input requires a host supporting this
 extension; old strict hosts can reject the additional readiness field.
@@ -241,7 +248,8 @@ size, request-ID and subscription ownership rules apply. The state envelope,
 
 | Direction / input message | Exact additional fields | Meaning |
 | --- | --- | --- |
-| Host to plugin / `state_watch` | `request_id`, `subscription_id`, `watch_args` as for `watch`; `state`: null or state envelope | Replaces ordinary `watch` for participating inputs, even without prior state. Validate and apply state before starting the watch; reply with ordinary `watch_result`. |
+| Host to plugin / `state_watch` | `request_id`, `subscription_id`, `watch_args` as for `watch`; `state`: null or state envelope | Replaces ordinary `watch` for participating inputs, even without prior state. Validate/apply state and reply with ordinary `watch_result`. Under runtime-state v2 the watch stays dormant until `activate_watch`; v1 may start after sending its positive result. |
+| Host to plugin / `activate_watch` (runtime-state v2 only) | `subscription_id`: nonempty string | One-way grant to start an already accepted watch in this Session; no result, request ID, state, or arguments. |
 | Plugin to host / `state_event` | `subscription_id`, `context` as for `event`; `event_id`: canonical positive decimal string through uint64 maximum | Replaces ordinary `event`; counter strictly increases per watch within this Session. |
 | Host to plugin / `delivery_notice` | `subscription_id`, `event_id`: matching strings; `status`: `accepted`, `failed`, `unknown`, or `discarded` | One terminal outcome per valid fresh participating event. `accepted` alone establishes confirmed delivery; `discarded` means not admitted/attempted. |
 | Host to plugin / `checkpoint` | `request_id`, `subscription_id`: nonempty strings; `quiesce`: boolean | Apply all earlier notices for this watch before extracting a restorable snapshot. When true, stop emitting before returning and remain quiescent until Session closure. |
@@ -254,12 +262,53 @@ The host never sends ordinary `watch` to a participating input or new messages
 to a nonparticipant. Participating inputs never send ordinary `event`. An
 ordinary nonparticipating input has no delivery notices or progress guarantee.
 Input and host serialize processing as well as emission where ordering affects
-state: finishing a result send precedes first event emission; consuming a notice
-precedes its following checkpoint snapshot. The input may serialize these
+state: finishing a result send precedes first event emission; runtime-state v2
+also requires a subsequent valid activation grant. Consuming a notice precedes
+its following checkpoint snapshot. The input may serialize these
 operations around its service tasks without pausing other watches.
 
+### Runtime-state v2 activation
+
+After validating arguments and applying null or saved state, the input completes
+its positive `watch_result` send and retains a dormant watch. It performs no
+source polling, observation reconciliation or event emission for that watch
+until consuming `activate_watch`. Authentication and state validation needed
+for acceptance may run earlier. Acceptance must not consume a first observation
+or advance attempted progress. The input serializes its per-watch dormant,
+active and quiesced transitions with checkpoints and Session closure.
+
+The host grants activation only after the route is committed, routing/runtime
+correlations are installed and event admission can accept it. At restart it
+waits for **all** saved destinations and watches to restore, rechecks availability
+and stop, installs every route/correlation, then opens admission. This is startup
+commit. Emit `daemon_ready` at commit before dispatching grants; it reports open
+admission, not grant receipt or completed polling. There is no activation ACK
+or second readiness barrier. The governing design supplies bounded dispatch.
+
+Ignore and diagnose unknown, foreign, rejected or not-yet-accepted subscription
+grants without starting work. A duplicate grant on an active watch is a no-op,
+never a second poller or state reset. A grant for a quiesced watch or closed
+Session cannot restart it. A quiescing checkpoint can close a dormant watch
+before any grant; later activation remains ineffective. A nonquiescing dormant
+checkpoint snapshots the applied state without starting source work. Runtime-state
+v1 receives no grants and retains all existing shapes, notices and deadlines.
+
+Restore/commit failure or stop before startup commit sends no grant and permits
+no delivery. After commit a grant send failure/timeout invokes ordinary input
+unavailability and cleanup; records stay saved, affected routes stop accepting
+work and healthy inputs continue. Already admitted work follows existing
+one-attempt rules. Do not roll back startup, retract readiness, replay events
+or retry through a replacement Session. Stop and grant dispatch share lifecycle
+ordering: stop first prevents dispatch; an already dispatched grant can race
+with gate closure and yield `discarded`. The trigger must not record that outcome
+as success or resend it. The
+[coordination design](trigger-runtime-state.md#registration-and-startup) owns this
+commit boundary and dispatch scheduling.
+
 Each valid fresh `state_event` receives one terminal notice while the Session
-remains usable, including `discarded` for a staged startup watch or closed gate.
+remains usable, including `discarded` for a staged startup watch or closed gate. A valid fresh
+event from a dormant runtime-state v2 watch violates activation ordering: discard/diagnose it with the same
+terminal notice, without activating its route. This does not permit early emission.
 Notice failure during shutdown is a visible continuity failure, never success.
 Invalid, foreign, repeated and pre-watch events are discarded/logged without a
 notice. A failed/unknown/discarded update has no completed-notification guarantee;
@@ -282,9 +331,10 @@ the full state allowance with watch arguments at registration/restoration as
 specified by the governing design, preserving the overall application bound.
 
 ```json
-{"version":2,"type":"ready","role":"input","capabilities":["runtime_state_v1"]}
+{"version":2,"type":"ready","role":"input","capabilities":["runtime_state_v2"]}
 {"version":2,"type":"state_watch","request_id":"r1","subscription_id":"s1","watch_args":{"source":"A"},"state":null}
 {"version":2,"type":"watch_result","request_id":"r1","accepted":true}
+{"version":2,"type":"activate_watch","subscription_id":"s1"}
 {"version":2,"type":"state_event","subscription_id":"s1","event_id":"1","context":"U1"}
 {"version":2,"type":"delivery_notice","subscription_id":"s1","event_id":"1","status":"accepted"}
 {"version":2,"type":"checkpoint","request_id":"r2","subscription_id":"s1","quiesce":true}
@@ -364,6 +414,10 @@ pinned framework source and language fixture when upgrading dependencies.
 A standalone verification caller can use the same framework launch, dispense,
 and Session sequence without starting the hub daemon. For an input plugin it
 requests a watch, applies that plugin's source stimulus, and observes events.
+For runtime-state v2 it sends `state_watch`, waits for positive `watch_result`,
+prepares its event receiver/outcome correlations, then sends `activate_watch`.
+It supplies terminal notices/checkpoints as the host would. A v1 caller keeps
+its existing sequence; no daemon or second live service is needed.
 For an output it validates a destination, sends a delivery with the required
 external-data fields, and observes the result and its destination. The caller
 supplies opaque test IDs; it implements no other plugin and needs no other

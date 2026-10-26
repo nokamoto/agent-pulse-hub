@@ -23,6 +23,14 @@ import (
 // Standalone mechanism probes are deliberately outside TestIntegrationMVP and
 // the scoped case inventory. Neither test proves hub runtime-state behavior.
 func TestTriggerRuntimeStateProtocolFeasibility(t *testing.T) {
+	probeRuntimeStateProtocol(t, false)
+}
+
+func TestTriggerRuntimeStateActivationFeasibility(t *testing.T) {
+	probeRuntimeStateProtocol(t, true)
+}
+
+func probeRuntimeStateProtocol(t *testing.T, activationV2 bool) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -31,6 +39,9 @@ func TestTriggerRuntimeStateProtocolFeasibility(t *testing.T) {
 		python = "python"
 	}
 	command := exec.CommandContext(ctx, python, "-B", filepath.Join("testdata", "trigger-runtime-state-probe.py"))
+	if activationV2 {
+		command.Env = append(os.Environ(), "APH_PROBE_ACTIVATION=1")
+	}
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: feasibilityHandshake,
 		Plugins:         plugin.PluginSet{"input": feasibilityRolePlugin{}}, Cmd: command,
@@ -74,13 +85,34 @@ func TestTriggerRuntimeStateProtocolFeasibility(t *testing.T) {
 		return frame
 	}
 	ready := receive()
-	if ready["type"] != "ready" || !reflect.DeepEqual(ready["capabilities"], []any{"runtime_state_v1"}) {
+	capability := "runtime_state_v1"
+	if activationV2 {
+		capability = "runtime_state_v2"
+	}
+	if ready["type"] != "ready" || !reflect.DeepEqual(ready["capabilities"], []any{capability}) {
 		t.Fatalf("capability readiness = %v", ready)
 	}
 	send(map[string]any{"type": "state_watch", "request_id": "watch 日本語", "subscription_id": "subscription-probe", "watch_args": map[string]any{}, "state": map[string]any{"schema": "probe-v1", "payload": map[string]any{"accepted": []string{"RESTORED"}}}})
 	result := receive()
 	if result["type"] != "watch_result" || result["request_id"] != "watch 日本語" || result["accepted"] != true {
 		t.Fatalf("watch correlation = %v", result)
+	}
+	if activationV2 {
+		// A checkpoint on the same stream is a deterministic barrier: any early
+		// event would arrive before its response and fail this observation.
+		send(map[string]any{"type": "checkpoint", "request_id": "prepared", "subscription_id": "subscription-probe", "quiesce": false})
+		prepared := receive()
+		if prepared["type"] != "checkpoint_result" || prepared["request_id"] != "prepared" {
+			t.Fatalf("dormant watch emitted before grant: %v", prepared)
+		}
+		// Invalid ownership cannot activate; the valid duplicate is idempotent.
+		send(map[string]any{"type": "activate_watch", "subscription_id": "foreign"})
+		send(map[string]any{"type": "checkpoint", "request_id": "foreign-grant", "subscription_id": "subscription-probe", "quiesce": false})
+		if frame := receive(); frame["type"] != "checkpoint_result" || frame["request_id"] != "foreign-grant" {
+			t.Fatalf("foreign grant activated watch: %v", frame)
+		}
+		send(map[string]any{"type": "activate_watch", "subscription_id": "subscription-probe"})
+		send(map[string]any{"type": "activate_watch", "subscription_id": "subscription-probe"})
 	}
 	for _, id := range []string{"1", "2"} {
 		event := receive()
@@ -98,6 +130,23 @@ func TestTriggerRuntimeStateProtocolFeasibility(t *testing.T) {
 	if checkpoint["type"] != "checkpoint_result" || checkpoint["request_id"] != "stop-checkpoint 日本語" || checkpoint["accepted"] != true || !reflect.DeepEqual(checkpoint["state"], wantState) {
 		t.Fatalf("notice-before-checkpoint snapshot = %v; want state %v", checkpoint, wantState)
 	}
+	if activationV2 {
+		// The next response also proves that the duplicate grant emitted nothing.
+		// A new dormant watch can be quiesced before a late grant reaches it.
+		send(map[string]any{"type": "state_watch", "request_id": "watch-dormant", "subscription_id": "dormant", "watch_args": map[string]any{}, "state": nil})
+		if frame := receive(); frame["type"] != "watch_result" || frame["request_id"] != "watch-dormant" {
+			t.Fatalf("duplicate grant emitted extra work: %v", frame)
+		}
+		send(map[string]any{"type": "checkpoint", "request_id": "quiesce-dormant", "subscription_id": "dormant", "quiesce": true})
+		if frame := receive(); frame["type"] != "checkpoint_result" || frame["request_id"] != "quiesce-dormant" {
+			t.Fatalf("dormant quiescence = %v", frame)
+		}
+		send(map[string]any{"type": "activate_watch", "subscription_id": "dormant"})
+		send(map[string]any{"type": "checkpoint", "request_id": "late-grant", "subscription_id": "dormant", "quiesce": false})
+		if frame := receive(); frame["type"] != "checkpoint_result" || frame["request_id"] != "late-grant" {
+			t.Fatalf("late grant resumed a quiesced watch: %v", frame)
+		}
+	}
 	if err := stream.CloseSend(); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +158,7 @@ func TestTriggerRuntimeStateProtocolFeasibility(t *testing.T) {
 	if elapsed := time.Since(started); elapsed >= 10*time.Second {
 		t.Fatalf("minimal protocol probe exceeded checkpoint batch budget: %s", elapsed)
 	}
-	t.Logf("OS=%s/%s; one Python framework child; 2 ordered events, accepted/unknown notices, correlated quiesce-request snapshot; total=%s cleanup=%s; mechanism feasibility only, not product acceptance, producer-quiescence verification or a maximum-watch batch measurement", runtime.GOOS, runtime.GOARCH, time.Since(started), time.Since(cleanupStarted))
+	t.Logf("runtime-state=%s; OS=%s/%s; one Python framework child; 2 ordered events, accepted/unknown notices, correlated quiesce-request snapshot; total=%s cleanup=%s; mechanism feasibility only, not product acceptance, producer-quiescence verification or a maximum-watch batch measurement", capability, runtime.GOOS, runtime.GOARCH, time.Since(started), time.Since(cleanupStarted))
 }
 
 func TestTriggerRuntimeStateFileFeasibility(t *testing.T) {

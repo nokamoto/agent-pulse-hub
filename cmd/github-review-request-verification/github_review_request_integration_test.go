@@ -26,7 +26,10 @@ var _ = Describe("GitHub review request acceptance", Serial, func() {
 
 	It("observes complete request sets through the standalone public input", Pending, Label("case:GRR-V02-OBSERVATION"), func() {
 		// Inputs: HTTPS API fixture, actual plugin, public state_watch with null
-		// state and a short positive interval; A/B are open direct requests in
+		// state and a short positive interval; after positive watch_result prepare
+		// event correlations, send activate_watch and only then allow search. Before
+		// the grant, /user validation is allowed but no search/event. Duplicate
+		// activate_watch creates no second poller. A/B are open direct requests in
 		// different repositories. Offer team-only, other-user, closed and merged
 		// candidates as exclusions. Keep GitHub content outside instructions.
 		// Initial complete observation emits distinct state_event frames whose
@@ -49,7 +52,13 @@ var _ = Describe("GitHub review request acceptance", Serial, func() {
 		// independently for each and confirm the core persisted accepted progress.
 		// Public stop must finish final checkpointing and reap all configured
 		// processes. Restart the same state directory without registering again;
-		// offer unchanged A and fresh B. Each original destination receives B once
+		// offer unchanged A and fresh B. Sort saved IDs by filename restoration
+		// order and reset the HTTPS /user request counter; hold the second /user
+		// response after the first watch's positive-result journal barrier.
+		// During a bounded 500 ms no-search channel/deadline observation window,
+		// expect zero search requests/events from the first prepared watch. Release
+		// within the existing eight-second validation budget; activation grants
+		// must follow complete restoration. Each original destination receives B once
 		// and receives no second A; IDs and progress remain registration-local.
 		// Stop normally. Preserve a state copy, replace one plugin checkpoint schema
 		// with an incompatible value, and restart: the affected watch cannot start,

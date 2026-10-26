@@ -102,6 +102,13 @@ registration or event admission. The persistence design governs complete-set
 validation and failure cleanup; any failed restoration fails startup. Report
 `daemon_ready` with `restored_registrations` count only after that barrier. The public
 protocol's ready role must match configuration. No Codex version probe occurs.
+For runtime-state v2 the [coordination design](trigger-runtime-state.md#registration-and-startup)
+keeps accepted watches dormant until complete restoration, routing/runtime
+correlation installation and admission opening. Emit `daemon_ready` at this
+startup commit before dispatching activation grants. Readiness does not promise
+grant receipt or source readiness; a later grant failure follows existing plugin
+unavailability and does not roll back startup. Runtime-state v1 and ordinary
+watches retain their original startup event behavior.
 
 Use TCP on literal IPv4 loopback, default `127.0.0.1:47831`. All hub subcommands
 accept `--address 127.0.0.1:<port>`, port 1–65535. Reject hostnames, wildcard,
