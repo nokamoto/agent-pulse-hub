@@ -24,7 +24,7 @@ sources:
 This design fulfills [GitHub review request requirements](../requirements/github-review-request.md).
 The bundled trigger observes open pull requests requesting the authenticated
 user's review and emits their URLs. It uses the existing input role and
-`runtime_state_v1` capability of [plugin protocol v2](plugin-v1.md).
+`runtime_state_v2` capability of [plugin protocol v2](plugin-v1.md).
 The hub continues to own routing, one-attempt delivery, registration storage,
 and [coordinated checkpoints](trigger-runtime-state.md).
 
@@ -218,7 +218,15 @@ accepted tradeoffs of the selected retrieval strategy.
 
 ### Scheduling and failures
 
-Start the first observation after positive `watch_result` is sent. Serialize
+Validate credentials, resolve `/user` and apply compatible state before positive
+`watch_result`, then retain a dormant watch. Start its first search observation
+only after consuming `activate_watch` under the
+[public activation contract](plugin-v1.md#runtime-state-v2-activation). Do not
+poll, reconcile, mark attempts or emit while dormant. The hub owns the complete
+restoration/admission barrier; the plugin owns per-watch idempotent activation
+and permanent quiescence. A standalone caller prepares its receiver/correlations
+after acceptance, sends the same grant, then observes events. Duplicate grants
+start no extra poller; a late grant cannot resume quiescence. Serialize
 observations per watch. After each completed attempt, wait the configured
 interval before the next; never queue missed ticks. Bound each HTTP request
 to ten seconds, each response to 8 MiB, and each observation to 120 seconds.
@@ -392,7 +400,7 @@ filesystem, or wall-clock sleeps belong in these unit matrices.
 | --- | --- |
 | U-AUTH | Host invalid forms and case normalization; both/one/empty tokens; rejected chosen source never falls back; CLI absent/error/timeout/output overflow and sanitized environment; `/user` malformed IDs and state identity mismatch; no secret markers in errors. |
 | U-OBSERVE | Direct-query construction, open PR validation, exact URL context; A/A/empty/A produces two attempts; A/A across unobserved cancellation produces one; distinct IDs produce distinct attempts; same PR number in two repos stays distinct. |
-| U-SCHEDULE | Controlled clock shows default 60s and configured positive duration after attempt completion; zero/negative/malformed rejected; no overlapping polls; server retry timestamps and exponential reset; quiesce cancels work. |
+| U-SCHEDULE | No search/emission before grant; one initial search after activation; duplicate grant no-op; dormant checkpoint and quiesce-before-grant do not poll; late grant cannot leave quiescence. Controlled clock shows default 60s and configured positive duration after attempt completion; zero/negative/malformed rejected; no overlapping polls; server retry timestamps and exponential reset; quiesce cancels work. |
 | U-RETRIEVE | 0/100/1,000/1,001 results; page failure, duplicate/count drift, incomplete flag, invalid IDs/URLs, redirect, body limit; 401/403/429/5xx/network errors; each preserves A and recovery A does not repeat; retry guidance is never violated. |
 | U-STATE | Null versus compatible and corrupt/unknown state; all status values; accepted notice before checkpoint; late notice across absence/reappearance; status 1 never claimed accepted or retried; 1,000 maximum-width rows fit; oversize rejected; quiesce fences late HTTP results. |
 
@@ -409,8 +417,8 @@ The complete plugin implementation scope must pass all three cases.
 | Stable case ID | Mapping | Concrete stimulus and expected results |
 | --- | --- | --- |
 | GRR-V01-AUTH | AC-001, NFR-001 | Launch public Session against a test-instrumented real plugin command. Set both token markers with `gh` absent: `/user` must receive GH_TOKEN only. Reject it while a valid lower source exists: negative watch result, no fallback. With both absent run a native `gh` fixture for GHES: exact hostname argv, all four token variables absent, saved marker used only on GHES. Missing auth is a bounded negative watch result; diagnostics contain no token marker. |
-| GRR-V02-OBSERVATION | AC-002, AC-003, AC-006, NFR-001 | Through standalone public Session, a controlled HTTPS server offers two open direct PRs in two repositories and excludes team-only/other-user/closed/merged candidates according to the asserted direct query. Expect exact A and B URLs once; repeat unchanged, observe A absent, then A present and expect one new A. After A is confirmed, fail a page or return incomplete data, then recover unchanged: no repeat. A rate-limit response with Retry-After delays the next request. Inspect query, HTTPS host, event fields, and safe diagnostics; send terminal notices to release each emission slot. |
-| GRR-V03-RESTART | AC-005, AC-007, NFR-002 | Use the actual hub/client, instrumented plugin command and model output with controlled GitHub. Register two distinct destinations and confirm A independently for each; observe successful checkpoints, stop normally and wait for exits. Restart both retained routes with A+B: each destination receives only B as a new event. With the daemon and configured plugins stopped, replace one runtime envelope payload by an incompatible schema: startup fails without fallback or output delivery. Preserve and remove the temporary state tree after all processes exit. |
+| GRR-V02-OBSERVATION | AC-002, AC-003, AC-006, NFR-001 | Through standalone public Session, send state_watch, permit only identity validation before acceptance, prepare receiver/correlations and send activate_watch before permitting search; duplicate grant creates no extra poller. A controlled HTTPS server offers two open direct PRs in two repositories and excludes team-only/other-user/closed/merged candidates according to the asserted direct query. Expect exact A and B URLs once; repeat unchanged, observe A absent, then A present and expect one new A. After A is confirmed, fail a page or return incomplete data, then recover unchanged: no repeat. A rate-limit response with Retry-After delays the next request. Inspect query, HTTPS host, event fields, and safe diagnostics; send terminal notices to release each emission slot. |
+| GRR-V03-RESTART | AC-005, AC-007, NFR-002 | Use the actual hub/client, instrumented plugin command and model output with controlled GitHub. Register two distinct destinations and confirm A independently for each; observe successful checkpoints, stop normally and wait for exits. Restart both retained routes with A+B; deterministically accept the first saved watch while holding a later watch validation. Before release the first watch makes no search/emission. Release validation; each destination receives only B once as a new event. With the daemon and configured plugins stopped, replace one runtime envelope payload by an incompatible schema: startup fails without fallback or output delivery. Preserve and remove the temporary state tree after all processes exit. |
 
 Keep the full failure/scheduling/schema matrix in unit tests instead of
 repeating it through processes. Combine direct matching and partial-retrieval
@@ -425,6 +433,21 @@ do not prove this plugin's restart behavior.
 For V01/V02 use the existing public go-plugin launch/dispense/Session recipe,
 with opaque caller IDs, rather than a hub or a second external integration.
 For V03 use existing daemon/client lifecycle and model-output artifact patterns.
+Inspect saved IDs in filename restoration order before restart. Reset the HTTPS identity-request counter for restart; sequential filename-order
+restoration identifies the second `/user` request to hold, independent of random
+UUID creation order. Use distinct valid watch intervals to keep both saved
+registrations distinct without needing different credentials or hosts. Wait for the first watch's positive-result journal barrier with A+B
+already available; the HTTPS server must record zero search calls from that
+watch during a bounded 500 ms no-search observation window after the later
+validation request arrives. Select on the first-search request channel and a
+context deadline: any search before release fails immediately; this is an
+explicit negative observation, not a sleep used to schedule restoration. Release
+within the existing eight-second validation budget, then expect the first search A+B, no second A, and exactly
+one accepted B per saved destination. Record public grant/result ordering in
+the instrumented plugin journal and actual output observations. Use channels
+and request-journal barriers, not random ID creation order or fixed sleeps.
+This catches start-after-result even when search beats restoration. Common
+TRS-V04 covers later rejection/no grants; do not duplicate its subprocess matrix.
 The real plugin command consists of its shipping composition and application
 layers, compiled into an integration test executable with a test-only helper
 entry. That entry sets a trusted ephemeral CA and local address routing on the
@@ -448,6 +471,11 @@ hostname routing and the native CLI environment boundary. It must contain no
 product substitute presented as acceptance. Existing public framework and
 common runtime-state suites supply the established process/protocol pattern;
 static Pending cases defer product wiring, not selection or method.
+The common runtime-state v2 probe demonstrates watch-result/checkpoint/grant
+ordering and dormant/quiesced handling over the same transport. Holding an HTTP
+handler with channels and request counters uses the proven HTTPS boundary; no
+product test flag, dependency, shared harness or CI change is needed. Product
+implementation must still pass the deterministic actual plugin/hub regression.
 
 Budget: build each fixture/test command once per suite, with at most 30 seconds
 for warm-dependency build/setup, V01/V02 at most 15 seconds each, V03 at most
@@ -497,10 +525,12 @@ design's probes or common runtime tests does not satisfy either delivery check.
 ## Change impact and open decisions
 
 This adds a bundled input profile and its design-governed verification only.
-It changes no hub contract, old plugin behavior, shared tooling, or storage
-format. A participating host is required; old hosts without the optional
-runtime-state extension are unsupported. There is no old GitHub checkpoint to
-migrate. Rollback to a binary lacking this schema must fail visibly on restore;
+It uses the service-neutral runtime-state v2 coordination defined by
+[the runtime design](trigger-runtime-state.md), without a GitHub-specific hub
+API. Old nonparticipating/v1 behavior, shared tooling and storage formats stay
+unchanged. A host supporting `runtime_state_v2` is required; old hosts without the optional
+runtime-state extension are unsupported. The `github-review-request-v1` checkpoint schema/status rows stay identical;
+compatible saved progress loads without migration. Rollback to a binary lacking this schema must fail visibly on restore;
 use the established offline restore/reset procedure rather than ignoring state.
 
 | Question or risk | Impact | Owner | Resolve before | Status |

@@ -15,7 +15,7 @@ require (
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
-	honnef.co/go/tools v0.8.1
+	honnef.co/go/tools v0.8.2
 	mvdan.cc/gofumpt v0.12.0
 )
 

@@ -16,6 +16,9 @@ def serve():
         raise RuntimeError("fixture requires the framework launch cookie")
     stopped = threading.Event()
     outgoing = queue.Queue()
+    activation_v2 = os.environ.get("APH_PROBE_ACTIVATION") == "1"
+    activated = False
+    quiesced = False
     subscription = None
     accepted_updates = []
     updates = {"1": "PROBE-U1", "2": "PROBE-U2"}
@@ -24,7 +27,7 @@ def serve():
         return wrappers_pb2.BytesValue(value=json.dumps(frame, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
     def receive(requests, context):
-        nonlocal subscription, accepted_updates
+        nonlocal subscription, accepted_updates, activated, quiesced
         try:
             for request in requests:
                 frame = json.loads(request.value.decode("utf-8", errors="strict"))
@@ -32,12 +35,20 @@ def serve():
                 if frame.get("version") != 2:
                     context.abort(grpc.StatusCode.INVALID_ARGUMENT, "wrong version")
                 if kind == "state_watch":
+                    activated = False
+                    quiesced = False
                     subscription = frame["subscription_id"]
                     state = frame["state"]
                     accepted_updates = [] if state is None else list(state["payload"]["accepted"])
                     outgoing.put(dict(version=2, type="watch_result", request_id=frame["request_id"], accepted=True))
-                    for event_id, update in updates.items():
-                        outgoing.put(dict(version=2, type="state_event", subscription_id=subscription, event_id=event_id, context=update))
+                    if not activation_v2:
+                        for event_id, update in updates.items():
+                            outgoing.put(dict(version=2, type="state_event", subscription_id=subscription, event_id=event_id, context=update))
+                elif kind == "activate_watch" and activation_v2:
+                    if frame["subscription_id"] == subscription and not activated and not quiesced:
+                        activated = True
+                        for event_id, update in updates.items():
+                            outgoing.put(dict(version=2, type="state_event", subscription_id=subscription, event_id=event_id, context=update))
                 elif kind == "delivery_notice":
                     if frame["subscription_id"] != subscription or frame["event_id"] not in updates:
                         context.abort(grpc.StatusCode.INVALID_ARGUMENT, "notice correlation")
@@ -46,6 +57,8 @@ def serve():
                 elif kind == "checkpoint":
                     if frame["subscription_id"] != subscription:
                         context.abort(grpc.StatusCode.INVALID_ARGUMENT, "checkpoint correlation")
+                    if frame["quiesce"]:
+                        quiesced = True
                     outgoing.put(dict(version=2, type="checkpoint_result", request_id=frame["request_id"], accepted=True,
                                       state=dict(schema="probe-v1", payload=dict(accepted=list(accepted_updates)))))
                 else:
@@ -54,7 +67,7 @@ def serve():
             outgoing.put(None)
 
     def session(requests, context):
-        yield encode(dict(version=2, type="ready", role="input", capabilities=["runtime_state_v1"]))
+        yield encode(dict(version=2, type="ready", role="input", capabilities=["runtime_state_v2" if activation_v2 else "runtime_state_v1"]))
         threading.Thread(target=receive, args=(requests, context), daemon=True).start()
         while context.is_active() and not stopped.is_set():
             try:
