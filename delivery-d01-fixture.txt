@@ -1,0 +1,2 @@
+Harmless D01 fixture line.
+Second fixture line.
