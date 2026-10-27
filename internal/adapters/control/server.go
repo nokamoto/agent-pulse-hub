@@ -137,6 +137,34 @@ func (s *Server) handle(connection net.Conn) {
 		_ = s.Close()
 		return
 	}
+	if request.operation == "rewait" {
+		completed := make(chan *hub.Error, 1)
+		go func() {
+			completed <- s.service.Rewait(request.subscriptionID, request.operationID, request.confirmationPosition)
+		}()
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		select {
+		case <-s.done:
+			return
+		case <-timer.C:
+			return
+		case operationErr := <-completed:
+			if operationErr != nil {
+				s.writeError(connection, operationErr)
+				return
+			}
+			response, err := EncodeRewaitSuccess(request.subscriptionID, request.operationID)
+			if err != nil {
+				s.logger.Error("control_response_error", "reason", "could not encode rewait response")
+				return
+			}
+			if _, err := writeRequest(connection, response); err != nil {
+				s.logger.Warn("control_rewait_response_lost", "subscription_id", request.subscriptionID, "reason", safeText(err.Error(), 256))
+			}
+		}
+		return
+	}
 	// Hub registration owns its plugin operation. Waiting on the server signal
 	// lets composition shut the Hub down after Serve returns.
 	type result struct {

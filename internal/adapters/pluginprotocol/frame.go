@@ -16,6 +16,7 @@ const (
 	MaxRuntimeSchemaBytes    = 128
 	RuntimeStateCapability   = "runtime_state_v1"
 	RuntimeStateV2Capability = "runtime_state_v2"
+	RewaitCapability         = "rewait_v1"
 	PermissionNotice         = "External data; no additional permissions are granted."
 )
 
@@ -27,24 +28,26 @@ const (
 )
 
 type Frame struct {
-	Type             string
-	Role             string
-	Capabilities     []string
-	RequestID        string
-	SubscriptionID   string
-	EventID          string
-	DeliveryID       string
-	InputPlugin      string
-	WatchArgs        *jsonvalue.Value
-	State            *jsonvalue.Value
-	DestinationArgs  *jsonvalue.Value
-	Accepted         *bool
-	Status           string
-	Quiesce          bool
-	Error            string
-	Context          string
-	ExternalData     *bool
-	PermissionNotice string
+	Type                 string
+	Role                 string
+	Capabilities         []string
+	RequestID            string
+	SubscriptionID       string
+	Generation           string
+	ConfirmationPosition string
+	EventID              string
+	DeliveryID           string
+	InputPlugin          string
+	WatchArgs            *jsonvalue.Value
+	State                *jsonvalue.Value
+	DestinationArgs      *jsonvalue.Value
+	Accepted             *bool
+	Status               string
+	Quiesce              bool
+	Error                string
+	Context              string
+	ExternalData         *bool
+	PermissionNotice     string
 }
 
 func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
@@ -81,7 +84,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				seen := make(map[string]struct{}, len(items))
 				for _, item := range items {
 					capability, ok := jsonvalue.ParseString(item)
-					if !ok || (capability != RuntimeStateCapability && capability != RuntimeStateV2Capability) {
+					if !ok || (capability != RuntimeStateCapability && capability != RuntimeStateV2Capability && capability != RewaitCapability) {
 						return Frame{}, errors.New("ready contains an unknown or invalid capability")
 					}
 					if _, duplicate := seen[capability]; duplicate {
@@ -90,11 +93,14 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 					seen[capability] = struct{}{}
 					frame.Capabilities = append(frame.Capabilities, capability)
 				}
-				if len(frame.Capabilities) > 1 {
+				_, v1 := seen[RuntimeStateCapability]
+				_, v2 := seen[RuntimeStateV2Capability]
+				_, rewait := seen[RewaitCapability]
+				if (v1 && v2) || (rewait && (!v2 || v1)) {
 					return Frame{}, errors.New("ready must select exactly one runtime-state revision")
 				}
 			}
-		case "watch_result", "destination_result":
+		case "watch_result", "destination_result", "resume_result":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "accepted"}, "version", "type", "request_id", "accepted", "error"); err != nil {
 				return Frame{}, err
 			}
@@ -119,6 +125,9 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				}
 				frame.Error = message
 			}
+			if typeName == "resume_result" && len(frame.Error) > 1024 {
+				return Frame{}, errors.New("resume error exceeds the message limit")
+			}
 		case "event":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "subscription_id", "context"}, "version", "type", "subscription_id", "context"); err != nil {
 				return Frame{}, err
@@ -131,7 +140,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 			frame.SubscriptionID = subscriptionID
 			frame.Context = contextText
 		case "state_event":
-			if err := protocol.ValidateFields(value, []string{"version", "type", "subscription_id", "event_id", "context"}, "version", "type", "subscription_id", "event_id", "context"); err != nil {
+			if err := protocol.ValidateFields(value, []string{"version", "type", "subscription_id", "event_id", "context"}, "version", "type", "subscription_id", "event_id", "context", "generation"); err != nil {
 				return Frame{}, err
 			}
 			subscriptionID, subscriptionOK := protocol.StringField(value, "subscription_id")
@@ -141,6 +150,13 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				return Frame{}, errors.New("state_event fields are invalid")
 			}
 			frame.SubscriptionID, frame.EventID, frame.Context = subscriptionID, eventID, contextText
+			if generation, present := value.Get("generation"); present {
+				text, valid := jsonvalue.ParseString(generation)
+				if !valid || text == "" {
+					return Frame{}, errors.New("generation must be nonempty")
+				}
+				frame.Generation = text
+			}
 		case "delivery_result":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "status"}, "version", "type", "request_id", "status", "error"); err != nil {
 				return Frame{}, err
@@ -194,7 +210,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 		switch typeName {
 		case "activate_watch":
 			fields := []string{"version", "type", "subscription_id"}
-			if err := protocol.ValidateFields(value, fields, fields...); err != nil {
+			if err := protocol.ValidateFields(value, fields, append(fields, "generation")...); err != nil {
 				return Frame{}, err
 			}
 			subscriptionID, ok := protocol.StringField(value, "subscription_id")
@@ -202,6 +218,28 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				return Frame{}, errors.New("activate_watch subscription_id must be nonempty")
 			}
 			frame.SubscriptionID = subscriptionID
+			if generation, present := value.Get("generation"); present {
+				text, valid := jsonvalue.ParseString(generation)
+				if !valid || text == "" {
+					return Frame{}, errors.New("generation must be nonempty")
+				}
+				frame.Generation = text
+			}
+		case "resume_watch":
+			fields := []string{"version", "type", "request_id", "subscription_id", "generation", "confirmation_position"}
+			if err := protocol.ValidateFields(value, fields, fields...); err != nil {
+				return Frame{}, err
+			}
+			for name, target := range map[string]*string{"request_id": &frame.RequestID, "subscription_id": &frame.SubscriptionID, "generation": &frame.Generation, "confirmation_position": &frame.ConfirmationPosition} {
+				text, valid := protocol.StringField(value, name)
+				if !valid || text == "" {
+					return Frame{}, errors.New("resume_watch fields must be nonempty strings")
+				}
+				*target = text
+			}
+			if len(frame.ConfirmationPosition) > 4096 {
+				return Frame{}, errors.New("confirmation position exceeds the byte limit")
+			}
 		case "watch":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "subscription_id", "watch_args"}, "version", "type", "request_id", "subscription_id", "watch_args"); err != nil {
 				return Frame{}, err
@@ -313,6 +351,14 @@ func Encode(frame Frame) ([]byte, error) {
 		}
 	case "activate_watch":
 		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
+		if frame.Generation != "" {
+			fields["generation"] = jsonvalue.NewString(frame.Generation)
+		}
+	case "resume_watch":
+		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
+		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
+		fields["generation"] = jsonvalue.NewString(frame.Generation)
+		fields["confirmation_position"] = jsonvalue.NewString(frame.ConfirmationPosition)
 	case "watch":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
@@ -322,7 +368,7 @@ func Encode(frame Frame) ([]byte, error) {
 		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
 		fields["watch_args"] = frame.WatchArgs
 		fields["state"] = frame.State
-	case "watch_result", "destination_result":
+	case "watch_result", "destination_result", "resume_result":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		if frame.Accepted != nil {
 			fields["accepted"] = jsonvalue.NewBoolean(*frame.Accepted)
@@ -337,6 +383,9 @@ func Encode(frame Frame) ([]byte, error) {
 		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
 		fields["event_id"] = jsonvalue.NewString(frame.EventID)
 		fields["context"] = jsonvalue.NewString(frame.Context)
+		if frame.Generation != "" {
+			fields["generation"] = jsonvalue.NewString(frame.Generation)
+		}
 	case "validate_destination":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		fields["destination_args"] = frame.DestinationArgs
@@ -394,7 +443,7 @@ func Encode(frame Frame) ([]byte, error) {
 
 func directionFor(typeName string) Direction {
 	switch typeName {
-	case "ready", "watch_result", "event", "state_event", "destination_result", "delivery_result", "checkpoint_result":
+	case "ready", "watch_result", "event", "state_event", "destination_result", "delivery_result", "checkpoint_result", "resume_result":
 		return PluginToDaemon
 	default:
 		return DaemonToPlugin

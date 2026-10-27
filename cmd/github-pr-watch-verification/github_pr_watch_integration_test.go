@@ -4,9 +4,8 @@ package main
 
 import . "github.com/onsi/ginkgo/v2"
 
-// Governed by docs/design/github-pr-watch.md. These static Pending cases
-// register approved verification obligations without nonexistent product
-// symbols. The separate feasibility probe qualifies fixture mechanics only.
+// Governed by docs/design/github-pr-watch.md. The separate feasibility probe
+// qualifies fixture mechanics only; these cases execute actual product paths.
 var _ = Describe("GitHub PR watch acceptance", Serial, func() {
 	// GPW-I01: Launch the actual plugin through the public framework/Session,
 	// with only GitHub HTTPS, credentials, and time replaced by local controls.
@@ -34,7 +33,7 @@ var _ = Describe("GitHub PR watch acceptance", Serial, func() {
 	// Assert auth/PR/position/progress isolation across the two selected hosts,
 	// no secret/private-body markers in diagnostics, and external text cannot
 	// change the destination or authority. Stop Session; await process exit.
-	It("observes a complete baseline and bounded changes through the public plugin with host-scoped authentication", Label("case:GPW-I01"), Pending, func() {})
+	It("observes a complete baseline and bounded changes through the public plugin with host-scoped authentication", Label("case:GPW-I01"), gpwObservationCase)
 
 	// GPW-I02: Use the actual daemon/client/plugin and model-output action, with
 	// controlled HTTPS only. Register acme/widget#17 to output A; leave output B
@@ -54,7 +53,7 @@ var _ = Describe("GitHub PR watch acceptance", Serial, func() {
 	// ordinary notification until another explicit rewait. Observe through public
 	// commands, model-output records and bounded fixture journals, then stop and
 	// await daemon/plugin/action exits. No test-only cancellation replaces rewait.
-	It("rewaits on the same route from P1 without losing intervening C2 and H2 or overlapping the previous wait", Label("case:GPW-I02"), Pending, func() {})
+	It("rewaits on the same route from P1 without losing intervening C2 and H2 or overlapping the previous wait", Label("case:GPW-I02"), gpwRewaitCase)
 
 	// GPW-I03: Use the actual daemon/client/plugin/model-output, temporary state,
 	// and controlled GitHub. Accept a C2/H2 notification, wait for its accepted
@@ -75,5 +74,5 @@ var _ = Describe("GitHub PR watch acceptance", Serial, func() {
 	// explicit position: new ID and fresh baseline, no implicit old checkpoint.
 	// Keep another retained registration distinct throughout. Verify plugin owns
 	// no state-file/service operations. Cleanup only after every child exits.
-	It("preserves confirmed progress across normal restart and exposes save, restore and registration-isolation boundaries", Label("case:GPW-I03"), Pending, func() {})
+	It("preserves confirmed progress across normal restart and exposes save, restore and registration-isolation boundaries", Label("case:GPW-I03"), gpwRestartCase)
 })

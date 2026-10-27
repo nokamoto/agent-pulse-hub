@@ -1,0 +1,48 @@
+package main
+
+import (
+	"flag"
+	"io"
+	"log/slog"
+	"os"
+	"time"
+
+	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/go-plugin"
+	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprocess"
+	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprotocol"
+	"github.com/nokamoto/agent-pulse-hub/plugins/triggers/github-pr-watch/internal/adapters/ghcredential"
+	"github.com/nokamoto/agent-pulse-hub/plugins/triggers/github-pr-watch/internal/adapters/githubapi"
+	"github.com/nokamoto/agent-pulse-hub/plugins/triggers/github-pr-watch/internal/adapters/githubplugin"
+	"github.com/nokamoto/agent-pulse-hub/plugins/triggers/github-pr-watch/internal/domain"
+	"google.golang.org/grpc"
+)
+
+func main() {
+	if !serveWithOptions(nil) {
+		os.Exit(2)
+	}
+}
+
+func serveWithOptions(options []githubplugin.Option, serverOptions ...grpc.ServerOption) bool {
+	flags := flag.NewFlagSet("github-pr-watch", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	host := flags.String("host", "github.com", "GitHub DNS hostname")
+	interval := flags.Int("poll-interval", 60, "poll interval in seconds")
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	if flags.Parse(os.Args[1:]) != nil || flags.NArg() != 0 || !domain.ValidHost(*host) || *interval < 5 || *interval > 3600 {
+		logger.Error("invalid_plugin_configuration")
+		return false
+	}
+	plugin.Serve(&plugin.ServeConfig{
+		HandshakeConfig: pluginprocess.HandshakeConfig,
+		Plugins:         plugin.PluginSet{pluginprocess.InputPluginKey: &pluginprocess.FrameworkPlugin{Impl: githubplugin.New(logger, ghcredential.New(), githubapi.New(), *host, time.Duration(*interval)*time.Second, options...)}},
+		GRPCServer: func(base []grpc.ServerOption) *grpc.Server {
+			base = append(base, pluginprotocol.ServerOptions()...)
+			base = append(base, serverOptions...)
+			return grpc.NewServer(base...)
+		},
+		Logger: hclog.NewNullLogger(),
+	})
+	return true
+}

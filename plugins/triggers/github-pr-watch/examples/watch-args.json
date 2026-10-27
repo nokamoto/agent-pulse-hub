@@ -1,0 +1,8 @@
+{
+  "host": "github.com",
+  "owner": "<REPOSITORY_OWNER>",
+  "repository": "<REPOSITORY_NAME>",
+  "pull_number": 1,
+  "waiting_reason": "Review new feedback on the selected pull request",
+  "represented_actor": "Pull request author"
+}
