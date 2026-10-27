@@ -28,6 +28,14 @@ func (h *Hub) queueActivationLocked(name string, port PluginPort, id domain.Subs
 	if h.stopping {
 		return
 	}
+	if h.plugins[name].capabilities["rewait_v1"] {
+		generation, err := newID()
+		if err != nil {
+			go h.pluginUnavailable(name, port, fmt.Errorf("create notification generation: %w", err))
+			return
+		}
+		h.notificationWaits[id] = &notificationWait{generation: generation, armed: true}
+	}
 	batch := h.activationBatches[name]
 	if batch == nil {
 		ctx, cancel := context.WithTimeout(h.ctx, activationDeadline)
@@ -64,11 +72,23 @@ func (h *Hub) dispatchActivations(name string, batch *activationBatch) {
 		}
 		id := batch.ids[0]
 		batch.ids = batch.ids[1:]
+		generation := ""
+		if wait := h.notificationWaits[id]; wait != nil {
+			generation = wait.generation
+		}
 		h.mu.Unlock()
 
 		err := batch.ctx.Err()
 		if err == nil {
-			err = batch.port.ActivateWatch(batch.ctx, id)
+			if generation != "" {
+				if capable, ok := batch.port.(RewaitPluginPort); ok {
+					err = capable.ActivateGeneration(batch.ctx, id, generation)
+				} else {
+					err = fmt.Errorf("input does not implement repeated waiting")
+				}
+			} else {
+				err = batch.port.ActivateWatch(batch.ctx, id)
+			}
 		}
 		if err != nil {
 			h.mu.Lock()

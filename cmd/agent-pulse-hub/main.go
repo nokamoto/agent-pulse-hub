@@ -34,6 +34,27 @@ type commandOperations interface {
 
 type localOperations struct{}
 
+type rewaitOperations interface {
+	Position(string) (string, error)
+	Rewait(context.Context, string, string, string, string) (control.RegistrationResponse, []byte, error)
+}
+
+func (localOperations) Position(path string) (string, error) {
+	value, err := loadJSONFile(path)
+	if err != nil {
+		return "", errors.New("confirmation position file must be an accessible absolute regular file containing strict UTF-8 JSON without a BOM")
+	}
+	position, ok := jsonvalue.ParseString(value)
+	if !ok || !control.ValidPosition(position) {
+		return "", errors.New("confirmation position file must contain one nonempty JSON string of at most 4096 UTF-8 bytes")
+	}
+	return position, nil
+}
+
+func (localOperations) Rewait(ctx context.Context, address, subscriptionID, operationID, position string) (control.RegistrationResponse, []byte, error) {
+	return control.Rewait(ctx, address, subscriptionID, operationID, position)
+}
+
 func (localOperations) Daemon(path, stateDirectory, address string, stderr io.Writer) error {
 	return runDaemon(path, stateDirectory, address, stderr)
 }
@@ -54,7 +75,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func runWith(args []string, stdout, stderr io.Writer, operations commandOperations) int {
 	if len(args) == 0 {
-		return report(stderr, "usage: agent-pulse-hub <daemon|register|stop> ...")
+		return report(stderr, "usage: agent-pulse-hub <daemon|register|rewait|stop> ...")
 	}
 	switch args[0] {
 	case "daemon":
@@ -96,6 +117,42 @@ func runWith(args []string, stdout, stderr io.Writer, operations commandOperatio
 			return report(stderr, "register: registration succeeded but its response could not be written to stdout.")
 		}
 		return 0
+	case "rewait":
+		flags, err := parseFlags(args[1:], []string{"--subscription-id", "--operation-id", "--confirmation-position-file"}, []string{"--address"})
+		if err != nil {
+			return report(stderr, "rewait: "+err.Error())
+		}
+		if !control.ValidOperationID(flags["--operation-id"]) {
+			return report(stderr, "rewait: operation ID must be canonical Unix milliseconds, a colon, and 32 lowercase hexadecimal digits")
+		}
+		rewait, ok := operations.(rewaitOperations)
+		if !ok {
+			return report(stderr, "rewait: command operations are unavailable")
+		}
+		position, err := rewait.Position(flags["--confirmation-position-file"])
+		if err != nil {
+			return report(stderr, "rewait: "+err.Error())
+		}
+		if !control.ValidPosition(position) {
+			return report(stderr, "rewait: confirmation position is invalid")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), controlDeadline)
+		defer cancel()
+		_, wire, err := rewait.Rewait(ctx, addressOrDefault(flags["--address"]), flags["--subscription-id"], flags["--operation-id"], position)
+		if err != nil {
+			var daemonError *control.DaemonError
+			if errors.As(err, &daemonError) {
+				if writeAll(stdout, daemonError.Wire) != nil {
+					return report(stderr, "rewait: could not write the daemon response to stdout.")
+				}
+				return 1
+			}
+			return report(stderr, "rewait: "+err.Error())
+		}
+		if writeAll(stdout, wire) != nil {
+			return report(stderr, "rewait: wait was installed but its response could not be written to stdout.")
+		}
+		return 0
 	case "stop":
 		flags, err := parseFlags(args[1:], nil, []string{"--address"})
 		if err != nil {
@@ -111,7 +168,7 @@ func runWith(args []string, stdout, stderr io.Writer, operations commandOperatio
 		}
 		return 0
 	default:
-		return report(stderr, "usage: agent-pulse-hub <daemon|register|stop> ...")
+		return report(stderr, "usage: agent-pulse-hub <daemon|register|rewait|stop> ...")
 	}
 }
 
@@ -264,6 +321,17 @@ func parseFlags(args, required, optional []string) (map[string]string, error) {
 }
 
 func loadArguments(path string) (*jsonvalue.Value, error) {
+	value, err := loadJSONFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if value.Kind() != jsonvalue.Object {
+		return nil, errors.New("argument file must contain a JSON object")
+	}
+	return value, nil
+}
+
+func loadJSONFile(path string) (*jsonvalue.Value, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("argument file path must be absolute")
 	}
@@ -289,9 +357,6 @@ func loadArguments(path string) (*jsonvalue.Value, error) {
 	value, err := jsonvalue.Parse(data, protocol.MaxFrameBytes-1)
 	if err != nil {
 		return nil, fmt.Errorf("parse argument file JSON: %w", err)
-	}
-	if value.Kind() != jsonvalue.Object {
-		return nil, errors.New("argument file must contain a JSON object")
 	}
 	return value, nil
 }

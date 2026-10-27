@@ -140,6 +140,15 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
+			h.mu.Lock()
+			if notification := h.notificationWaits[watch.registration.ID]; notification != nil {
+				if notification.preparing || notification.checkpointBusy {
+					h.mu.Unlock()
+					return
+				}
+				notification.checkpointBusy = true
+			}
+			h.mu.Unlock()
 			watch.mu.Lock()
 			flushed, err := h.flushRuntimeOutcomesLocked(ctx, watch)
 			if err != nil {
@@ -173,9 +182,11 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 			for result := range jobs {
 				if result.err != nil {
 					h.reportCheckpointError(ctx, quiesce, result)
+					h.finishRewaitCheckpoint(result.watch)
 					continue
 				}
 				h.saveRuntimeState(result.watch, result.state)
+				h.finishRewaitCheckpoint(result.watch)
 			}
 		}()
 	}
@@ -219,9 +230,22 @@ func (h *Hub) flushRuntimeOutcomesLocked(ctx context.Context, watch *runtimeWatc
 		}
 		watch.outcomes[0] = RuntimeNotice{}
 		watch.outcomes = watch.outcomes[1:]
+		h.mu.Lock()
+		if wait := h.notificationWaits[watch.registration.ID]; wait != nil {
+			wait.outstanding = false
+		}
+		h.mu.Unlock()
 		flushed++
 	}
 	return flushed, nil
+}
+
+func (h *Hub) finishRewaitCheckpoint(watch *runtimeWatch) {
+	h.mu.Lock()
+	if wait := h.notificationWaits[watch.registration.ID]; wait != nil {
+		wait.checkpointBusy = false
+	}
+	h.mu.Unlock()
 }
 
 func (h *Hub) finishRuntimeOutcome(item queuedEvent, status string) {

@@ -49,6 +49,7 @@ type DestinationRequest struct {
 type PluginHandlers struct {
 	Ready       func(capabilities []string)
 	Event       func(subscriptionID, eventID, context string) (terminalStatus string)
+	StateEvent  func(subscriptionID, eventID, generation, context string) (terminalStatus string)
 	Unavailable func(error)
 }
 
@@ -137,28 +138,33 @@ type RegistrationStore interface {
 type Hub struct {
 	mu sync.Mutex
 
-	plugins           map[string]*pluginState
-	registrations     map[domain.SubscriptionID]domain.Subscription
-	retained          map[domain.SubscriptionID]struct{}
-	activeByKey       map[string]domain.SubscriptionID
-	pendingByKey      map[string]*pendingRegistration
-	store             RegistrationStore
-	runtimeStore      RuntimeStateStore
-	restore           []domain.Subscription
-	runtimeStates     map[domain.SubscriptionID]*jsonvalue.Value
-	runtimeWatches    map[domain.SubscriptionID]*runtimeWatch
-	admissionOpen     bool
-	queue             chan queuedEvent
-	pendingEvents     int
-	stopping          bool
-	shutdownStarted   bool
-	shutdownDone      chan struct{}
-	runtimeStarted    bool
-	runtimeDone       chan struct{}
-	runtimeLoops      map[string]chan struct{}
-	runtimeSaveGate   chan struct{}
-	activationBatches map[string]*activationBatch
-	activationWait    sync.WaitGroup
+	plugins            map[string]*pluginState
+	registrations      map[domain.SubscriptionID]domain.Subscription
+	retained           map[domain.SubscriptionID]struct{}
+	activeByKey        map[string]domain.SubscriptionID
+	pendingByKey       map[string]*pendingRegistration
+	store              RegistrationStore
+	runtimeStore       RuntimeStateStore
+	restore            []domain.Subscription
+	runtimeStates      map[domain.SubscriptionID]*jsonvalue.Value
+	runtimeWatches     map[domain.SubscriptionID]*runtimeWatch
+	admissionOpen      bool
+	queue              chan queuedEvent
+	pendingEvents      int
+	stopping           bool
+	shutdownStarted    bool
+	shutdownDone       chan struct{}
+	runtimeStarted     bool
+	runtimeDone        chan struct{}
+	runtimeLoops       map[string]chan struct{}
+	runtimeSaveGate    chan struct{}
+	activationBatches  map[string]*activationBatch
+	activationWait     sync.WaitGroup
+	notificationWaits  map[domain.SubscriptionID]*notificationWait
+	rewaitReceipts     map[string]*rewaitReceipt
+	sessionStartMillis int64
+	rewaitNow          func() time.Time
+	rewaitWait         sync.WaitGroup
 
 	stopCh     chan struct{}
 	workerDone chan struct{}
@@ -173,24 +179,28 @@ func New(logger *slog.Logger) *Hub {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := &Hub{
-		plugins:           make(map[string]*pluginState),
-		registrations:     make(map[domain.SubscriptionID]domain.Subscription),
-		retained:          make(map[domain.SubscriptionID]struct{}),
-		activeByKey:       make(map[string]domain.SubscriptionID),
-		pendingByKey:      make(map[string]*pendingRegistration),
-		runtimeStates:     make(map[domain.SubscriptionID]*jsonvalue.Value),
-		runtimeWatches:    make(map[domain.SubscriptionID]*runtimeWatch),
-		queue:             make(chan queuedEvent, MaxDeliveries),
-		stopCh:            make(chan struct{}),
-		workerDone:        make(chan struct{}),
-		shutdownDone:      make(chan struct{}),
-		runtimeLoops:      make(map[string]chan struct{}),
-		runtimeSaveGate:   make(chan struct{}, runtimeSaveWorkers),
-		activationBatches: make(map[string]*activationBatch),
-		ctx:               ctx,
-		cancel:            cancel,
-		logger:            logger,
-		admissionOpen:     true,
+		plugins:            make(map[string]*pluginState),
+		registrations:      make(map[domain.SubscriptionID]domain.Subscription),
+		retained:           make(map[domain.SubscriptionID]struct{}),
+		activeByKey:        make(map[string]domain.SubscriptionID),
+		pendingByKey:       make(map[string]*pendingRegistration),
+		runtimeStates:      make(map[domain.SubscriptionID]*jsonvalue.Value),
+		runtimeWatches:     make(map[domain.SubscriptionID]*runtimeWatch),
+		queue:              make(chan queuedEvent, MaxDeliveries),
+		stopCh:             make(chan struct{}),
+		workerDone:         make(chan struct{}),
+		shutdownDone:       make(chan struct{}),
+		runtimeLoops:       make(map[string]chan struct{}),
+		runtimeSaveGate:    make(chan struct{}, runtimeSaveWorkers),
+		activationBatches:  make(map[string]*activationBatch),
+		notificationWaits:  make(map[domain.SubscriptionID]*notificationWait),
+		rewaitReceipts:     make(map[string]*rewaitReceipt),
+		sessionStartMillis: time.Now().UnixMilli(),
+		rewaitNow:          time.Now,
+		ctx:                ctx,
+		cancel:             cancel,
+		logger:             logger,
+		admissionOpen:      true,
 	}
 	go hub.deliveryWorker()
 	return hub
@@ -399,6 +409,9 @@ func (h *Hub) StartPlugins(ctx context.Context) {
 				Ready: func(capabilities []string) { h.pluginReady(item.name, item.port, capabilities) },
 				Event: func(subscriptionID, eventID, eventContext string) string {
 					return h.acceptEvent(item.name, item.port, subscriptionID, eventID, eventContext)
+				},
+				StateEvent: func(subscriptionID, eventID, generation, eventContext string) string {
+					return h.acceptGenerationEvent(item.name, item.port, subscriptionID, eventID, generation, eventContext)
 				},
 				Unavailable: func(err error) { h.pluginUnavailable(item.name, item.port, err) },
 			}
@@ -723,6 +736,10 @@ func (h *Hub) pendingResult(pending *pendingRegistration) (domain.SubscriptionID
 }
 
 func (h *Hub) acceptEvent(pluginName string, port PluginPort, subscriptionID, eventID, eventContext string) string {
+	return h.acceptGenerationEvent(pluginName, port, subscriptionID, eventID, "", eventContext)
+}
+
+func (h *Hub) acceptGenerationEvent(pluginName string, port PluginPort, subscriptionID, eventID, generation, eventContext string) string {
 	discard := func(status string) string {
 		if eventID != "" {
 			return status
@@ -756,6 +773,13 @@ func (h *Hub) acceptEvent(pluginName string, port PluginPort, subscriptionID, ev
 			return discard("discarded")
 		}
 	}
+	if state.capabilities["rewait_v1"] {
+		wait := h.notificationWaits[registration.ID]
+		if wait == nil || generation == "" || wait.generation != generation || !wait.armed {
+			h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "stale or consumed notification generation")
+			return discard("discarded")
+		}
+	}
 	outputState := h.plugins[registration.OutputPlugin]
 	if outputState == nil || outputState.role != domain.OutputRole || !outputState.available {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "reason", "output plugin unavailable")
@@ -786,6 +810,10 @@ func (h *Hub) acceptEvent(pluginName string, port PluginPort, subscriptionID, ev
 	receivedAt := time.Now().UTC()
 	select {
 	case h.queue <- queuedEvent{event: event, outputPort: outputState.port, inputPort: port, eventID: eventID}:
+		if wait := h.notificationWaits[registration.ID]; wait != nil {
+			wait.armed = false
+			wait.outstanding = true
+		}
 		h.logger.Info("event_admitted", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "delivery_id", event.ID, "received_at", receivedAt)
 		return ""
 	default:
@@ -973,6 +1001,7 @@ func (h *Hub) Shutdown() {
 	h.mu.Unlock()
 	<-h.workerDone
 	h.activationWait.Wait()
+	h.rewaitWait.Wait()
 	if runtimeDone != nil {
 		<-runtimeDone
 	}
