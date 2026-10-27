@@ -34,6 +34,10 @@ participating inputs additionally restore opaque logical progress under
 [trigger runtime state](trigger-runtime-state.md).
 Retain memory-only queues, one delivery attempt, no automatic plugin restart,
 no individual cancellation and the other MVP exclusions.
+The optional [repeated-wait profile](pr-watch-rewait.md) retains that continuing
+watch while granting one notification per explicit wait or daemon run. It owns
+the additional same-registration control operation and generation admission
+fences; it does not change equivalent-registration matching or destinations.
 Actual Codex integration and its registration skill are outside this contract.
 Use `hashicorp/go-plugin` v1.8.0, gRPC v1.84.0 and protobuf v1.36.12 for both
 roles. Product code and contracts remain OS neutral; dependency internals may
@@ -127,6 +131,11 @@ sequential ten-second destination and watch operations. There is no automatic
 retry. Request version is the integer token `1`, distinct from plugin protocol
 version 2.
 
+The optional [rewait local operation](pr-watch-rewait.md#local-client-contract)
+uses this same framing, address, deadlines and error envelope. Its operation-ID
+receipts and generation changes are distinct from registration. Inputs without
+the capability retain the register/stop contract below unchanged.
+
 Registration contains exactly `version`, `op: "register"`, nonempty
 `input_plugin`, object `watch_args`, nonempty `output_plugin`, and object
 `destination_args`. The daemon validates structure, names, roles and encoded
@@ -170,6 +179,7 @@ falling back to a different endpoint.
 | `cmd/agent-pulse-hub` | `daemon --config <absolute JSON file> [--state-dir <absolute directory>] [--address <address>]` runs in foreground. Ctrl+C and local stop share shutdown. |
 | Same command | `register --input-plugin <name> --watch-args-file <absolute JSON file> --output-plugin <name> --destination-args-file <absolute JSON file> [--address <address>]` registers a route. |
 | Same command | `stop [--address <address>]` requests normal shutdown. |
+| Same command | `rewait --subscription-id <id> --operation-id <id> --confirmation-position-file <absolute-file> [--address <address>]` rearms a capable retained registration under the [rewait contract](pr-watch-rewait.md#local-client-contract). |
 | `plugins/triggers/manual` | No arguments; manual trigger (public input role) launched through go-plugin. |
 | `plugins/actions/model-output` | No arguments; model-output action (public output role) launched through go-plugin. |
 
