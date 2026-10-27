@@ -174,6 +174,23 @@ separately. Inspect the target after an `unknown` result before deliberately
 submitting another event. A restart restores saved routes and revalidates the
 destination; it does not replay Codex work.
 
+### Wait for pull request activity
+
+The [GitHub PR watch guide](plugins/triggers/github-pr-watch/readme.md) shows
+how to watch one selected PR on github.com or GHES 3.19.x, first with a local
+JSON-lines destination and then with an existing agent action. Supply the
+author or reviewer role and reason for waiting. The trigger delivers changes
+and current review context; the receiving agent decides whether to act or wait
+again under its existing instructions.
+
+The first complete observation is a silent baseline. One notification consumes
+the current wait while monitoring continues. Return the assessed confirmation
+position with `rewait` on the same subscription to receive intervening changes;
+repeating `register` does not rearm it. Normal restart also rearms the saved
+watch automatically, suppressing successfully saved accepted notifications and
+allowing fresh changes without another client request. The guide explains
+authentication, bounded coverage, failures, and this restart behavior.
+
 ## Writing plugins
 
 Implement an input or output role using [plugin protocol v2](docs/design/plugin-v1.md),
