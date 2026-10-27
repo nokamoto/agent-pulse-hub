@@ -28,6 +28,11 @@ Completed registrations survive. Participating triggers additionally preserve
 opaque progress under [trigger runtime state](trigger-runtime-state.md).
 Event queues, in-flight deliveries, pending registrations, plugin sessions
 and process availability remain volatile.
+The optional [repeated-wait profile](pr-watch-rewait.md) also keeps generation
+tokens, pending preparations and operation receipts volatile. Rewait preserves
+the same immutable registration record, ID and destination; it neither rewrites
+arguments nor creates a replacement registration. Restoring that record grants
+a fresh Session notification generation after the existing startup barrier.
 There is no forced-termination or power-loss recovery guarantee, stopped-event
 collection, delivery retry, automatic plugin restart, or service-specific hub
 logic. An older nonpersistent daemon has no registrations to migrate.

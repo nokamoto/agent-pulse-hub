@@ -25,6 +25,9 @@ message encoding, exchange ordering, and application deadlines.
 The optional runtime-state extension derives from
 [trigger runtime state](trigger-runtime-state.md), which owns state storage,
 checkpoint scheduling, coordinated shutdown, and recovery.
+The optional [repeated-wait profile](pr-watch-rewait.md) owns daemon-controlled
+notification generations and same-registration rewait. Its exact capability,
+conditional message schemas and ordering supplement this specification.
 
 The daemon owns integration-independent control and decisions. Plugins carry
 out requested service-specific operations and report results. An input plugin
@@ -240,6 +243,15 @@ pre-readiness event discard. The host sends new
 messages only to participating inputs. Old v2 inputs keep their exact artifacts
 and message shapes. A participating input requires a host supporting this
 extension; old strict hosts can reject the additional readiness field.
+
+The one additional allowed combination is `runtime_state_v2` with `rewait_v1`,
+in either array order. The [rewait public profile](pr-watch-rewait.md#optional-public-input-profile)
+defines its exact readiness, `resume_watch`/`resume_result`, and conditional
+`generation` fields on `activate_watch` and `state_event`. That profile replaces
+the two affected table rows and one-grant-per-Session rule only for inputs
+advertising it. All other messages, deadlines and existing input profiles keep
+their current shapes. Rewait retains one continuing monitor and grants one
+notification per explicit wait or daemon run; it introduces no cancellation.
 
 Every message below includes `version: 2` and `type`. Existing strict encoding,
 size, request-ID and subscription ownership rules apply. The state envelope,

@@ -65,6 +65,13 @@ restorable snapshot, and deciding which completed updates that snapshot prevents
 from being emitted again. It performs no state-file access or persistence-service
 calls. The action retains sole authority to report delivery acceptance.
 
+Inputs may additionally select the [repeated-wait profile](pr-watch-rewait.md)
+alongside runtime-state v2. Its notification generations and operation receipts
+are daemon-owned Session control, distinct from plugin-owned logical progress.
+It retains this storage format and checkpoint contract; the profile governs
+preparation/grant ordering against checkpoints and automatic rearming after
+restart. Inputs without that capability retain the behavior below unchanged.
+
 For a participating watch the core correlates each admitted event with its
 event ID and sends its terminal outcome back to the input. The input consumes
 these notices in host-stream order before producing a requested checkpoint.
