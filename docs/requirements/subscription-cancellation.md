@@ -44,6 +44,11 @@ This extension supersedes the individual-cancellation exclusion in the
 [trigger runtime state](trigger-runtime-state.md) to cover live deletion.
 Their other routing, restoration, isolation, and failure guarantees remain.
 
+Repeated waiting means asking an existing subscription to monitor again after
+a prior notification, as defined by
+[selected-PR monitoring FR-006](github-pr-watch.md#functional-requirements).
+Cancellation also removes that subscription's ability to wait again.
+
 ## Scope
 
 - In scope: explicit single-ID unsubscribe through local control and the
@@ -114,7 +119,7 @@ implementation checks from any actual-agent delivery walkthrough.
 | --- | --- | --- | --- | --- |
 | AC-001 | FR-001, FR-002, NFR-002 | Register A and B through a shared input plugin; retain their returned IDs. Submit unsubscribe for A through local control, then trigger A and B. Include a queued A event. | Response identifies A; A's queued/later events cause no new attempts; B still delivers and the daemon and shared plugins remain running. | Assembled local daemon/client/plugin verification with controlled event ordering |
 | AC-002 | FR-003, FR-007, NFR-002 | Give A and B distinct saved progress, cancel A, stop normally and restart. Explicitly register A's former arguments again. | Only B restores with its original ID and progress. New registration has a new ID, no inherited A progress, and no reservation conflict left by cancellation. | Local restart/state verification and state-association unit checks |
-| AC-003 | FR-004, FR-005 | Submit missing, malformed, unknown, and already-cancelled IDs. Separately cancel a saved inactive route and inject target-plugin and storage failures. | Invalid inputs change nothing; absent IDs yield not-found. Inactive saved route can be removed. Incomplete cancellation reports failure with cause and recovery guidance, never success; unrelated state is preserved. | Validation/failure unit matrices and local boundary checks where plugin or file behavior matters |
+| AC-003 | FR-004, FR-005 | Submit missing, malformed, unknown, and already-cancelled IDs. Separately cancel a saved inactive route and inject target-plugin and storage failures. | Invalid inputs change nothing; well-formed unknown or already-cancelled IDs yield not-found. Inactive saved route can be removed. Incomplete cancellation reports failure with cause and recovery guidance, never success; unrelated state is preserved. | Validation/failure unit matrices and local boundary checks where plugin or file behavior matters |
 | AC-004 | FR-002, FR-003, FR-006 | Control an A action attempt already issued, a queued event, and overlapping repeated-wait, equivalent registration, or normal-stop requests around cancellation. | The issued attempt may finish once; no further A attempt begins after success. No concurrent work recreates A's cancelled registration or saved progress. | Controlled concurrency/unit checks and assembled lifecycle checks where process ordering matters |
 | AC-005 | NFR-001 | Supply event content requesting cancellation of B while A and B are registered. | Neither registration is cancelled by that content; only an explicit local administrative request can cancel the selected ID. | Control-boundary inspection and adversarial event unit checks |
 | AC-006 | FR-001, FR-008 | Follow finalized operator instructions and the bundled agent-facing workflow from registration through ID-based unsubscribe, then inspect results and restart behavior. | The maintainer records returned ID, cancellation request/result, continued unrelated delivery, and absence after restart; instructions explain failures and already-issued output. | Documentation review and maintainer walkthrough; actual-agent evidence allocated during design to delivery |
