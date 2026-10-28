@@ -27,9 +27,14 @@ all required GraphQL fields; access to one endpoint alone is insufficient.
 
 The input process selects the first nonempty `GH_TOKEN`, then `GITHUB_TOKEN`,
 otherwise `gh auth token --hostname <host>`. A rejected selected credential
-never falls back. Environment-token use does not need `gh`. Authenticate before
-starting the daemon; it never logs in interactively. Keep secrets out of JSON
-files and logs. Use separate plugin processes and host-specific environment
+never falls back. Environment-token use does not need `gh`. Before daemon
+startup, follow GitHub's [classic PAT creation instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic)
+and set `GH_TOKEN` or `GITHUB_TOKEN` in the first terminal's environment, or
+prepare saved OAuth authentication for the selected host using
+[`gh auth login`](https://cli.github.com/manual/gh_auth_login). The first terminal
+starts the daemon and passes its environment to the input process. The daemon
+never logs in interactively. Keep secrets out of JSON files and logs.
+Use separate plugin processes and host-specific environment
 assignments for different hosts; do not implicitly reuse one environment token
 across hosts.
 
@@ -187,6 +192,12 @@ Monitoring continues while you or the receiving agent assess the context or do
 authorized work. No second notification is admitted until an explicit rewait or
 normal daemon restart. Action acceptance is separate from actual assessment.
 
+If no context reached you, inspect the action diagnostics and actual destination
+before recovery. Do not invent a position. After resolving the cause, you can
+choose the normal stop/restart procedure below with the same configuration and
+state. An uncertain outcome may already have delivered data and may notify again
+after restart; inspect the destination before deliberately repeating work.
+
 For the local example, the following selects the latest record for this saved
 subscription and writes its position as a JSON string. Run it only after reading
 and assessing that record. With another action, obtain the position from the
@@ -278,8 +289,9 @@ does not repeat solely due to restart; a retained suffix may notify immediately.
 A fresh observed change can also notify without a new client request. This is
 delivery progress, not a claim that an agent assessed the previous message.
 
-Before replacing binaries, changing budgets or backing up, stop all owners and
-preserve the entire state tree. Upgrade hub and plugin together. These migration
+Before replacing binaries, changing budgets or backing up, stop the daemon using
+this state directory and wait for its configured plugins to exit. Preserve the
+entire state tree. Upgrade hub and plugin together. These migration
 steps apply to discussion-profile binaries compatible with `github-pr-watch-v2`.
 For later versions of the `github-pr-watch` input offering `--state-profile`,
 add `--state-profile=discussion-v2` to that input's configured `args` before
