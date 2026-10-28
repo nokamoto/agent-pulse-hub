@@ -9,6 +9,8 @@ sources:
     resource: design/bundled-plugins.md
   - id: runtime-state-design
     resource: design/trigger-runtime-state.md
+  - id: runtime-stream-design
+    resource: design/runtime-state-stream.md
 ---
 
 # Agent Pulse Hub plugin protocol v2
@@ -28,6 +30,9 @@ checkpoint scheduling, coordinated shutdown, and recovery.
 The optional [repeated-wait profile](pr-watch-rewait.md) owns daemon-controlled
 notification generations and same-registration rewait. Its exact capability,
 conditional message schemas and ordering supplement this specification.
+The optional [streamed-state profile](runtime-state-stream.md) owns multi-message
+opaque state handoff, complete-generation storage and migration. Its conditional
+schemas replace only the state-transfer path for inputs advertising it.
 
 The daemon owns integration-independent control and decisions. Plugins carry
 out requested service-specific operations and report results. An input plugin
@@ -244,7 +249,7 @@ messages only to participating inputs. Old v2 inputs keep their exact artifacts
 and message shapes. A participating input requires a host supporting this
 extension; old strict hosts can reject the additional readiness field.
 
-The one additional allowed combination is `runtime_state_v2` with `rewait_v1`,
+An additional allowed combination is `runtime_state_v2` with `rewait_v1`,
 in either array order. The [rewait public profile](pr-watch-rewait.md#optional-public-input-profile)
 defines its exact readiness, `resume_watch`/`resume_result`, and conditional
 `generation` fields on `activate_watch` and `state_event`. That profile replaces
@@ -253,10 +258,23 @@ advertising it. All other messages, deadlines and existing input profiles keep
 their current shapes. Rewait retains one continuing monitor and grants one
 notification per explicit wait or daemon run; it introduces no cancellation.
 
+An input may also combine `runtime_state_v2` with `runtime_state_stream_v1`,
+with or without `rewait_v1`, in any array order. The
+[stream profile](runtime-state-stream.md#capability-and-compatibility) defines
+the additional allowed capability, exact restore/checkpoint messages and
+compatibility rules. It replaces `state_watch` and successful checkpoint
+responses only for that profile. It retains the 65,536-byte application bound,
+8,192-byte event context and all activation, rewait and delivery rules. Inputs
+without `runtime_state_stream_v1` keep every existing schema and state bound.
+
 Every message below includes `version: 2` and `type`. Existing strict encoding,
 size, request-ID and subscription ownership rules apply. The state envelope,
 32,768-byte bound, schema ownership, storage and recovery are defined by
 [runtime state](trigger-runtime-state.md#interfaces-and-data).
+For `runtime_state_stream_v1`, that 32,768-byte bound applies to each opaque
+object rather than the whole saved snapshot; the
+[stream specification](runtime-state-stream.md#state-representation-and-bounds)
+owns its exact conditional schemas and the full transfer resource budget.
 
 | Direction / input message | Exact additional fields | Meaning |
 | --- | --- | --- |
@@ -341,6 +359,12 @@ The host drops unsent expired checkpoint requests and ignores late replies;
 expired queued requests cannot appear in a later batch. Size validation reserves
 the full state allowance with watch arguments at registration/restoration as
 specified by the governing design, preserving the overall application bound.
+For the streamed profile, its
+[same-window transfer rules](runtime-state-stream.md#checkpoint-wire-contract-and-ordering)
+include all chunks in that existing deadline; no chunk renews it. Its
+restoration request validates arguments/metadata against the wire bound rather
+than reserving the entire snapshot in one message. Other profiles retain the
+full legacy-envelope reservation.
 
 ```json
 {"version":2,"type":"ready","role":"input","capabilities":["runtime_state_v2"]}

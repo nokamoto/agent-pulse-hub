@@ -99,7 +99,7 @@ local modification are outside the existing trust boundary.
 | --- | --- |
 | `.lock/` | Exclusive owner marker, created with a single `os.Mkdir` before reading state; existing marker fails startup even at a different control address. |
 | `registrations/` | Committed registration files only. |
-| `staging/` | Temporary, uncommitted record files; never loaded as registrations. |
+| `staging/` | Temporary, uncommitted record files and streamed-runtime staging directories; never loaded as registrations. |
 | `runtime/` | Trigger checkpoint generations governed by [runtime state](trigger-runtime-state.md#storage-and-compatibility), independent of registration records. |
 
 Create missing subdirectories only for a fresh empty root. An existing initialized
@@ -107,12 +107,16 @@ root must have `registrations/` and `staging/`; the runtime extension may create
 its missing `runtime/` directory in a valid older tree after exclusion.
 Unknown root entries, non-directory reserved
 entries, symlinks, non-regular registration entries and unexpected registration
-filenames fail startup. Staging files are uncommitted attempts, not successful
+filenames fail startup. Staging entries are uncommitted attempts, not successful
 registrations; cleanup may remove them only after acquiring the lock. A leftover
 lock requires deliberate operator recovery, never timeout/PID-based lock stealing.
 Keep exclusion until all registration writes and configured plugin cleanup finish.
 Remove only the marker this process acquired, on normal shutdown and failed-startup cleanup; a failed acquisition never removes another owner's marker. A cleanup
 failure is diagnosed with its path; do not claim the marker was released.
+
+Streamed runtime staging directories follow the exact naming, validation and
+cleanup rules in [streamed runtime state](runtime-state-stream.md#core-managed-generation-storage).
+They are never committed registration or runtime progress.
 
 ### Record format and compatibility
 

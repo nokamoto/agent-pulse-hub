@@ -152,9 +152,11 @@ Add capability `rewait_v1`, permitted only alongside `runtime_state_v2`:
 {"version":2,"type":"ready","role":"input","capabilities":["runtime_state_v2","rewait_v1"]}
 ```
 
-Array order is immaterial. Duplicate, unknown or other combinations remain
-malformed. Ordinary inputs, runtime-state v1, and runtime-state v2 without
-`rewait_v1` keep every existing message shape and behavior. Output readiness
+Array order is immaterial. Adding the optional `runtime_state_stream_v1` is
+also allowed under the [stream capability rules](runtime-state-stream.md#capability-and-compatibility).
+Duplicate, unknown or other combinations remain malformed. Ordinary inputs,
+runtime-state v1, and runtime-state v2 without either optional profile keep
+every existing message shape and behavior. Output readiness
 still has no capabilities. An older strict host may reject the new capability;
 there is no fallback that weakens this profile's lifetime.
 
@@ -171,8 +173,11 @@ message retains `version: 2`, existing ownership/encoding rules and the
 
 The daemon generates a fresh opaque UUID generation for each grant, and a fresh
 request ID for each preparation. Plugins never manufacture these tokens.
-`state_watch`, `watch_result`, delivery notices and checkpoint shapes remain
-unchanged. Initial/restored `activate_watch` uses a fresh generation after the
+Rewait itself leaves `state_watch`, `watch_result`, delivery notices and
+checkpoint shapes unchanged. An input additionally selecting
+`runtime_state_stream_v1` uses that profile's state-transfer replacements;
+its delivery notices and `watch_result` stay unchanged. Initial/restored
+`activate_watch` uses a fresh generation after the
 existing complete registration/startup commit barrier. Rewait grants follow
 the ordering below. Only one generation is current; no generation history or
 second poller is required in the daemon.
@@ -229,6 +234,9 @@ No notification queue or event replay is added by this profile.
 ## Checkpoints, restoration and operations
 
 Use the existing opaque registration-bound runtime envelope and save schedule.
+For an input also advertising `runtime_state_stream_v1`, use the optional
+[ordered-object stream](runtime-state-stream.md) instead of a single envelope;
+the save schedule, grant ordering and logical-state ownership remain unchanged.
 No registration file is rewritten by rewait. A checkpoint contains sufficient
 plugin-owned observation, retention and confirmed-delivery progress for its
 declared continuity, plus any explicit comparison position whose meaning must

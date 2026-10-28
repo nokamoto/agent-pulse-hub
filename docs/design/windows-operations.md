@@ -608,6 +608,13 @@ record, so inspect it before deciding whether damaged-file recovery applies.
 ## Trigger runtime state recovery
 
 This procedure derives from [trigger runtime state](trigger-runtime-state.md).
+For inputs advertising `runtime_state_stream_v1`, also follow
+[streamed-state resource controls and migration](runtime-state-stream.md#resource-controls-and-operator-instructions).
+That contract defines `--runtime-state-max-bytes`, complete `.stream`
+generations, legacy conversion and fail-closed downgrade. Backup/reset applies
+to the entire registration runtime directory, never an individual chunk.
+Keep a sufficient byte budget on restart; lowering it below saved state causes
+visible restoration failure rather than a fresh baseline.
 Participating inputs select `runtime_state_v2` when first observation must wait
 until the host can admit events. They apply state and accept while dormant,
 then poll/emit only on `activate_watch`. Standalone callers prepare their event
