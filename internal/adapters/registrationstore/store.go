@@ -22,6 +22,8 @@ const (
 	maxStoredRegistrations = 1_024
 )
 
+//go:generate go run go.uber.org/mock/mockgen -source=store.go -destination=store_mock_test.go -package=registrationstore
+
 type readFile interface {
 	Read([]byte) (int, error)
 	Close() error
@@ -57,6 +59,7 @@ func (osFileSystem) OpenFile(path string, flags int, mode os.FileMode) (writeFil
 // Store owns the exclusive state-directory marker until Close. The caller
 // keeps it open until configured plugins have stopped.
 type Store struct {
+	notifications   *notificationStoreState
 	runtimeLocks    map[string]*sync.Mutex
 	runtimeLockRefs map[string]int
 	mu              sync.Mutex
@@ -157,7 +160,7 @@ func open(root string, files fileSystem) (*Store, error) {
 		seen := make(map[string]bool, 4)
 		for _, entry := range entries {
 			name := entry.Name()
-			if name != ".lock" && name != "registrations" && name != "staging" && name != "runtime" && name != "cancellations" {
+			if name != ".lock" && name != "registrations" && name != "staging" && name != "runtime" && name != "cancellations" && name != "notification-store.json" && name != "notifications" {
 				return fail(fmt.Errorf("state directory %s contains unknown entry %q", root, name))
 			}
 			seen[name] = true

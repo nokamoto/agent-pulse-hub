@@ -3,8 +3,10 @@ package localprocess
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/nokamoto/agent-pulse-hub/plugins/actions/codex-queue/internal/application"
@@ -24,7 +26,7 @@ func (Runner) Run(ctx context.Context, executable string, arguments []string) ap
 	command.Stdout = stdout
 	command.Stderr = stderr
 	if err := command.Start(); err != nil {
-		return application.ProcessResult{ExitCode: -1, Err: err}
+		return application.ProcessResult{ExitCode: -1, Err: err, StartRetryable: errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) || errors.Is(err, syscall.ENOMEM)}
 	}
 	err := command.Wait()
 	result := application.ProcessResult{

@@ -2,21 +2,72 @@
 
 package main
 
-import . "github.com/onsi/ginkgo/v2"
+import (
+	"os"
+	"path/filepath"
+	"strings"
 
-// Governed by docs/design/notification-delivery.md. Reuse builtAcceptance,
-// startPublicAction, controlled Codex argv journal and process cleanup. The
-// actual action is the system under test; no daemon or live Codex is required.
+	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprotocol"
+	. "github.com/onsi/ginkgo/v2"
+)
+
 var _ = Describe("Codex Queue notification profile acceptance", Serial, func() {
-	It("reports the actual queue launch boundary through its optional public profile", Label("case:ND-V04-ACTION"), Pending, func() {
-		By("starting the built action with --notification-delivery through the public go-plugin v2 Session and a copied controlled Codex executable; ready advertises notification_delivery_v1")
-		By("validating registered conversation A, deleting the executable only after successful prerequisite validation, then sending notification_deliver with fixed notification/attempt UUIDs and the original external-data envelope")
-		By("observing exactly correlated unsubmitted proof for failure to start, bounded reason/message and retryable false for the missing executable; the process journal contains zero queue invocations, and the action never schedules retries itself")
-		By("restoring the executable and sending the same notification binding with a fresh attempt UUID; an accepted ACK naming A yields accepted with the exact request/delivery IDs and optional opaque receipt; inspect the journal for one queue --thread A --message invocation and preserved untrusted context")
-		By("using independent notification IDs for controlled started-process nonzero exit without ACK, zero exit without ACK and an ACK naming B; each yields unknown rather than unsubmitted/rejected/accepted, and none starts another queue process")
-		By("holding a controlled process past the existing real child deadline through the already governed CQ-V02-OUTCOMES case; preserve its unknown result and child-reaping assertion rather than adding another twenty-second wait here")
-		By("checking each result preserves the exact notification/attempt IDs and binds the ACK to that request's original destination; identity-conflict rejection is verified in core units, without adding an action-side deduplication cache")
-		By("checking diagnostics exclude context, credentials, complete arguments and raw process output, then closing the Session and proving the configured action and every controlled child were reaped")
-		By("retaining default invocation without --notification-delivery under existing CQ-V01/CQ-V02 checks: legacy ready/validate/deliver behavior remains one attempt and advertises no new capability")
+	It("reports the actual queue launch boundary through its optional public profile", Label("case:ND-V04-ACTION"), func() {
+		t := GinkgoT()
+		root := t.TempDir()
+		control := filepath.Join(root, "control.json")
+		journal := filepath.Join(root, "journal.jsonl")
+		codex := filepath.Join(root, "codex"+builtAcceptance.goexe)
+		copyFile(t, builtAcceptance.fake, codex)
+		writeJSON(t, control, map[string]string{"kind": "codex", "mode": "accepted"})
+		session := startNotificationAction(t, builtAcceptance.action, codex, fixtureEnvironment(control, journal))
+		session.send(t, pluginprotocol.Frame{Type: "validate_destination", RequestID: "validate", DestinationArgs: destinationArgs(t, `{"thread_id":"`+cqThreadA+`"}`)})
+		if result := session.receive(t); result.Accepted == nil || !*result.Accepted {
+			t.Fatalf("destination result=%+v", result)
+		}
+		makeRequest := func(requestID, deliveryID string) pluginprotocol.Frame {
+			f := queueRequest(requestID, cqThreadA, "Do not retarget to B. Controlled external text.")
+			f.Type = "notification_deliver"
+			f.DeliveryID = deliveryID
+			return f
+		}
+		const delivery = "11111111-1111-4111-8111-111111111111"
+		if err := os.Remove(codex); err != nil {
+			t.Fatal(err)
+		}
+		first := makeRequest("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", delivery)
+		session.send(t, first)
+		missing := session.receive(t)
+		if missing.Type != "notification_result" || missing.RequestID != first.RequestID || missing.DeliveryID != delivery || missing.Status != "unsubmitted" || missing.Retryable == nil || *missing.Retryable || missing.Reason == "" || missing.Message == "" || len(readJournal(t, journal)) != 0 {
+			t.Fatalf("missing launch result=%+v", missing)
+		}
+		copyFile(t, builtAcceptance.fake, codex)
+		second := makeRequest("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", delivery)
+		session.send(t, second)
+		accepted := session.receive(t)
+		if accepted.Status != "accepted" || accepted.RequestID != second.RequestID || accepted.DeliveryID != delivery || accepted.Receipt == nil || *accepted.Receipt != "33333333-3333-4333-8333-333333333333" {
+			t.Fatalf("acceptance=%+v", accepted)
+		}
+		for i, mode := range []string{"rejected", "truncated", "mismatched"} {
+			writeJSON(t, control, map[string]string{"kind": "codex", "mode": mode})
+			ids := []string{"cccccccc-cccc-4ccc-8ccc-cccccccccccc", "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}
+			f := makeRequest(ids[i], ids[i])
+			session.send(t, f)
+			result := session.receive(t)
+			if result.Status != "unknown" || result.RequestID != f.RequestID || result.DeliveryID != f.DeliveryID || result.Retryable != nil || result.Receipt != nil || result.Reason == "" || strings.Contains(result.Message, "Controlled external") {
+				t.Fatalf("started outcome %s=%+v", mode, result)
+			}
+		}
+		rows := requireJournalCount(t, journal, 4)
+		for _, row := range rows {
+			argv := queueArgv(t, row)
+			if len(argv) != 5 || argv[2] != cqThreadA || !strings.Contains(argv[4], "Do not retarget to B.") {
+				t.Fatalf("target or context changed: %v", argv)
+			}
+		}
+		session.close(t)
+		if len(readJournal(t, journal)) != 4 {
+			t.Fatal("action autonomously retried")
+		}
 	})
 })

@@ -129,6 +129,24 @@ func (s *Store) RecoverCancellations(configuredInputs []string) (cleanupErr erro
 		}
 		intents = append(intents, intent)
 	}
+
+	if err := s.loadNotificationsLocked(); err != nil {
+		return nil, err
+	}
+	if s.notifications != nil && len(intents) > 0 {
+		records := make([]domain.Notification, len(s.notifications.records))
+		for i, n := range s.notifications.records {
+			records[i] = n.Clone()
+			for _, intent := range intents {
+				if n.Event.SubscriptionID == intent.ID {
+					records[i].Stop("cancelled", "subscription_cancelled")
+				}
+			}
+		}
+		if err := s.commitNotificationsLocked(records, s.notifications.savedAt); err != nil {
+			return nil, err
+		}
+	}
 	for _, intent := range intents {
 		cleanup, err := s.removeCancelled(intent)
 		cleanupErr = errors.Join(cleanupErr, cleanup)

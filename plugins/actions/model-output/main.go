@@ -14,12 +14,20 @@ import (
 )
 
 func main() {
+	enabled := false
+	for _, a := range os.Args[1:] {
+		if a != "--notification-delivery" || enabled {
+			os.Exit(1)
+		}
+		enabled = true
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: pluginprocess.HandshakeConfig,
 		Plugins: plugin.PluginSet{
 			pluginprocess.PluginKey(string(domain.OutputRole)): &pluginprocess.FrameworkPlugin{
-				Impl: modeloutput.New(logger),
+				Impl: modeloutput.New(logger).WithNotifications(enabled),
 			},
 		},
 		GRPCServer: func(options []grpc.ServerOption) *grpc.Server {

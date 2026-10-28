@@ -88,9 +88,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func runWith(args []string, stdout, stderr io.Writer, operations commandOperations) int {
 	if len(args) == 0 {
-		return report(stderr, "usage: agent-pulse-hub <daemon|register|unsubscribe|rewait|stop> ...")
+		return report(stderr, "usage: agent-pulse-hub <daemon|register|unsubscribe|rewait|notifications|notification|stop> ...")
 	}
 	switch args[0] {
+	case "notification", "notifications":
+		return runNotification(args, stdout, stderr)
 	case "unsubscribe":
 		flags, err := parseFlags(args[1:], []string{"--subscription-id"}, []string{"--address"})
 		if err != nil {
@@ -228,7 +230,7 @@ func runWith(args []string, stdout, stderr io.Writer, operations commandOperatio
 		}
 		return 0
 	default:
-		return report(stderr, "usage: agent-pulse-hub <daemon|register|unsubscribe|rewait|stop> ...")
+		return report(stderr, "usage: agent-pulse-hub <daemon|register|unsubscribe|rewait|notifications|notification|stop> ...")
 	}
 }
 
@@ -333,6 +335,9 @@ func runDaemonWithRuntimeBudget(configPath, selectedStateDirectory, address stri
 		service.StartPlugins(ctx)
 		if ctx.Err() != nil {
 			return nil
+		}
+		if err := service.PrepareNotifications(); err != nil {
+			return err
 		}
 		if err := service.Restore(ctx); err != nil {
 			return err

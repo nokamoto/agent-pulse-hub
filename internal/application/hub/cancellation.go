@@ -180,6 +180,12 @@ func (h *Hub) Unsubscribe(subscriptionID string) *Error {
 		return h.cancellationFailure(id, "intent commit", "storage_error", state.durable, err)
 	}
 	state.durable = true
+	h.mu.Lock()
+	notificationSaved := h.cancelNotificationsLocked(id)
+	h.mu.Unlock()
+	if !notificationSaved {
+		return h.cancellationFailure(id, "notification storage", "storage_error", true)
+	}
 	if !terminated {
 		// Notices already owed are sent before the ordered cancellation request.
 		h.mu.Lock()
