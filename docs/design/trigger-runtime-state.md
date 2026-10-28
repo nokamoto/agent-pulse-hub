@@ -11,6 +11,8 @@ sources:
     resource: design/state-persistence.md
   - id: routing-design
     resource: design/mvp.md
+  - id: notification-design
+    resource: design/notification-delivery.md
   - id: runtime-stream-design
     resource: design/runtime-state-stream.md
 ---
@@ -27,7 +29,10 @@ requests a final checkpoint, and saves it before stopping plugins. Successful
 persistence prevents a completed update from being notified again solely because
 of restart. Recipient processing, unfinished notifications, crash recovery,
 automatic retries, and collection of updates while stopped remain outside this
-guarantee. Actions have no new interface or state obligations.
+guarantee. This trigger-progress feature alone adds no action obligations.
+The optional [notification-delivery design](notification-delivery.md) separately
+owns retained notification evidence and safe retry for participating outputs;
+it does not change trigger checkpoint formats or source deduplication.
 
 [Subscription cancellation](subscription-cancellation.md) governs selective
 live deletion. Its registration fence stops checkpoint scheduling and commits
@@ -88,8 +93,13 @@ progress necessary to suppress every such update. A scan cursor that moves past
 unfinished updates is not evidence of their successful notification.
 
 The core neither understands service cursors nor inspects payload fields to
-choose destinations. Existing captured-recipient routing and one-attempt
-delivery remain unchanged. State is distinct from watch/destination arguments.
+choose destinations. Captured-recipient routing remains unchanged; one-attempt
+delivery applies to legacy outputs. For notification-profile routes, keep the
+event correlation outstanding across intermediate retryable unsubmitted
+attempts and send one terminal notice for the notification, not each attempt.
+Accepted sends accepted, unknown sends unknown, stopped unaccepted work sends
+failed, and pre-admission rejection sends discarded, under the governing
+notification design. State is distinct from watch/destination arguments.
 
 ## Interfaces and data
 
@@ -310,15 +320,26 @@ Stop/Ctrl+C use the same coordinator. Under lifecycle serialization close new
 registration/event admission and establish the delivery-result cutoff. A valid
 `accepted` result processed before this cutoff is confirmed and its notice must
 precede the final checkpoint. Results processed after the cutoff cannot change
-an already final unknown outcome. This makes an acceptance/stop race explicit.
+an already final source outcome. The notification profile may still advance
+only its retained ledger from bounded late acceptance evidence, never send
+another terminal notice or update an old checkpoint. This makes an
+acceptance/stop race explicit.
 
-Wait for any serialized registration commit already in progress. Discard queued
+Wait for any serialized registration commit already in progress. Discard legacy queued
 work with `discarded` notices, cancel unconfirmed in-flight delivery work and
 record `unknown`; neither outcome authorizes advancing successful-notification
 progress. Cancel pending registrations. Keep participating input Sessions alive
 for the final coordination instead of cancelling every Session immediately.
 Finish/expire a periodic checkpoint correlation before issuing the final one;
 a periodic result cannot substitute for a later final snapshot.
+For notification-profile work, first save known outcomes, mark issued uncertain
+attempts unknown, and retain queued/waiting proven-unsubmitted work with its
+consumed bounds under the
+[notification stop contract](notification-delivery.md#source-outcomes-shutdown-and-cancellation).
+Send final `failed` for retained unsent work and `unknown` for issued uncertain
+work before final input checkpointing. Failed notification save is a visible
+continuity failure, never permission for restart retry. Await those saves
+before releasing state exclusion.
 
 Concurrently for each participating input, send all remaining terminal notices
 and `checkpoint` requests with `quiesce: true`. Quiescing prevents further event
@@ -335,7 +356,7 @@ does not stop other watches or notifications.
 Then cancel Sessions, use standard `Client.Kill`, await configured-process exit,
 and release state exclusion only after all storage work and plugin cleanup.
 Stop acknowledgement still precedes process exit; the operator waits for exit.
-There is no new process-shutdown RPC, automatic delivery retry, event replay, or recipient
+This trigger-progress feature adds no process-shutdown RPC, automatic delivery retry, event replay, or recipient
 processing claim. The final protocol phase is bounded; existing filesystem and
 framework-cleanup limits remain separately observable. Successful checkpoint
 diagnostics identify the registration and committed generation without payloads.
@@ -360,6 +381,16 @@ succeeds; this does not make its deleted checkpoint state live again. Keep the
 bounded correlation necessary to finalize that attempt without retaining
 cancelled service progress. Other watches continue their ordinary notices,
 checkpoint schedule and normal-stop persistence.
+Durably cancel retained target notification retry states before runtime or
+registration removal and successful unsubscribe, under the notification design.
+Its evidence survives progress deletion and late matching acceptance updates
+only that evidence, never the removed watch or checkpoint.
+
+Notification retries resumed after restart have no old Session event ID. Their
+later acceptance updates only the notification ledger, without an old terminal
+notice or successful-progress checkpoint update. Existing source deduplication
+and failed-event recovery are unchanged: a later source event is a distinct
+notification even when its context or source data resembles retained work.
 
 ### Offline reset, deletion, and recreation
 

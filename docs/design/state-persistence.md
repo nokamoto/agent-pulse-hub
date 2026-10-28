@@ -13,6 +13,8 @@ sources:
     resource: design/trigger-runtime-state.md
   - id: subscription-cancellation-requirements
     resource: requirements/subscription-cancellation.md
+  - id: notification-design
+    resource: design/notification-delivery.md
 ---
 
 # Local registration persistence
@@ -31,15 +33,18 @@ Completed registrations survive until explicit
 selective live removal and its recovery transaction. Participating triggers
 additionally preserve
 opaque progress under [trigger runtime state](trigger-runtime-state.md).
-Event queues, in-flight deliveries, pending registrations, plugin sessions
-and process availability remain volatile.
+Legacy event queues and in-flight deliveries, pending registrations, plugin
+Sessions and process availability remain volatile. Participating output routes
+use the [notification-delivery design](notification-delivery.md) for retained
+notification evidence and safe automatic retry; its separate records do not
+change registration or trigger-checkpoint formats.
 The optional [repeated-wait profile](pr-watch-rewait.md) also keeps generation
 tokens, pending preparations and operation receipts volatile. Rewait preserves
 the same immutable registration record, ID and destination; it neither rewrites
 arguments nor creates a replacement registration. Restoring that record grants
 a fresh Session notification generation after the existing startup barrier.
 There is no forced-termination or power-loss recovery guarantee, stopped-event
-collection, delivery retry, automatic plugin restart, or service-specific hub
+collection, legacy delivery retry, automatic plugin restart, or service-specific hub
 logic. An older nonpersistent daemon has no registrations to migrate.
 
 ## Requirement coverage
@@ -108,18 +113,25 @@ local modification are outside the existing trust boundary.
 | `staging/` | Temporary, uncommitted record files and streamed-runtime staging directories; never loaded as registrations. |
 | `runtime/` | Trigger checkpoint generations governed by [runtime state](trigger-runtime-state.md#storage-and-compatibility), independent of registration records. |
 | `cancellations/` | Committed removal intents governed by [subscription cancellation](subscription-cancellation.md); processed before registration restoration. |
+| `notification-store.json` | Permanent notification-store identity marker governed by [notification delivery](notification-delivery.md#storage-commit-and-recovery). |
+| `notifications/` | Notification ledger generations, reservation guards and bounded compaction metadata governed by that design. |
 
 Create missing subdirectories only for a fresh empty root. An existing initialized
 root must have `registrations/` and `staging/`; the runtime extension may create
 its missing `runtime/` directory in a valid older tree after exclusion. The
 cancellation extension similarly creates a missing `cancellations/` directory
 after exclusion; absence in an older valid tree means no pending cancellations.
+Load an existing notification marker/tree under exclusion before plugin launch;
+their validation and cancellation-intent ordering follow the notification
+design. Initialize both only when both are absent in a new or otherwise valid
+legacy tree, after output negotiation but before restoration/admission. A
+partial notification tree fails startup and cannot be treated as empty history.
 Unknown root entries, non-directory reserved
 entries, symlinks, non-regular registration entries and unexpected registration
 filenames fail startup. Staging entries are uncommitted attempts, not successful
 registrations; cleanup may remove them only after acquiring the lock. A leftover
 lock requires deliberate operator recovery, never timeout/PID-based lock stealing.
-Keep exclusion until all registration writes and configured plugin cleanup finish.
+Keep exclusion until all registration, runtime and notification writes and configured plugin cleanup finish.
 Remove only the marker this process acquired, on normal shutdown and failed-startup cleanup; a failed acquisition never removes another owner's marker. A cleanup
 failure is diagnosed with its path; do not claim the marker was released.
 
@@ -152,8 +164,10 @@ No best-effort salvage or automatic format migration is supplied.
 
 Never store events, delivery/request IDs, process IDs, readiness, active status,
 credentials from the environment, or references to client argument files.
-These exclusions describe registration records and hub work; participating
-triggers may store opaque logical progress in the separate runtime area.
+These exclusions describe registration records; participating triggers may
+store opaque logical progress in the separate runtime area. Notification
+records separately retain the identities and evidence required by their
+governing design; registration files never become a delivery queue.
 Argument values themselves may contain sensitive data; diagnostics identify
 path, subscription ID, operation and reason without dumping arguments.
 
@@ -225,7 +239,11 @@ explicit recovery rather than replacing it. No new fsync or crash guarantee
 is introduced.
 
 After capability/target validation and the registration's lifecycle/save fence,
-commit the intent before requesting selective watch termination. Once the watch
+commit the intent and durably cancel retained target notification retry states
+under the [notification cancellation contract](notification-delivery.md#source-outcomes-shutdown-and-cancellation),
+before persistent removals or successful unsubscribe. Notification save failure
+returns `storage_error` and retains the fence/intent; it cannot report success.
+Request selective watch termination. Once the watch
 is confirmed stopped or its input cleanup is confirmed complete, remove the
 complete target runtime directory, then its registration file. Keep the intent
 through these steps. On plugin or storage failure retain the fence and any
@@ -239,7 +257,8 @@ succeed. Removing the remaining intent is housekeeping: failure produces a
 bounded cleanup diagnostic without weakening the completed removal. An ID
 with only an intent and no saved or live registration returns not-found; the
 intent is not a cancellation-history or status API. Startup validates and
-finishes pending removal before loading registrations or launching plugins;
+finishes pending removal before loading registrations or launching plugins,
+after validating the notification store and saving affected retry states cancelled;
 a required removal failure prevents readiness. An intent alone is then removed
 without restoring a watch or reading orphan progress as live state.
 
@@ -252,13 +271,19 @@ an older daemon start, because that could restore a cancelled registration.
 ## Startup and normal stop
 
 1. Parse the existing configuration and state flag, acquire state exclusion,
-   validate and finish committed cancellation intents, then load and validate
+   collect and validate committed cancellation intents, load/validate any
+   existing notification store and durably cancel their target work, then
+   finish existing removal/intent cleanup and load and validate
    the retained registration set. Reserve the control listener before
    launching any plugin. No registration/event admission is open yet.
 2. Launch configured plugins through the unchanged `hashicorp/go-plugin`
    lifecycle. Existing failure handling for an unused plugin is unchanged;
    an unavailable plugin referenced by a saved route makes restoration fail.
-3. Restore records in filename order using the saved ID and argument objects.
+3. Initialize an absent notification store only under its governing migration
+   conditions after output negotiation. Validate retained notification route
+   bindings and capability before grants or retry; a missing registration
+   cancels retained work, and an incompatible binding/capability fails startup.
+   Restore records in filename order using the saved ID and argument objects.
    Validate the destination and obtain current watch acceptance for each route,
    applying any participating trigger state under the
    [runtime startup contract](trigger-runtime-state.md#registration-and-startup).
@@ -289,8 +314,10 @@ another fails remains saved for
 deliberate repair and a later full restart.
 
 Normal stop closes admission, prevents new commits, waits for any serialized
-commit decision already in progress, discards queued events and marks possibly
-sent in-flight work unknown under the MVP policy. Cancel pending registrations,
+commit decision already in progress, discards legacy queued events and marks possibly
+sent in-flight work unknown under the MVP policy. Notification-profile work
+uses its governing stop-save/retention contract and final source outcomes.
+Cancel pending registrations,
 finish participating-input outcome notices and final checkpoint/save before
 stopping those plugins, then release state exclusion. A commit that won the
 serialization race remains saved; one cancelled before commit does not resume.
@@ -456,6 +483,10 @@ Unsupported format versions fail visibly until an explicitly designed migration
 exists. Rolling back to a nonpersistent binary loses automatic restoration and
 requires explicit registration; keep the newer state aside and do not claim
 that the old binary maintains it. Appended destination output cannot be undone.
+For a tree with notification state, follow the notification design's migration
+and rollback restrictions. Never remove its marker, guards or ledger to make
+an older daemon start or to authorize resend; preserve the complete stopped
+tree, and do not downgrade retained work to legacy delivery.
 
 ## Open questions and risks
 
