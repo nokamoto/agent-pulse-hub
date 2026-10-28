@@ -168,12 +168,15 @@ Add capability `rewait_v1`, permitted only alongside `runtime_state_v2`:
 {"version":2,"type":"ready","role":"input","capabilities":["runtime_state_v2","rewait_v1"]}
 ```
 
-Array order is immaterial. The independent `cancel_watch_v1` capability may
-also accompany this profile under [subscription cancellation](subscription-cancellation.md).
-Duplicate, unknown or other invalid combinations remain malformed.
-Ordinary inputs, runtime-state v1, and runtime-state v2 without
-`rewait_v1` keep every existing message shape and behavior. Output readiness
-still has no capabilities. An older strict host may reject the new capability;
+Array order is immaterial. The optional `runtime_state_stream_v1` follows
+[stream capability rules](runtime-state-stream.md#capability-and-compatibility).
+The independent `cancel_watch_v1` may also accompany this profile, including
+its streamed-state combination, under [subscription cancellation](subscription-cancellation.md).
+Duplicate, unknown or otherwise invalid combinations remain malformed.
+Each optional profile changes only its own conditional messages; inputs without
+it retain the corresponding existing message shapes. Rewait does not change
+output readiness, which follows the independent profiles in the
+[public plugin specification](plugin-v1.md). An older strict host may reject the new capability;
 there is no fallback that weakens this profile's lifetime.
 
 For this capability only, replace these additional-field schemas. Every
@@ -189,8 +192,11 @@ message retains `version: 2`, existing ownership/encoding rules and the
 
 The daemon generates a fresh opaque UUID generation for each grant, and a fresh
 request ID for each preparation. Plugins never manufacture these tokens.
-`state_watch`, `watch_result`, delivery notices and checkpoint shapes remain
-unchanged. Initial/restored `activate_watch` uses a fresh generation after the
+Rewait itself leaves `state_watch`, `watch_result`, delivery notices and
+checkpoint shapes unchanged. An input additionally selecting
+`runtime_state_stream_v1` uses that profile's state-transfer replacements;
+its delivery notices and `watch_result` stay unchanged. Initial/restored
+`activate_watch` uses a fresh generation after the
 existing complete registration/startup commit barrier. Rewait grants follow
 the ordering below. Only one generation is current; no generation history or
 second poller is required in the daemon.
@@ -260,6 +266,9 @@ No notification queue or event replay is added by this profile.
 ## Checkpoints, restoration and operations
 
 Use the existing opaque registration-bound runtime envelope and save schedule.
+For an input also advertising `runtime_state_stream_v1`, use the optional
+[ordered-object stream](runtime-state-stream.md) instead of a single envelope;
+the save schedule, grant ordering and logical-state ownership remain unchanged.
 No registration file is rewritten by rewait. A checkpoint contains sufficient
 plugin-owned observation, retention and confirmed-delivery progress for its
 declared continuity, plus any explicit comparison position whose meaning must

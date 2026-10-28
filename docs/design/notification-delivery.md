@@ -90,6 +90,18 @@ or `queue_accepted`. Independent retry state is `scheduled`, `in_progress`,
 Never turn unknown into failure because retries stopped. Accepted evidence is
 monotonic; an older error cannot erase it.
 
+`blocked` is an inspection-only projection of an otherwise `scheduled` retry
+while storage, a backward clock, or an unavailable plugin prevents issuance.
+Persist the underlying `scheduled` state and its original reason, never `blocked`.
+Inspection reports the gate reason (`notification_storage_error`,
+`clock_regression`, or `plugin_unavailable`, in that priority order) while keeping
+the original due time. Cancelled, expired and other terminal states take precedence.
+Clock recovery rechecks all eligibility conditions before scheduling. Storage or
+plugin failure requires normal stop, repair and restart; it does not enable
+same-process automatic recovery or plugin restart. On restart, derive the gate
+again from current conditions and the conservatively restored durable state.
+`storage_blocked` independently reports the global storage gate for every record.
+
 Allow three attempts total, with minimum waits of two seconds after the first
 unsubmitted result and ten after the second. If supplied, `retry_after_ms`
 (wire maximum 60,000) increases that wait. Guidance never makes unknown eligible.
@@ -134,8 +146,9 @@ late evidence after cancelling an unconfirmed process.
 
 ## Read-only local interface
 
-Use existing loopback framing, version 1, strict parsing, 65,536-byte frames,
-address/exit conventions and 25-second I/O deadlines:
+Use the existing [local control contract](mvp.md#configuration-and-local-control)
+and [command conventions](mvp.md#commands): loopback framing, version 1, strict
+parsing, 65,536-byte frames, address/exit conventions and 25-second I/O deadlines:
 
 ```sh
 agent-pulse-hub notifications --subscription-id <uuid> [--after <uuid>] [--limit <1..20>] [--address <address>]
@@ -422,8 +435,13 @@ notification/attempt IDs, stimuli, status and independent destination counts.
 | ND-D02: AC-003/006 | A delivery-only native wrapper forwards the exact queue argv once to the selected real Codex, privately records its successful target ACK, suppresses stdout and exits nonzero. Require unknown, one actual queue invocation, no later invocation throughout the retry window and after normal stop/restart. Independently count the marker at A through available queue/history/conversation evidence; wrapper counts alone do not prove destination counts. Missing counting or safe fault control leaves the check incomplete. |
 | ND-D03: AC-007/008 | Follow list/show, permanent/unknown/exhausted diagnosis, stop/wait/restart and retention instructions; inspect the author contract and absence of experimental/manual retry paths. Distinguish unit-controlled expiry from any actually observed seven-day retention. |
 
-The native delivery wrapper under `cmd/codex-queue-verification/testdata/` is
-verification support only. It forwards native argv exactly once, passes help
+The native [delivery wrapper](../../cmd/codex-queue-verification/testdata/notification-ack-loss-wrapper.go)
+is verification support only. Build it with `go build -o <wrapper-path>
+./cmd/codex-queue-verification/testdata/notification-ack-loss-wrapper.go`, choosing
+the host's executable suffix. Set `APH_ND_REAL_CODEX` to the absolute selected
+Codex executable and `APH_ND_ACK_FILE` to an absolute private evidence path in
+the action's environment, then configure that action to invoke the wrapper.
+It forwards native argv exactly once, passes help
 and version requests through, bounds child output and records only the matching
 queue ACK privately. It suppresses that ACK from the action and exits nonzero.
 Its 18-second child bound plus one-second pipe cleanup precede the action's
@@ -440,5 +458,8 @@ No product-policy choice is intentionally deferred to implementation. Human revi
 evaluates the retry/retention/capacity bounds, snapshot cost and conservative recovery.
 Actual executable/server compatibility and independent destination observations
 remain delivery checks. Unknown can remain unresolved and distinct source events
-can produce similar notifications. Reconcile future approved checkpoint/capacity
-changes before dependent implementation; unapproved proposals are not contracts.
+can produce similar notifications. The approved
+[streamed-state profile](runtime-state-stream.md) changes only source checkpoint
+transfer and storage; it preserves the single terminal delivery notice and
+explicit rewait rules used here. Its source-state capacity does not enlarge the
+notification ledger or admitted-work limits defined above.

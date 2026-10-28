@@ -193,13 +193,18 @@ falling back to a different endpoint.
 
 | Package / command | Invocation and effect |
 | --- | --- |
-| `cmd/agent-pulse-hub` | `daemon --config <absolute JSON file> [--state-dir <absolute directory>] [--address <address>]` runs in foreground. Ctrl+C and local stop share shutdown. |
+| `cmd/agent-pulse-hub` | `daemon --config <absolute JSON file> [--state-dir <absolute directory>] [--address <address>] [--runtime-state-max-bytes <bytes>]` runs in foreground. Ctrl+C and local stop share shutdown. |
 | Same command | `register --input-plugin <name> --watch-args-file <absolute JSON file> --output-plugin <name> --destination-args-file <absolute JSON file> [--address <address>]` registers a route. |
 | Same command | `stop [--address <address>]` requests normal shutdown. |
 | Same command | `rewait --subscription-id <id> --operation-id <id> --confirmation-position-file <absolute-file> [--address <address>]` rearms a capable retained registration under the [rewait contract](pr-watch-rewait.md#local-client-contract). |
 | Same command | `unsubscribe --subscription-id <id> [--address <address>]` selectively cancels that registration under the [cancellation contract](subscription-cancellation.md). |
 | `plugins/triggers/manual` | No arguments; manual trigger (public input role) launched through go-plugin. |
 | `plugins/actions/model-output` | Optional valueless `--notification-delivery`, at most once; default legacy model-output action (public output role), launched through go-plugin. |
+
+The optional streamed-state byte budget, its default and validation are
+specified by [streamed runtime state](runtime-state-stream.md#resource-controls-and-operator-instructions).
+It affects only the negotiated streaming profile; legacy state limits and
+registration/delivery capacity remain unchanged.
 
 Required flags occur once and optional flags at most once, in any order. Reject
 unknown/duplicate flags, missing values and positional arguments. Input files
