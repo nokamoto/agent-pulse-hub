@@ -21,6 +21,8 @@ import (
 
 type Option func(*Plugin)
 
+func WithSignals(enabled bool) Option { return func(p *Plugin) { p.signals = enabled } }
+
 //go:generate go run go.uber.org/mock/mockgen -source=../../application/watch.go -destination=github_mock_test.go -package=githubplugin
 
 func WithByteBudgets(observation, history uint64) Option {
@@ -36,6 +38,7 @@ func WithWait(wait func(context.Context, time.Duration) bool) Option {
 }
 
 type Plugin struct {
+	signals           bool
 	logger            *slog.Logger
 	credentials       application.Credentials
 	github            application.GitHub
@@ -405,14 +408,21 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 			nonce := make([]byte, 16)
 			_, err := rand.Read(nonce)
 			var validated application.Validated
+			if err == nil && p.signals && r.frame.Schema != "" && r.frame.Schema != domain.SignalStateSchema {
+				err = errors.New("signal_state_incompatible")
+			}
+			if err == nil && !p.signals && r.frame.Schema == domain.SignalStateSchema {
+				err = errors.New("invalid restored state")
+			}
 			if err == nil {
 				validated, err = application.Validate(r.ctx, r.frame.WatchArgs, nil, p.host, nonce, p.credentials, p.github)
 			}
 			if err == nil {
 				validated.Tracker.ObservationBudget = p.observationBudget
 				validated.Tracker.HistoryBudget = p.historyBudget
+				validated.Tracker.SignalProfile = p.signals
 				if r.frame.Schema != "" {
-					validated.Tracker, err = domain.RestoreStream(validated.Config, r.frame.Schema, r.objects, p.observationBudget, p.historyBudget)
+					validated.Tracker, err = domain.RestoreStream(validated.Config, r.frame.Schema, r.objects, p.observationBudget, p.historyBudget, p.signals)
 				}
 			}
 			select {
@@ -496,6 +506,7 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 			return send(stream, pluginprotocol.Frame{Type: "checkpoint_result", RequestID: frame.RequestID, Accepted: boolean(false), Error: "checkpoint capacity exceeded"})
 		}
 		w.checkpointDone = make(chan struct{})
+		frame.Schema = w.validated.Tracker.StateSchema()
 		go func() {
 			defer close(w.checkpointDone)
 			sendCheckpoint(checkpointCtx, checkpointCancel, stream.(*queuedSession), frame, objects)
@@ -571,7 +582,7 @@ func failureCode(err error) string {
 		code = failure.Code
 	} else {
 		switch err.Error() {
-		case "coverage_capacity_exceeded", "notification_capacity_exceeded", "item_metadata_exhausted", "notification_metadata_exhausted", "sequence_exhausted", "stale_generation", "credential_unavailable", "invalid restored state":
+		case "coverage_capacity_exceeded", "notification_capacity_exceeded", "item_metadata_exhausted", "notification_metadata_exhausted", "sequence_exhausted", "stale_generation", "credential_unavailable", "invalid restored state", "invalid restored signal state", "signal_state_incompatible", "observation_changed_during_acquisition", "incomplete_retrieval", "unsupported_api":
 			code = err.Error()
 		}
 	}

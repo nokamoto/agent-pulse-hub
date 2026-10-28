@@ -15,7 +15,40 @@ import (
 	"github.com/nokamoto/agent-pulse-hub/plugins/triggers/github-pr-watch/internal/domain"
 )
 
-func (c *Client) readSignalPR(ctx context.Context, config domain.WatchConfig, token string, total *int) (domain.Aggregate, domain.SignalObservation, error) {
+func (c *Client) beginSignals(ctx context.Context, config domain.WatchConfig, token string, used *uint64) (domain.Aggregate, *domain.SignalObservation, error) {
+	aggregate, observed, err := c.readSignalPR(ctx, config, token, used)
+	if err != nil {
+		return aggregate, nil, err
+	}
+	checks, err := c.acquireChecks(ctx, config, token, observed, used)
+	if err != nil {
+		return aggregate, nil, err
+	}
+	statuses, err := c.acquireStatuses(ctx, config, token, observed, c.budget(), used)
+	if err != nil {
+		return aggregate, nil, err
+	}
+	observed.CI = append(checks, statuses...)
+	if err := observed.Validate(); err != nil {
+		return aggregate, nil, err
+	}
+	return aggregate, &observed, nil
+}
+
+func (c *Client) finishSignals(ctx context.Context, config domain.WatchConfig, token string, initial *domain.SignalObservation, used *uint64) (domain.Aggregate, error) {
+	aggregate, final, err := c.readSignalPR(ctx, config, token, used)
+	if err != nil {
+		return aggregate, err
+	}
+	if final.RepositoryID != initial.RepositoryID || final.Pair != initial.Pair || final.BaseExists != initial.BaseExists {
+		return aggregate, failure("observation_changed_during_acquisition")
+	}
+	initial.Mergeable = final.Mergeable
+	initial.Draft = final.Draft
+	return aggregate, nil
+}
+
+func (c *Client) readSignalPR(ctx context.Context, config domain.WatchConfig, token string, total *uint64) (domain.Aggregate, domain.SignalObservation, error) {
 	query := `query PullRequestSignals($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name,followRenames:false){id pullRequest(number:$number){` + signalPRFields + `}}}`
 	data, err := c.request(ctx, config, token, query, variables(config), total)
 	if err != nil {
@@ -26,7 +59,7 @@ func (c *Client) readSignalPR(ctx context.Context, config domain.WatchConfig, to
 
 // acquireChecks pins the repository commit and every suite to the acquired head.
 // ALL supplies the result history; LATEST supplies selection, never guessed age.
-func (c *Client) acquireChecks(ctx context.Context, config domain.WatchConfig, token string, observed domain.SignalObservation, total *int) ([]domain.CIResult, error) {
+func (c *Client) acquireChecks(ctx context.Context, config domain.WatchConfig, token string, observed domain.SignalObservation, total *uint64) ([]domain.CIResult, error) {
 	results := []domain.CIResult{}
 	cursor := ""
 	seenCursors := map[string]bool{}
@@ -120,7 +153,7 @@ func (c *Client) acquireChecks(ctx context.Context, config domain.WatchConfig, t
 	}
 }
 
-func (c *Client) acquireRuns(ctx context.Context, config domain.WatchConfig, token string, observed domain.SignalObservation, suite, app, filter string, total *int) ([]domain.CIResult, error) {
+func (c *Client) acquireRuns(ctx context.Context, config domain.WatchConfig, token string, observed domain.SignalObservation, suite, app, filter string, total *uint64) ([]domain.CIResult, error) {
 	results := []domain.CIResult{}
 	seen := map[string]domain.CIResult{}
 	cursor := ""
@@ -201,7 +234,7 @@ func (c *Client) statusPage(ctx context.Context, config domain.WatchConfig, toke
 	}
 	defer response.Body.Close()
 	if *used > budget {
-		return nil, 0, failure("observation_resource_exhausted")
+		return nil, 0, &domain.ResourceError{Code: "observation_resource_exhausted", Option: "--observation-byte-budget", Budget: budget, Observed: *used}
 	}
 	limit := uint64(256 << 10)
 	if remaining := budget - *used; remaining < limit {
@@ -215,7 +248,7 @@ func (c *Client) statusPage(ctx context.Context, config domain.WatchConfig, toke
 		return nil, 0, failure("coverage_capacity_exceeded")
 	}
 	if uint64(len(body)) > budget-*used {
-		return nil, 0, failure("observation_resource_exhausted")
+		return nil, 0, &domain.ResourceError{Code: "observation_resource_exhausted", Option: "--observation-byte-budget", Budget: budget, Observed: *used + uint64(len(body))}
 	}
 	*used += uint64(len(body))
 	retry := retryGuidance(response.Header, c.now())

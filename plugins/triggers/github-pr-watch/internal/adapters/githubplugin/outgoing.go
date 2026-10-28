@@ -189,7 +189,11 @@ func (s *queuedSession) checkpoint(ctx context.Context, frame pluginprotocol.Fra
 func sendCheckpoint(ctx context.Context, cancel context.CancelFunc, stream *queuedSession, frame pluginprotocol.Frame, objects []*jsonvalue.Value) {
 	defer cancel()
 	frames := func(f pluginprotocol.Frame) error { return stream.checkpoint(ctx, f) }
-	if err := frames(pluginprotocol.Frame{Type: "checkpoint_stream_begin", RequestID: frame.RequestID, SubscriptionID: frame.SubscriptionID, Schema: "github-pr-watch-v2"}); err != nil {
+	schema := frame.Schema
+	if schema == "" {
+		schema = "github-pr-watch-v2"
+	}
+	if err := frames(pluginprotocol.Frame{Type: "checkpoint_stream_begin", RequestID: frame.RequestID, SubscriptionID: frame.SubscriptionID, Schema: schema}); err != nil {
 		return
 	}
 	for i, object := range objects {

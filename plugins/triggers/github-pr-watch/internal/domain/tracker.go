@@ -17,13 +17,14 @@ import (
 )
 
 type Change struct {
-	Sequence   uint64 `json:"sequence"`
-	Kind       string `json:"kind"`
-	At         string `json:"at"`
-	Item       Item   `json:"item"`
-	Digest     string `json:"digest"`
-	BodyStatus string `json:"body_status"`
-	Omission   string `json:"omission,omitempty"`
+	Signal     *SignalChange `json:"signal,omitempty"`
+	Sequence   uint64        `json:"sequence"`
+	Kind       string        `json:"kind"`
+	At         string        `json:"at"`
+	Item       Item          `json:"item"`
+	Digest     string        `json:"digest"`
+	BodyStatus string        `json:"body_status"`
+	Omission   string        `json:"omission,omitempty"`
 }
 type Position struct {
 	Value    string `json:"value"`
@@ -46,6 +47,7 @@ type Saved struct {
 	Comparison   *uint64       `json:"comparison,omitempty"`
 }
 type Tracker struct {
+	SignalProfile     bool
 	Saved             Saved
 	current           *Observation
 	cursor            uint64
@@ -112,6 +114,9 @@ func Restore(scope WatchConfig, envelope *jsonvalue.Value) (*Tracker, error) {
 		}
 	}
 	t := &Tracker{Saved: saved, cursor: saved.Confirmed}
+	if err := t.validateSignalRecords(); err != nil {
+		return nil, errors.New("invalid restored state")
+	}
 	if saved.Comparison != nil {
 		if *saved.Comparison > saved.Sequence {
 			return nil, errors.New("invalid restored state")
@@ -208,6 +213,27 @@ func (t *Tracker) Prepare(sequence uint64) { t.prepared = &sequence }
 func (t *Tracker) CancelPreparation()      { t.prepared = nil }
 
 func (t *Tracker) Reconcile(o Observation) error {
+	var signalState SignalState
+	var signalChanges []SignalChange
+	if t.SignalProfile {
+		if o.Signals == nil || o.Signals.Pair.PRID != o.PR.ID || o.Signals.Pair.Head != o.PR.Head {
+			return errors.New("incomplete_retrieval")
+		}
+		var previous *SignalState
+		if t.Saved.Baseline {
+			state, err := signalStateFromItems(t.Saved.Metadata)
+			if err != nil {
+				return err
+			}
+			previous = &state
+		}
+		var err error
+		signalState, signalChanges, err = CompareSignals(previous, *o.Signals)
+		if err != nil {
+			return err
+		}
+		o.Items = append(append([]Item{}, o.Items...), signalItems(signalState, o.PR.URL)...)
+	}
 	if err := observationCapacity(o, t.observationBudget()); err != nil {
 		return err
 	}
@@ -278,6 +304,9 @@ func (t *Tracker) Reconcile(o Observation) error {
 		for _, key := range keys {
 			before, was := old[key]
 			after, is := current[key]
+			if isSignalKind(before.Kind) || isSignalKind(after.Kind) {
+				continue
+			}
 			if was && is && before.Digest == after.Digest {
 				continue
 			}
@@ -341,8 +370,43 @@ func (t *Tracker) Reconcile(o Observation) error {
 			}
 		}
 	}
+	for i := range signalChanges {
+		change := signalChanges[i]
+		if change.CI != nil {
+			r := retainedCI(*change.CI)
+			change.CI = &r
+		}
+		if change.PreviousCI != nil {
+			r := retainedCI(*change.PreviousCI)
+			change.PreviousCI = &r
+		}
+		if err := candidate.appendChange("signal_episode", Item{ID: change.ID, Kind: change.Category, URL: o.PR.URL}, digest(change), o.EndedAt.Format(time.RFC3339Nano), nil); err != nil {
+			return err
+		}
+		candidate.Saved.Journal[len(candidate.Saved.Journal)-1].Signal = &change
+	}
 	if t.Saved.Baseline {
 		candidate.orderNewChanges(journalStart, t.Saved.Sequence)
+	}
+	if t.SignalProfile {
+		for i := journalStart; i < len(candidate.Saved.Journal); i++ {
+			change := &candidate.Saved.Journal[i]
+			if change.Signal != nil {
+				signalState.AssignEpisode(change.Signal, change.Sequence)
+				change.Digest = digest(change.Signal)
+			}
+		}
+		discussion := []Item{}
+		for _, item := range o.Items {
+			if !isSignalKind(item.Kind) {
+				discussion = append(discussion, item)
+			}
+		}
+		o.Items = append(discussion, signalItems(signalState, o.PR.URL)...)
+		fs, err = fingerprints(o)
+		if err != nil {
+			return err
+		}
 	}
 	candidate.Saved.Fingerprints = fs
 	candidate.Saved.Aggregate = o.PR

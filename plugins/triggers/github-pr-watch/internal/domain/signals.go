@@ -10,24 +10,26 @@ import (
 // CIResult retains individual provider results, including non-selected attempts.
 // A nil optional value is distinct from an empty string.
 type CIResult struct {
-	Source       string  `json:"source"`
-	ID           string  `json:"id"`
-	RepositoryID string  `json:"repository_id"`
-	Head         string  `json:"head"`
-	SuiteID      string  `json:"suite_id"`
-	AppID        string  `json:"app_id"`
-	Name         string  `json:"name"`
-	Status       string  `json:"status"`
-	Conclusion   *string `json:"conclusion"`
-	StartedAt    *string `json:"started_at"`
-	CompletedAt  *string `json:"completed_at"`
-	CreatedAt    *string `json:"created_at"`
-	UpdatedAt    *string `json:"updated_at"`
-	DetailsURL   *string `json:"details_url"`
-	URL          *string `json:"url"`
-	Description  *string `json:"description"`
-	Selected     bool    `json:"selected"`
-	LastEpisode  uint64  `json:"last_episode"`
+	Source              string  `json:"source"`
+	ID                  string  `json:"id"`
+	RepositoryID        string  `json:"repository_id"`
+	Head                string  `json:"head"`
+	SuiteID             string  `json:"suite_id"`
+	AppID               string  `json:"app_id"`
+	Name                string  `json:"name"`
+	Status              string  `json:"status"`
+	Conclusion          *string `json:"conclusion"`
+	StartedAt           *string `json:"started_at"`
+	CompletedAt         *string `json:"completed_at"`
+	CreatedAt           *string `json:"created_at"`
+	UpdatedAt           *string `json:"updated_at"`
+	DetailsURL          *string `json:"details_url"`
+	URL                 *string `json:"url"`
+	Description         *string `json:"description"`
+	DescriptionDigest   string  `json:"description_digest"`
+	DescriptionOmission string  `json:"description_omission"`
+	Selected            bool    `json:"selected"`
+	LastEpisode         uint64  `json:"last_episode"`
 }
 
 type ConflictPair struct {

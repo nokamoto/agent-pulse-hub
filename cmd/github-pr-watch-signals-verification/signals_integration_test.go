@@ -35,7 +35,7 @@ var _ = Describe("Independent PR signals", Serial, func() {
 	// Inspect the event's decoded UTF-8 size <=8192, external-data marker, and
 	// unchanged registered waiting context. No credentials enter event/diagnostic.
 	// Close Session and await child exit on success or failure.
-	It("notifies each new category independently and preserves coverage on acquisition failure", Pending, Label("case:GPWS-I01"), func() {})
+	It("notifies each new category independently and preserves coverage on acquisition failure", Label("case:GPWS-I01"), signalObservationCase)
 
 	// GPWS-I02: Launch the real hub, client, plugin and model-output action with
 	// a temporary core state directory and controlled GitHub HTTPS, signals-v3.
@@ -67,5 +67,5 @@ var _ = Describe("Independent PR signals", Serial, func() {
 	// Scope the fixtures to signals-v3; the existing GPW-I01..I05 regression suite
 	// explicitly uses discussion-v2, including its unchanged v1 migration branch.
 	// Stop and await hub/plugin/action; remove temporary data.
-	It("retains independent signals through rewait and normal restart without repeated unchanged work", Pending, Label("case:GPWS-I02"), func() {})
+	It("retains independent signals through rewait and normal restart without repeated unchanged work", Label("case:GPWS-I02"), signalRestartCase)
 })

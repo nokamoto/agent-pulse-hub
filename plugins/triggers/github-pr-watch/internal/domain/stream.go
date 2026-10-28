@@ -15,6 +15,7 @@ import (
 const StreamStateSchema = "github-pr-watch-v2"
 
 type streamHeader struct {
+	SignalVersion       int         `json:"signal_version,omitempty"`
 	Kind                string      `json:"kind"`
 	Version             int         `json:"version"`
 	Scope               WatchConfig `json:"scope"`
@@ -86,6 +87,8 @@ func observationCapacity(o Observation, budget uint64) error {
 	// an aggregate encoding or copying any item into retained progress.
 	base := o
 	base.Items = []Item{}
+	// Signal comparison records are already represented by the enriched items.
+	base.Signals = nil
 	raw, err := compact(base)
 	if err != nil {
 		return err
@@ -184,6 +187,10 @@ func (t *Tracker) StreamCheckpoint() ([]*jsonvalue.Value, error) {
 func (t *Tracker) streamObjects(materialize bool) ([]*jsonvalue.Value, error) {
 	s := t.Saved
 	h := streamHeader{Kind: "header", Version: 2, Scope: s.Scope, Nonce: s.Nonce, Sequence: s.Sequence, ObservationSequence: t.Observations, Baseline: s.Baseline, Aggregate: s.Aggregate, StartedAt: s.StartedAt, EndedAt: s.EndedAt, Confirmed: s.Confirmed, Attempted: s.Attempted, Comparison: s.Comparison, Positions: s.Positions, ItemCount: uint64(len(s.Metadata)), ChangeCount: uint64(len(s.Journal))}
+	if t.SignalProfile {
+		h.Version = 3
+		h.SignalVersion = 1
+	}
 	if len(s.Journal) > 0 {
 		h.FirstChange = s.Journal[0].Sequence
 		h.LastChange = s.Journal[len(s.Journal)-1].Sequence
@@ -263,7 +270,11 @@ func strictDecode(raw []byte, target any) error {
 	return d.Decode(target)
 }
 
-func RestoreStream(scope WatchConfig, schema string, objects []*jsonvalue.Value, observationBudget, historyBudget uint64) (*Tracker, error) {
+func RestoreStream(scope WatchConfig, schema string, objects []*jsonvalue.Value, observationBudget, historyBudget uint64, signalProfile ...bool) (*Tracker, error) {
+	signals := len(signalProfile) > 0 && signalProfile[0]
+	if signals && schema != SignalStateSchema {
+		return nil, errors.New("signal_state_incompatible")
+	}
 	invalid := func() (*Tracker, error) { return nil, errors.New("invalid restored state") }
 	if schema == StateSchema {
 		if len(objects) != 1 {
@@ -300,14 +311,18 @@ func RestoreStream(scope WatchConfig, schema string, objects []*jsonvalue.Value,
 		}
 		return t, nil
 	}
-	if schema != StreamStateSchema || len(objects) == 0 {
+	if (schema != StreamStateSchema && !(signals && schema == SignalStateSchema)) || len(objects) == 0 {
 		return invalid()
 	}
 	var h streamHeader
 	if !validHeaderShape(objects[0]) {
 		return invalid()
 	}
-	if objects[0] == nil || objects[0].Kind() != jsonvalue.Object || len(objects[0].Marshal()) > 32768 || strictDecode(objects[0].Marshal(), &h) != nil || h.Kind != "header" || h.Version != 2 || h.Scope != scope || h.Positions == nil {
+	version := 2
+	if signals {
+		version = 3
+	}
+	if objects[0] == nil || objects[0].Kind() != jsonvalue.Object || len(objects[0].Marshal()) > 32768 || strictDecode(objects[0].Marshal(), &h) != nil || h.Kind != "header" || h.Version != version || h.Scope != scope || h.Positions == nil || (signals && h.SignalVersion != 1) || (!signals && h.SignalVersion != 0) {
 		return invalid()
 	}
 	s := Saved{Scope: h.Scope, Nonce: h.Nonce, Sequence: h.Sequence, Baseline: h.Baseline, Aggregate: h.Aggregate, StartedAt: h.StartedAt, EndedAt: h.EndedAt, Confirmed: h.Confirmed, Attempted: h.Attempted, Comparison: h.Comparison, Positions: h.Positions, Fingerprints: []Fingerprint{}, Metadata: []Item{}, Journal: []Change{}}
@@ -377,6 +392,7 @@ func RestoreStream(scope WatchConfig, schema string, objects []*jsonvalue.Value,
 		return invalid()
 	}
 	t := &Tracker{Saved: s, cursor: s.Confirmed, ObservationBudget: observationBudget, HistoryBudget: historyBudget, Observations: h.ObservationSequence, previous: previous, legacyItems: legacyItems, legacyChanges: legacyChanges}
+	t.SignalProfile = signals
 	if err := t.validateV2(); err != nil {
 		return invalid()
 	}
@@ -432,6 +448,9 @@ func (t *Tracker) validateV2() error {
 			return invalid
 		}
 		return nil
+	}
+	if err := t.validateSignalRecords(); err != nil {
+		return err
 	}
 	start, a := time.Parse(time.RFC3339Nano, s.StartedAt)
 	end, b := time.Parse(time.RFC3339Nano, s.EndedAt)

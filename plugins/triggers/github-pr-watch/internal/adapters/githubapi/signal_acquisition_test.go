@@ -96,7 +96,7 @@ func TestAcquireChecksCompleteAndSelected(t *testing.T) {
 				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(string(body))), Request: req}, nil
 			}).AnyTimes()
 			client := NewWithHTTPClient(&http.Client{Transport: transport})
-			total := 0
+			total := uint64(0)
 			results, err := client.acquireChecks(context.Background(), config, "secret", observed, &total)
 			if variant != "complete" {
 				if err == nil || results != nil {
@@ -231,7 +231,7 @@ func TestReadSignalPRSelectedOrigin(t *testing.T) {
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(string(body))), Request: req}, nil
 	})
 	client := NewWithHTTPClient(&http.Client{Transport: transport})
-	total := 0
+	total := uint64(0)
 	aggregate, result, err := client.readSignalPR(context.Background(), config, "secret", &total)
 	if err != nil || aggregate.ID != "pr" || result.Pair != observed.Pair || !result.Draft || total == 0 {
 		t.Fatal(aggregate, result, err)
