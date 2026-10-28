@@ -260,8 +260,10 @@ state directory is not safe recovery of an uncertain notification.
 
 ## Cancel one subscription
 
-Use the unchanged `subscription_id` returned by the registration you want to
-remove, and its configured hub address. Ask the bundled skill to cancel that
+Call the subscription to remove A. Use its unchanged `subscription_id` returned
+by registration and its configured hub address. In notification mode, list A's
+retained records before cancellation and note their attempt IDs/counts using
+the inspection commands above. Ask the bundled skill to cancel that
 explicit ID, or run its direct command yourself:
 
 ```text
@@ -278,8 +280,13 @@ accepted Codex message may still be processed. Cancellation cannot recall it.
 
 Keep an unrelated subscription B registered with its own returned ID and a
 different manual trigger path. After success, publish distinct A/B markers as
-described above. Observe B's accepted delivery and later message processing in
-its registered conversation, with no new A `delivery_attempt`. Stop normally
+described above. In default mode, observe B's accepted
+delivery and no new A `delivery_attempt` in the logs. In notification mode, use
+list/detail instead: B reaches `queue_accepted`, A's retained records have
+`retry_state:"cancelled"`, and no new A notification or attempt is added.
+Previously issued A work may still finish and update its acceptance evidence;
+an empty list or not-found cannot prove historical non-submission. Observe B's
+later message processing separately in its registered conversation. Stop normally
 and wait for daemon/plugin exits, then restart from the same configuration and
 state: A remains absent, B is restored with its saved ID. The root
 [local example](../../../README.md#cancel-one-subscription) shows the two-watch
