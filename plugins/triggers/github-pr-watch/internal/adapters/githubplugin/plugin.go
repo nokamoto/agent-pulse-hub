@@ -21,6 +21,8 @@ import (
 
 type Option func(*Plugin)
 
+//go:generate go run go.uber.org/mock/mockgen -source=../../application/watch.go -destination=github_mock_test.go -package=githubplugin
+
 func WithByteBudgets(observation, history uint64) Option {
 	return func(p *Plugin) { p.observationBudget = observation; p.historyBudget = history }
 }
@@ -75,6 +77,7 @@ type watch struct {
 	done               chan struct{}
 	started            bool
 	quiesced           bool
+	cancelling         bool
 	armed              bool
 	generation         string
 	preparedGeneration string
@@ -94,13 +97,15 @@ type validation struct {
 	err                       error
 }
 type restoring struct {
-	frame   pluginprotocol.Frame
-	ctx     context.Context
-	cancel  context.CancelFunc
-	count   uint64
-	objects []*jsonvalue.Value
-	bytes   uint64
-	ended   bool
+	frame      pluginprotocol.Frame
+	ctx        context.Context
+	cancel     context.CancelFunc
+	count      uint64
+	objects    []*jsonvalue.Value
+	bytes      uint64
+	ended      bool
+	done       chan struct{}
+	cancelling bool
 }
 type observation struct {
 	subscriptionID string
@@ -110,6 +115,13 @@ type observation struct {
 type observationValue struct {
 	snapshot domain.Observation
 	err      error
+}
+
+type cancellation struct {
+	requestID, subscriptionID string
+	watch                     *watch
+	restoring                 *restoring
+	err                       error
 }
 
 // Session serializes mutations, grants, notices and checkpoint snapshots. Source
@@ -143,12 +155,13 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 		p.active = false
 		p.mu.Unlock()
 	}()
-	if err := send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.RuntimeStateV2Capability, pluginprotocol.RewaitCapability, pluginprotocol.RuntimeStateStreamCapability}}); err != nil {
+	if err := send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.RuntimeStateV2Capability, pluginprotocol.RewaitCapability, pluginprotocol.RuntimeStateStreamCapability, pluginprotocol.CancelWatchCapability}}); err != nil {
 		return err
 	}
 	frames := make(chan incoming, 16)
 	validations := make(chan validation, 128)
 	observations := make(chan observation, 16)
+	cancellations := make(chan cancellation, 128)
 	pending := map[string]*restoring{}
 	defer func() {
 		for _, r := range pending {
@@ -159,6 +172,51 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 	handle := func(message incoming) error {
 		if message.err != nil {
 			return message.err
+		}
+		frame := message.frame
+		if frame.Type == "cancel_watch" {
+			r := pending[frame.SubscriptionID]
+			if r != nil {
+				r.cancelling = true
+				r.cancel()
+			}
+			w := watches[frame.SubscriptionID]
+			if w == nil && (r == nil || r.done == nil) {
+				delete(pending, frame.SubscriptionID)
+				return send(stream, pluginprotocol.Frame{Type: "cancel_result", RequestID: frame.RequestID, Accepted: boolean(true)})
+			}
+			var started bool
+			var checkpointDone chan struct{}
+			if w != nil {
+				w.quiesced = true
+				w.cancelling = true
+				w.preparedGeneration = ""
+				w.validated.Tracker.CancelPreparation()
+				w.cancel()
+				if w.checkpointCancel != nil {
+					w.checkpointCancel()
+				}
+				started = w.started
+				checkpointDone = w.checkpointDone
+			}
+			go func() {
+				var err error
+				if r != nil && r.done != nil {
+					<-r.done
+				}
+				if started {
+					<-w.done
+				}
+				if checkpointDone != nil {
+					<-checkpointDone
+					err = queued.drainCheckpoints()
+				}
+				select {
+				case cancellations <- cancellation{frame.RequestID, frame.SubscriptionID, w, r, err}:
+				case <-ctx.Done():
+				}
+			}()
+			return nil
 		}
 		return p.handle(ctx, stream, watches, pending, validations, observations, message.frame)
 	}
@@ -175,6 +233,19 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 				}
 				return err
 			}
+		case result := <-cancellations:
+			if result.err != nil {
+				return result.err
+			}
+			if pending[result.subscriptionID] == result.restoring {
+				delete(pending, result.subscriptionID)
+			}
+			if watches[result.subscriptionID] == result.watch {
+				delete(watches, result.subscriptionID)
+			}
+			if err := send(stream, pluginprotocol.Frame{Type: "cancel_result", RequestID: result.requestID, Accepted: boolean(true)}); err != nil {
+				return err
+			}
 		case result := <-validations:
 			// Drain controls already received before publishing network completion.
 			for draining := true; draining; {
@@ -188,7 +259,7 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 				}
 			}
 			r := pending[result.subscriptionID]
-			if r == nil || r.frame.RequestID != result.requestID {
+			if r == nil || r.cancelling || r.frame.RequestID != result.requestID {
 				continue
 			}
 			if result.err == nil && r.ctx.Err() != nil {
@@ -266,7 +337,7 @@ func send(stream pluginprotocol.SessionServer, frame pluginprotocol.Frame) error
 	if err != nil {
 		return err
 	}
-	if queued, ok := stream.(*queuedSession); ok && (frame.Type == "watch_result" || frame.Type == "resume_result") && frame.Accepted != nil && *frame.Accepted {
+	if queued, ok := stream.(*queuedSession); ok && (frame.Type == "watch_result" || frame.Type == "resume_result" || frame.Type == "cancel_result") && frame.Accepted != nil && *frame.Accepted {
 		return queued.sendBarrier(payload)
 	}
 	return stream.Send(payload)
@@ -298,7 +369,10 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 		}()
 	case "state_stream_chunk":
 		r := pending[frame.SubscriptionID]
-		if r == nil || r.frame.RequestID != frame.RequestID || r.ended || r.ctx.Err() != nil {
+		if r == nil || r.cancelling {
+			return nil
+		}
+		if r.frame.RequestID != frame.RequestID || r.ended || r.ctx.Err() != nil {
 			return errors.New("unexpected state stream chunk")
 		}
 		index, err := strconv.ParseUint(frame.Index, 10, 64)
@@ -314,7 +388,10 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 		r.objects = append(r.objects, frame.Data)
 	case "state_stream_end":
 		r := pending[frame.SubscriptionID]
-		if r == nil || r.frame.RequestID != frame.RequestID || r.ended {
+		if r == nil || r.cancelling {
+			return nil
+		}
+		if r.frame.RequestID != frame.RequestID || r.ended {
 			return errors.New("unexpected state stream end")
 		}
 		count, err := strconv.ParseUint(frame.ChunkCount, 10, 64)
@@ -322,7 +399,9 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 			return p.rejectRestore(stream, pending, frame.SubscriptionID, "incomplete state restoration")
 		}
 		r.ended = true
+		r.done = make(chan struct{})
 		go func() {
+			defer close(r.done)
 			nonce := make([]byte, 16)
 			_, err := rand.Read(nonce)
 			var validated application.Validated
@@ -394,7 +473,7 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 		delete(w.correlations, frame.EventID)
 		w.validated.Tracker.Notice(sequence, frame.Status)
 	case "checkpoint":
-		if w == nil {
+		if w == nil || w.cancelling {
 			return send(stream, pluginprotocol.Frame{Type: "checkpoint_result", RequestID: frame.RequestID, Accepted: boolean(false), Error: "watch unavailable"})
 		}
 		if frame.Quiesce {

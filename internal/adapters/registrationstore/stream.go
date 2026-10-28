@@ -222,12 +222,28 @@ func (s *Store) ownerLock(id domain.SubscriptionID) *sync.Mutex {
 	defer s.mu.Unlock()
 	if s.runtimeLocks == nil {
 		s.runtimeLocks = make(map[string]*sync.Mutex)
+		s.runtimeLockRefs = make(map[string]int)
 	}
 	key := string(id)
 	if s.runtimeLocks[key] == nil {
 		s.runtimeLocks[key] = &sync.Mutex{}
 	}
+	s.runtimeLockRefs[key]++
 	return s.runtimeLocks[key]
+}
+
+func (s *Store) releaseOwnerLock(id domain.SubscriptionID, lock *sync.Mutex) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := string(id)
+	if s.runtimeLocks[key] != lock {
+		return
+	}
+	s.runtimeLockRefs[key]--
+	if s.runtimeLockRefs[key] == 0 {
+		delete(s.runtimeLocks, key)
+		delete(s.runtimeLockRefs, key)
+	}
 }
 
 type streamTransaction struct {
@@ -252,6 +268,7 @@ func (s *Store) BeginRuntimeStream(owner domain.Subscription, schema string, bud
 	s.mu.Unlock()
 	if closed {
 		lock.Unlock()
+		s.releaseOwnerLock(owner.ID, lock)
 		return nil, errors.New("state directory is closed")
 	}
 	t := &streamTransaction{store: s, owner: owner, schema: schema, budget: budget, ownerPath: filepath.Join(s.runtime, string(owner.ID)), lock: lock}
@@ -342,7 +359,7 @@ func (t *streamTransaction) Commit(count uint64, publish func(func() error) erro
 	}
 	t.finished = true
 	t.path = ""
-	defer t.lock.Unlock()
+	defer func() { t.lock.Unlock(); t.store.releaseOwnerLock(t.owner.ID, t.lock) }()
 	var cleanup error
 	for _, old := range t.older {
 		path := filepath.Join(t.ownerPath, old.name)
@@ -360,7 +377,7 @@ func (t *streamTransaction) Abort() error {
 		return nil
 	}
 	t.finished = true
-	defer t.lock.Unlock()
+	defer func() { t.lock.Unlock(); t.store.releaseOwnerLock(t.owner.ID, t.lock) }()
 	var err error
 	if t.path != "" {
 		err = t.store.removeStreamDirectory(t.path, true)
@@ -391,33 +408,44 @@ func (s *Store) removeStreamDirectory(path string, staging bool) error {
 	if !staging && filepath.Dir(parent) != s.runtime {
 		return errors.New("stream cleanup escaped runtime")
 	}
-	entries, err := s.files.ReadDir(path)
+	paths, err := s.streamDirectoryFiles(path)
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if name != "manifest.json" {
-			if len(name) != 25 || !strings.HasSuffix(name, ".json") {
-				return errors.New("unsafe stream cleanup entry")
-			}
-			index, err := strconv.ParseUint(name[:20], 10, 64)
-			if err != nil || chunkName(index) != name {
-				return errors.New("unsafe stream cleanup index")
-			}
-		}
-		info, err := s.files.Lstat(filepath.Join(path, name))
-		if err != nil {
-			return err
-		}
-		if !isRegularFile(info) {
-			return errors.New("unsafe stream cleanup file type")
-		}
-	}
-	for _, entry := range entries {
-		if err := s.files.Remove(filepath.Join(path, entry.Name())); err != nil {
+	for _, child := range paths {
+		if err := s.files.Remove(child); err != nil {
 			return err
 		}
 	}
 	return s.files.Remove(path)
+}
+
+// streamDirectoryFiles validates names and file types without parsing payloads.
+func (s *Store) streamDirectoryFiles(path string) ([]string, error) {
+	entries, err := s.files.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if name != "manifest.json" {
+			if len(name) != 25 || !strings.HasSuffix(name, ".json") {
+				return nil, errors.New("unsafe stream cleanup entry")
+			}
+			index, err := strconv.ParseUint(name[:20], 10, 64)
+			if err != nil || chunkName(index) != name {
+				return nil, errors.New("unsafe stream cleanup index")
+			}
+		}
+		info, err := s.files.Lstat(filepath.Join(path, name))
+		if err != nil {
+			return nil, err
+		}
+		if !isRegularFile(info) {
+			return nil, errors.New("unsafe stream cleanup file type")
+		}
+		paths = append(paths, filepath.Join(path, name))
+	}
+	return paths, nil
 }

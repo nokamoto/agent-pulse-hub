@@ -122,22 +122,63 @@ type runtimeStreamSink struct {
 	h           *Hub
 	watch       *runtimeWatch
 	store       StreamRuntimeStore
+	life        *subscriptionLifecycle
 	mu          sync.Mutex
 	aborted     bool
 	completed   bool
 	transaction RuntimeStreamTransaction // accessed only by the assigned filesystem worker
 	workerErr   error
 	done        chan streamSaveResult
+	finished    chan struct{}
 	once        sync.Once
 }
 
 func (h *Hub) newRuntimeStreamSink(watch *runtimeWatch, store StreamRuntimeStore) *runtimeStreamSink {
-	return &runtimeStreamSink{h: h, watch: watch, store: store, done: make(chan streamSaveResult, 1)}
+	h.mu.Lock()
+	sink := &runtimeStreamSink{h: h, watch: watch, store: store, life: h.lifecycleLocked(watch.registration.ID), done: make(chan streamSaveResult, 1), finished: make(chan struct{})}
+	live := h.runtimeWatches[watch.registration.ID] == watch && h.cancellations[watch.registration.ID] == nil
+	if live {
+		watch.stream = sink
+	}
+	h.mu.Unlock()
+	if !live {
+		sink.Abort(errors.New("runtime stream owner was fenced before collection"))
+	}
+	return sink
 }
 func (s *runtimeStreamSink) valid() bool { s.mu.Lock(); defer s.mu.Unlock(); return !s.aborted }
+
+func (s *runtimeStreamSink) finish(result streamSaveResult) {
+	s.once.Do(func() {
+		s.done <- result
+		close(s.finished)
+	})
+}
+
+// beginSave serializes every filesystem mutation with selective removal. Queued
+// jobs recheck admission after acquiring the save lock, so they cannot recreate
+// a directory after cancellation has removed it.
+func (s *runtimeStreamSink) beginSave() bool {
+	s.life.save.Lock()
+	s.h.mu.Lock()
+	live := s.h.runtimeWatches[s.watch.registration.ID] == s.watch && s.h.cancellations[s.watch.registration.ID] == nil
+	s.h.mu.Unlock()
+	return live && s.valid()
+}
+
+func (s *runtimeStreamSink) abortWorker(cause error) {
+	if s.transaction != nil {
+		cause = errors.Join(cause, s.transaction.Abort())
+	}
+	s.finish(streamSaveResult{err: cause})
+}
+
 func (s *runtimeStreamSink) Begin(ctx context.Context, schema string) error {
 	return s.h.runtimeFS.submit(ctx, s.watch.registration.ID, func() {
-		if !s.valid() {
+		live := s.beginSave()
+		defer s.life.save.Unlock()
+		if !live {
+			s.abortWorker(errors.New("runtime stream owner was fenced before staging"))
 			return
 		}
 		s.transaction, s.workerErr = s.store.BeginRuntimeStream(s.watch.registration, schema, s.h.runtimeStateMaxBytes)
@@ -146,7 +187,13 @@ func (s *runtimeStreamSink) Begin(ctx context.Context, schema string) error {
 
 func (s *runtimeStreamSink) Append(ctx context.Context, index uint64, data []byte) error {
 	return s.h.runtimeFS.submit(ctx, s.watch.registration.ID, func() {
-		if !s.valid() || s.workerErr != nil {
+		live := s.beginSave()
+		defer s.life.save.Unlock()
+		if !live {
+			s.abortWorker(errors.New("runtime stream owner was fenced before append"))
+			return
+		}
+		if s.workerErr != nil {
 			return
 		}
 		if s.transaction == nil {
@@ -173,13 +220,15 @@ func (s *runtimeStreamSink) Complete(ctx context.Context, count uint64) error {
 	defer close(ready)
 	err := s.h.runtimeFS.submit(ctx, s.watch.registration.ID, func() {
 		<-ready
+		live := s.beginSave()
+		defer s.life.save.Unlock()
 		err := s.workerErr
 		var generation uint64
-		if err == nil && s.valid() && s.transaction != nil {
+		if err == nil && live && s.transaction != nil {
 			generation, err = s.transaction.Commit(count, func(publish func() error) error {
 				s.h.mu.Lock()
 				defer s.h.mu.Unlock()
-				if !s.valid() || s.h.runtimeWatches[s.watch.registration.ID] != s.watch {
+				if !s.valid() || s.h.runtimeWatches[s.watch.registration.ID] != s.watch || s.h.cancellations[s.watch.registration.ID] != nil {
 					return errors.New("runtime stream owner was fenced before publication")
 				}
 				return publish()
@@ -190,7 +239,7 @@ func (s *runtimeStreamSink) Complete(ctx context.Context, count uint64) error {
 		if generation == 0 && s.transaction != nil {
 			err = errors.Join(err, s.transaction.Abort())
 		}
-		s.once.Do(func() { s.done <- streamSaveResult{generation: generation, err: err} })
+		s.finish(streamSaveResult{generation: generation, err: err})
 	})
 	if err == nil {
 		err = ctx.Err()
@@ -213,14 +262,12 @@ func (s *runtimeStreamSink) Abort(cause error) {
 	// await cleanup while slow filesystem operations finish.
 	go func() {
 		err := s.h.runtimeFS.submit(context.Background(), s.watch.registration.ID, func() {
-			err := cause
-			if s.transaction != nil {
-				err = errors.Join(err, s.transaction.Abort())
-			}
-			s.once.Do(func() { s.done <- streamSaveResult{err: err} })
+			s.life.save.Lock()
+			defer s.life.save.Unlock()
+			s.abortWorker(cause)
 		})
 		if err != nil {
-			s.once.Do(func() { s.done <- streamSaveResult{err: errors.Join(cause, err)} })
+			s.finish(streamSaveResult{err: errors.Join(cause, err)})
 		}
 	}()
 }
@@ -236,6 +283,11 @@ func (h *Hub) runStreamCheckpoint(ctx context.Context, quiesce bool, watch *runt
 
 func (h *Hub) saveStreamResult(result runtimeCheckpointResult) {
 	saved := <-result.stream.done
+	h.mu.Lock()
+	if result.watch.stream == result.stream {
+		result.watch.stream = nil
+	}
+	h.mu.Unlock()
 	if saved.generation == 0 {
 		h.reportRuntimeStateError(result.watch, "save", saved.err)
 		return

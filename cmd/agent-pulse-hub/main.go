@@ -35,6 +35,14 @@ type commandOperations interface {
 
 type localOperations struct{}
 
+type cancellationOperations interface {
+	Unsubscribe(context.Context, string, string) (control.RegistrationResponse, []byte, error)
+}
+
+func (localOperations) Unsubscribe(ctx context.Context, address, id string) (control.RegistrationResponse, []byte, error) {
+	return control.Unsubscribe(ctx, address, id)
+}
+
 type rewaitOperations interface {
 	Position(string) (string, error)
 	Rewait(context.Context, string, string, string, string) (control.RegistrationResponse, []byte, error)
@@ -80,9 +88,38 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func runWith(args []string, stdout, stderr io.Writer, operations commandOperations) int {
 	if len(args) == 0 {
-		return report(stderr, "usage: agent-pulse-hub <daemon|register|rewait|stop> ...")
+		return report(stderr, "usage: agent-pulse-hub <daemon|register|unsubscribe|rewait|stop> ...")
 	}
 	switch args[0] {
+	case "unsubscribe":
+		flags, err := parseFlags(args[1:], []string{"--subscription-id"}, []string{"--address"})
+		if err != nil {
+			return report(stderr, "unsubscribe: "+err.Error())
+		}
+		if !control.ValidSubscriptionID(flags["--subscription-id"]) {
+			return report(stderr, "unsubscribe: a canonical lowercase subscription UUID is required")
+		}
+		cancellation, ok := operations.(cancellationOperations)
+		if !ok {
+			return report(stderr, "unsubscribe: command operations are unavailable")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), controlDeadline)
+		defer cancel()
+		_, wire, err := cancellation.Unsubscribe(ctx, addressOrDefault(flags["--address"]), flags["--subscription-id"])
+		if err != nil {
+			var daemonError *control.DaemonError
+			if errors.As(err, &daemonError) {
+				if writeAll(stdout, daemonError.Wire) != nil {
+					return report(stderr, "unsubscribe: could not write the daemon response to stdout.")
+				}
+				return 1
+			}
+			return report(stderr, "unsubscribe: "+err.Error())
+		}
+		if writeAll(stdout, wire) != nil {
+			return report(stderr, "unsubscribe: cancellation succeeded but its response could not be written to stdout.")
+		}
+		return 0
 	case "daemon":
 		flags, err := parseFlags(args[1:], []string{"--config"}, []string{"--state-dir", "--address", "--runtime-state-max-bytes"})
 		if err != nil {
@@ -191,7 +228,7 @@ func runWith(args []string, stdout, stderr io.Writer, operations commandOperatio
 		}
 		return 0
 	default:
-		return report(stderr, "usage: agent-pulse-hub <daemon|register|rewait|stop> ...")
+		return report(stderr, "usage: agent-pulse-hub <daemon|register|unsubscribe|rewait|stop> ...")
 	}
 }
 
@@ -236,6 +273,19 @@ func runDaemonWithRuntimeBudget(configPath, selectedStateDirectory, address stri
 	store, err := registrationstore.Open(stateDirectory)
 	if err != nil {
 		return err
+	}
+	var inputNames []string
+	for _, configured := range settings.Plugins {
+		if configured.Role == "input" {
+			inputNames = append(inputNames, configured.Name)
+		}
+	}
+	cleanupErr, err := store.RecoverCancellations(inputNames)
+	if err != nil {
+		return errors.Join(err, store.Close())
+	}
+	if cleanupErr != nil {
+		daemonLogger(stderr).Warn("cancellation_cleanup_error", "reason", boundedDiagnostic(cleanupErr.Error(), 1024))
 	}
 	registrations, err := store.Load()
 	if err != nil {

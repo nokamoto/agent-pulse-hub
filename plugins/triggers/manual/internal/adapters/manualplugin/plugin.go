@@ -124,15 +124,17 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 	p.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(stream.Context())
+	var cancellations sync.WaitGroup
 	defer func() {
 		cancel()
 		p.stopWatches()
+		cancellations.Wait()
 		p.mu.Lock()
 		p.active = false
 		p.mu.Unlock()
 	}()
 
-	if err := p.send(stream, pluginprotocol.Frame{Type: "ready", Role: "input"}); err != nil {
+	if err := p.send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.CancelWatchCapability}}); err != nil {
 		return fmt.Errorf("send readiness: %w", err)
 	}
 	for {
@@ -147,6 +149,16 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 		if err != nil {
 			p.logger.Error("plugin_input_rejected", "reason", safeDiagnostic(err.Error()))
 			return err
+		}
+		if frame.Type == "cancel_watch" {
+			cancellations.Add(1)
+			go func() {
+				defer cancellations.Done()
+				if err := p.cancelWatch(stream, frame); err != nil {
+					p.logger.Warn("manual_plugin_cancel_send_failed", "subscription_id", frame.SubscriptionID, "reason", safeDiagnostic(err.Error()))
+				}
+			}()
+			continue
 		}
 		if frame.Type != "watch" {
 			err := errors.New("unexpected daemon message")
@@ -200,6 +212,22 @@ func (p *Plugin) acceptWatch(ctx context.Context, stream pluginprotocol.SessionS
 	return nil
 }
 
+// cancelWatch acknowledges only after the monitor has exited and its path
+// reservation has been released. Concurrent retries join the same monitor.
+func (p *Plugin) cancelWatch(stream pluginprotocol.SessionServer, frame pluginprotocol.Frame) error {
+	p.mu.Lock()
+	watch := p.watches[frame.SubscriptionID]
+	if watch != nil {
+		watch.cancel()
+	}
+	p.mu.Unlock()
+	if watch != nil {
+		<-watch.done
+		p.removeWatch(watch)
+	}
+	return p.send(stream, pluginprotocol.Frame{Type: "cancel_result", RequestID: frame.RequestID, Accepted: boolPointer(true)})
+}
+
 func (p *Plugin) runWatch(ctx context.Context, stream pluginprotocol.SessionServer, watch *watcher) {
 	defer close(watch.done)
 	ticker := time.NewTicker(pollInterval)
@@ -247,11 +275,10 @@ func (p *Plugin) stopWatches() {
 		watches = append(watches, watch)
 		watch.cancel()
 	}
-	p.watches = make(map[string]*watcher)
-	p.paths = make(map[string]string)
 	p.mu.Unlock()
 	for _, watch := range watches {
 		<-watch.done
+		p.removeWatch(watch)
 	}
 }
 

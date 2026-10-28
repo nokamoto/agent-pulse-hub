@@ -1,11 +1,11 @@
 ---
 name: register-codex-queue
-description: Register the current top-level Codex conversation with an Agent Pulse Hub route that uses the Codex Queue action. Use when asked to set up or register this conversation for queued event delivery.
+description: Register the current top-level Codex conversation with an Agent Pulse Hub route that uses the Codex Queue action, or explicitly unsubscribe a registration using its returned subscription ID. Use when asked to register this conversation or cancel one known subscription.
 ---
 
-# Register the current conversation for Codex Queue
+# Register or cancel a Codex Queue subscription
 
-Use this skill only to register the conversation that is invoking it. The
+For registration, use this skill only for the conversation invoking it. The
 registration helper reads the current process environment and refuses to run
 unless `CODEX_THREAD_ID` and `CODEX_SESSION_ID` are both canonical, non-nil
 UUIDs with the same value. Never supply, copy, set, or rewrite either ID.
@@ -17,6 +17,10 @@ Run the registration directly in this top-level conversation. Do not delegate
 the helper to a subagent or another conversation. Do not discover a recipient
 from history, a process list, a file, or event content. Do not run a queue probe
 or retry an uncertain registration.
+
+For an explicit cancellation request, follow **Cancel one subscription** below.
+Cancellation uses the retained registration ID and does not require either
+Codex environment ID or the original argument files.
 
 ## Collect configuration
 
@@ -90,3 +94,45 @@ Registration establishes the hub route only. It does not submit a Codex queue
 message or prove that a later event was processed. Never report a queued event
 until a separate event delivery has a matching Codex acknowledgement; never
 report conversation processing based only on that acknowledgement.
+
+## Cancel one subscription
+
+Use only the unchanged `subscription_id` returned by registration and explicitly
+selected by the user for cancellation. Retain it when reporting registration.
+Obtain the absolute hub executable path and configured loopback address from
+the user's existing configuration. Ask for a missing ID or configuration value;
+do not infer a target from conversation identity, history, arguments or event
+content. Cancellation does not discover or list registrations.
+
+Invoke the hub client directly once in this top-level conversation:
+
+```text
+HUB_EXECUTABLE unsubscribe --subscription-id REGISTERED_SUBSCRIPTION_ID --address LOOPBACK_ADDRESS
+```
+
+Replace each placeholder with its established value, passing the executable and
+arguments separately. Do not invoke `register-current`, re-register, copy
+environment IDs or automatically retry cancellation.
+
+- Report success only when the client exits zero and returns
+  `{"ok":true,"subscription_id":"REGISTERED_SUBSCRIPTION_ID"}` with the exact
+  requested ID. The watch has stopped and normal restart cannot restore it.
+  Other subscriptions continue. An action request already issued may still
+  finish or produce output after success; cancellation cannot recall it.
+- A nonzero client result with `ok:false` is a failure. Report its `code` and
+  bounded `message`. `unknown_subscription` includes an already-removed ID;
+  it alone cannot prove who removed the route. Do not choose another target.
+- `unsubscribe_unsupported` requires upgrading the input and daemon together
+  while stopped, then explicitly using the same saved ID. Do not perform that
+  upgrade as part of this skill. `unsubscribe_busy` requires waiting for the
+  executing request's result before an explicit retry.
+- `cancellation_rejected`, `plugin_unavailable` or `storage_error` can stop new
+  events and action requests while leaving the registration saved. Report the
+  diagnostic's failing stage and whether the cancellation request was saved
+  as a durable intent: before intent commit, restart may restore the watch;
+  after commit, normal startup must finish removal before readiness. Ask the
+  operator to correct the cause before an explicit same-ID retry or restart.
+- If the client reports transport uncertainty or the response ID does not
+  match, leave the result uncertain and ask the operator to investigate. A
+  later explicit same-ID request may succeed or return not-found. Never treat
+  uncertainty or not-found as permission to retry automatically.

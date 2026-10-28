@@ -18,6 +18,8 @@ const (
 )
 
 // RewaitPluginPort is the optional control extension for runtime-state v2.
+//
+//go:generate go run go.uber.org/mock/mockgen -source=rewait.go -destination=rewait_mock_test.go -package=hub
 type RewaitPluginPort interface {
 	ActivateGeneration(context.Context, domain.SubscriptionID, string) error
 	ResumeWatch(context.Context, ResumeWatchRequest) error
@@ -49,6 +51,7 @@ type rewaitReceipt struct {
 	timestamp      int64
 	done           chan struct{}
 	result         *Error
+	completed      bool
 }
 
 // ValidateRewaitOperationID checks the canonical syntax without consulting time.
@@ -137,15 +140,21 @@ func (h *Hub) Rewait(subscriptionID, operationID, confirmationPosition string) *
 	receipt := &rewaitReceipt{subscriptionID: subscriptionID, positionDigest: digest, timestamp: stamp, done: make(chan struct{})}
 	h.rewaitReceipts[operationID] = receipt
 	wait.preparing = true
+	life := h.lifecycleLocked(id)
 	h.rewaitWait.Add(1)
 	inputPort, outputPort := input.port, output.port
 	h.mu.Unlock()
 	defer h.rewaitWait.Done()
 
-	ctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(life.ctx, 10*time.Second)
 	err := port.ResumeWatch(ctx, ResumeWatchRequest{RequestID: requestID, SubscriptionID: id, Generation: generation, ConfirmationPosition: confirmationPosition})
 	cancel()
 	h.mu.Lock()
+	if receipt.completed {
+		result := receipt.result
+		h.mu.Unlock()
+		return result
+	}
 	var rejected *PositionRejectedError
 	if err != nil {
 		if errors.As(err, &rejected) {
@@ -154,6 +163,7 @@ func (h *Hub) Rewait(subscriptionID, operationID, confirmationPosition string) *
 			receipt.result = &Error{Code: "plugin_unavailable", Message: "Rewait preparation could not be confirmed; its result is uncertain. Inspect the daemon before submitting another intent."}
 		}
 		wait.preparing = false
+		receipt.completed = true
 		close(receipt.done)
 		stopping := h.stopping
 		h.mu.Unlock()
@@ -163,9 +173,10 @@ func (h *Hub) Rewait(subscriptionID, operationID, confirmationPosition string) *
 		return receipt.result
 	}
 	input, output = h.plugins[registration.InputPlugin], h.plugins[registration.OutputPlugin]
-	if h.stopping || input == nil || !input.available || input.port != inputPort || output == nil || !output.available || output.port != outputPort {
+	if h.stopping || h.cancellations[id] != nil || input == nil || !input.available || input.port != inputPort || output == nil || !output.available || output.port != outputPort {
 		receipt.result = &Error{Code: "plugin_unavailable", Message: "The daemon or a subscription plugin stopped before rewait commit."}
 		wait.preparing = false
+		receipt.completed = true
 		close(receipt.done)
 		h.mu.Unlock()
 		return receipt.result
@@ -173,8 +184,9 @@ func (h *Hub) Rewait(subscriptionID, operationID, confirmationPosition string) *
 	// This installation is the commit point. The preparation flag fences
 	// checkpoints until its matching grant has entered the host stream.
 	wait.generation, wait.armed = generation, true
+	receipt.completed = true
 	close(receipt.done)
-	grantCtx, grantCancel := context.WithTimeout(h.ctx, activationDeadline)
+	grantCtx, grantCancel := context.WithTimeout(life.ctx, activationDeadline)
 	// Starting the grant under lifecycle serialization makes stop and commit
 	// ordered. The transport must observe cancellation before sending on stop.
 	h.mu.Unlock()
@@ -182,7 +194,8 @@ func (h *Hub) Rewait(subscriptionID, operationID, confirmationPosition string) *
 	grantCancel()
 	h.mu.Lock()
 	wait.preparing = false
-	stopping := h.stopping
+	_, retained := h.registrations[id]
+	stopping := h.stopping || h.cancellations[id] != nil || !retained
 	h.mu.Unlock()
 	if err != nil && !stopping {
 		h.pluginUnavailable(registration.InputPlugin, inputPort, errors.New("committed rewait activation failed"))

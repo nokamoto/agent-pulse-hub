@@ -72,7 +72,7 @@ func (p *Process) WatchStream(ctx context.Context, request hub.WatchRequest, sou
 		// The end send and positive response must be ordered even when Recv runs
 		// before Send returns. The write gate already orders the host handoff.
 		return p.sendRestoreFrameWith(ctx, pluginprotocol.Frame{Type: "state_stream_end", RequestID: request.RequestID, SubscriptionID: string(request.SubscriptionID), ChunkCount: strconv.FormatUint(count, 10)}, func() { p.mu.Lock(); pending.restoreEnd = true; p.mu.Unlock() })
-	})
+	}, nil)
 	if err != nil {
 		return &hub.WatchError{Code: "plugin_unavailable", Message: "stream watch could not be restored", Unavailable: isUnavailable(err), Cause: err}
 	}
@@ -134,7 +134,7 @@ func (p *Process) CheckpointStream(ctx context.Context, request hub.RuntimeCheck
 	}
 	defer unlock()
 	p.mu.Lock()
-	quiesced := watch.quiesced
+	quiesced := watch.quiesced || watch.cancelling || watch.cancelSent || p.watches[string(request.SubscriptionID)] != watch
 	p.mu.Unlock()
 	if quiesced {
 		return &hub.RuntimeError{Code: "invalid_watch", Message: "watch is already quiescent"}
@@ -152,7 +152,7 @@ func (p *Process) CheckpointStream(ctx context.Context, request hub.RuntimeCheck
 			p.mu.Unlock()
 		}
 		unlock()
-	}, transfer, nil)
+	}, transfer, nil, nil)
 	if err != nil {
 		if request.Quiesce && requestWasSent(err) {
 			p.mu.Lock()

@@ -127,6 +127,26 @@ func (s *Server) handle(connection net.Conn) {
 		s.writeError(connection, requestErr)
 		return
 	}
+	if request.operation == "unsubscribe" {
+		completed := make(chan *hub.Error, 1)
+		go func() { completed <- s.service.Unsubscribe(request.subscriptionID) }()
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		select {
+		case <-s.done:
+		case <-timer.C:
+		case operationErr := <-completed:
+			if operationErr != nil {
+				s.writeError(connection, operationErr)
+				return
+			}
+			response, err := EncodeSuccess(request.subscriptionID)
+			if err == nil {
+				_, _ = writeRequest(connection, response)
+			}
+		}
+		return
+	}
 	if request.operation == "stop" {
 		// Hub shutdown closes registration and event admission and resolves any
 		// in-flight delivery before the public stop acknowledgement is written.

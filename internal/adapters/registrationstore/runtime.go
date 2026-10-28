@@ -105,7 +105,7 @@ func (s *Store) CommitRuntime(registration domain.Subscription, state *jsonvalue
 	}
 	ownerLock := s.ownerLock(registration.ID)
 	ownerLock.Lock()
-	defer ownerLock.Unlock()
+	defer func() { ownerLock.Unlock(); s.releaseOwnerLock(registration.ID, ownerLock) }()
 	data := encodeRuntimeRecord(registration, state, 1)
 	if len(data) > MaxRuntimeRecordBytes {
 		return 0, fmt.Errorf("runtime state record exceeds %d bytes", MaxRuntimeRecordBytes)

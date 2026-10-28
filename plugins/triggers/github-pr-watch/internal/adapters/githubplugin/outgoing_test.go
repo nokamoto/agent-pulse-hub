@@ -87,6 +87,53 @@ func TestExpiredCheckpointIsDroppedBeforeTransport(t *testing.T) {
 	}
 }
 
+func TestCheckpointDrainReleasesExpiredQueueBeforeCancellationResponse(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport := NewMockSessionServer(gomock.NewController(t))
+	started, release := make(chan struct{}), make(chan struct{})
+	first := transport.EXPECT().Send([]byte("in-flight checkpoint")).DoAndReturn(func([]byte) error {
+		close(started)
+		<-release
+		return nil
+	})
+	transport.EXPECT().Send([]byte("cancel-result")).Return(nil).After(first)
+	queued := newQueuedSession(ctx, transport)
+	queued.checkpoints <- outgoing{payload: []byte("in-flight checkpoint"), ctx: ctx}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("checkpoint did not enter transport")
+	}
+	expired, expire := context.WithCancel(ctx)
+	expire()
+	for range cap(queued.checkpoints) {
+		queued.checkpoints <- outgoing{payload: []byte("expired checkpoint"), ctx: expired}
+	}
+	drained := make(chan error, 1)
+	go func() { drained <- queued.drainCheckpoints() }()
+	select {
+	case err := <-drained:
+		t.Fatalf("drain completed before transport released: %v", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-drained:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled checkpoint queue did not drain")
+	}
+	if len(queued.checkpoints) != 0 {
+		t.Fatal("checkpoint payloads retained after drain")
+	}
+	if err := queued.sendBarrier([]byte("cancel-result")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCheckpointQueueKeepsOneDeadlineAndBoundsBufferedObjects(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

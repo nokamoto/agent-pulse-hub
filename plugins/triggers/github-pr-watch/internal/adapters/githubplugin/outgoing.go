@@ -103,11 +103,35 @@ func (s *queuedSession) dispatch(message outgoing) error {
 		}
 		return nil
 	}
+	if len(message.payload) == 0 {
+		return nil
+	}
 	err := s.SessionServer.Send(message.payload)
 	if message.result != nil {
 		message.result <- err
 	}
 	return err
+}
+
+// drainCheckpoints releases queued payloads after their sender has stopped.
+// Its queue position also waits for a checkpoint already inside transport Send.
+func (s *queuedSession) drainCheckpoints() error {
+	done := make(chan struct{})
+	select {
+	case s.checkpoints <- outgoing{ctx: s.ctx, done: done}:
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case <-s.writerDone:
+		return s.writerFailure()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case <-s.writerDone:
+		return s.writerFailure()
+	}
 }
 
 func (s *queuedSession) sendBarrier(payload []byte) error {

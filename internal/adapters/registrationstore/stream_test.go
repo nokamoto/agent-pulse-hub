@@ -166,6 +166,67 @@ func memoryStreamStore(t *testing.T) (*Store, *streamMemoryFS, domain.Subscripti
 }
 func publishStream(action func() error) error { return action() }
 
+func TestStreamCancellationDeletesOpaqueGenerationsAndRejectsUnsafeChildren(t *testing.T) {
+	for _, kind := range []string{"live", "recovery", "nested_directory", "symlink", "unexpected_name"} {
+		t.Run(kind, func(t *testing.T) {
+			store, files, owner := memoryStreamStore(t)
+			store.cancellations = filepath.Join(store.root, "cancellations")
+			files.nodes[store.cancellations] = &streamMemoryNode{name: "cancellations", mode: os.ModeDir | 0o700}
+			if err := store.Commit(owner); err != nil {
+				t.Fatal(err)
+			}
+			saveMockStream(t, store, owner, `{}`)
+			dir := filepath.Join(store.runtime, string(owner.ID), "00000000000000000001.stream")
+			// Cancellation checks only structure and types, even when both manifest
+			// and chunk contents are invalid or exceed normal restoration bounds.
+			files.nodes[filepath.Join(dir, "manifest.json")].data = []byte("not JSON")
+			files.nodes[filepath.Join(dir, chunkName(0))].data = make([]byte, 65537)
+			unsafe := kind == "nested_directory" || kind == "symlink" || kind == "unexpected_name"
+			if unsafe {
+				name, mode := chunkName(1), os.FileMode(0o600)
+				switch kind {
+				case "nested_directory":
+					mode |= os.ModeDir
+				case "symlink":
+					mode |= os.ModeSymlink
+				case "unexpected_name":
+					name = "unexpected"
+				}
+				files.nodes[filepath.Join(dir, name)] = &streamMemoryNode{name: name, mode: mode}
+			}
+			if err := store.BeginCancellation(owner); err != nil {
+				t.Fatal(err)
+			}
+			var cleanup, err error
+			if kind == "recovery" || unsafe {
+				cleanup, err = store.RecoverCancellations([]string{owner.InputPlugin})
+			} else {
+				cleanup, err = store.RemoveCancelled(owner)
+			}
+			if unsafe {
+				if err == nil {
+					t.Fatal("unsafe stream child accepted")
+				}
+				if _, err := files.Lstat(filepath.Join(store.records, string(owner.ID)+".json")); err != nil {
+					t.Fatal("validation failure removed the registration")
+				}
+				return
+			}
+			if cleanup != nil || err != nil {
+				t.Fatalf("opaque cancellation failed: %v %v", cleanup, err)
+			}
+			for _, path := range []string{filepath.Join(store.runtime, string(owner.ID)), filepath.Join(store.records, string(owner.ID)+".json"), store.cancellationPath(owner.ID)} {
+				if _, err := files.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("cancelled state remains at %s: %v", path, err)
+				}
+			}
+			if len(store.runtimeLocks) != 0 || len(store.runtimeLockRefs) != 0 {
+				t.Fatal("completed operations retain unbounded old owner locks")
+			}
+		})
+	}
+}
+
 func TestLegacySourceFailureRetainsOwnerDiagnosticWithoutPayload(t *testing.T) {
 	store, files, owner := memoryStreamStore(t)
 	legacy := runtimeTestState(t, `{"schema":"legacy","payload":{}}`)

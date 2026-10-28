@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nokamoto/agent-pulse-hub/internal/domain"
+	"go.uber.org/mock/gomock"
 )
 
 func TestRuntimeFilesystemQueuesBoundBackpressureAndYieldAcrossWatches(t *testing.T) {
@@ -83,7 +84,7 @@ func (s *memoryRuntimeStreamStore) BeginRuntimeStream(domain.Subscription, strin
 }
 
 func TestStreamSinkPublicationFenceExpiryAndFilesystemFailures(t *testing.T) {
-	for _, kind := range []string{"success", "removed_owner", "aborted", "append_failure", "begin_failure", "expired_end", "valid_end_slow_filesystem"} {
+	for _, kind := range []string{"success", "removed_owner", "cancelling_owner", "aborted", "append_failure", "begin_failure", "expired_end", "valid_end_slow_filesystem"} {
 		t.Run(kind, func(t *testing.T) {
 			h := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 			defer h.Shutdown()
@@ -117,7 +118,7 @@ func TestStreamSinkPublicationFenceExpiryAndFilesystemFailures(t *testing.T) {
 			if kind == "expired_end" {
 				cancel()
 			}
-			if kind == "valid_end_slow_filesystem" {
+			if kind == "valid_end_slow_filesystem" || kind == "cancelling_owner" {
 				tx.start = make(chan struct{})
 				tx.release = make(chan struct{})
 			}
@@ -129,9 +130,15 @@ func TestStreamSinkPublicationFenceExpiryAndFilesystemFailures(t *testing.T) {
 			} else if err != nil {
 				t.Fatal(err)
 			}
-			if kind == "valid_end_slow_filesystem" {
+			if kind == "valid_end_slow_filesystem" || kind == "cancelling_owner" {
 				<-tx.start
-				cancel()
+				if kind == "cancelling_owner" {
+					h.mu.Lock()
+					h.cancellations["s"] = &cancellationState{}
+					h.mu.Unlock()
+				} else {
+					cancel()
+				}
 				close(tx.release)
 			}
 			select {
@@ -151,5 +158,58 @@ func TestStreamSinkPublicationFenceExpiryAndFilesystemFailures(t *testing.T) {
 			h.Shutdown()
 			sink.Abort(errors.New("late frame after shutdown"))
 		})
+	}
+}
+
+func TestCancellationDrainsQueuedStreamCleanupBeforePersistentRemoval(t *testing.T) {
+	h, input, _, store := newCancellationUnit(t)
+	watch := &runtimeWatch{registration: h.registrations[cancellationTestA], inputPort: input, inputName: "source"}
+	h.runtimeWatches[cancellationTestA] = watch
+	tx := &memoryRuntimeTransaction{}
+	sink := h.newRuntimeStreamSink(watch, &memoryRuntimeStreamStore{tx: tx})
+	if err := sink.Begin(context.Background(), "schema"); err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	if err := h.runtimeFS.submit(context.Background(), cancellationTestA, func() { close(started); <-release }); err != nil {
+		t.Fatal(err)
+	}
+	cancellationAwait(t, started)
+	if err := sink.Append(context.Background(), 0, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	fenced := make(chan struct{})
+	input.MockCancellationPluginPort.EXPECT().FenceWatch(cancellationTestA).DoAndReturn(func(domain.SubscriptionID) error { close(fenced); return nil })
+	store.MockCancellationStore.EXPECT().BeginCancellation(gomock.Any()).DoAndReturn(func(domain.Subscription) error {
+		if !tx.aborted {
+			t.Error("intent committed before staging cleanup drained")
+		}
+		return nil
+	})
+	input.MockCancellationPluginPort.EXPECT().CancelWatch(gomock.Any(), cancellationTestA).Return(nil)
+	store.MockCancellationStore.EXPECT().RemoveCancelled(gomock.Any()).Return(nil, nil)
+	result := make(chan *Error, 1)
+	go func() { result <- h.Unsubscribe(string(cancellationTestA)) }()
+	cancellationAwait(t, fenced)
+	select {
+	case err := <-result:
+		t.Fatalf("cancellation did not drain the target worker: %v", err)
+	default:
+	}
+	close(release)
+	if err := cancellationAwait(t, result); err != nil {
+		t.Fatal(err)
+	}
+	if !tx.aborted || tx.published {
+		t.Fatal("cancelled checkpoint published or retained staging")
+	}
+	// A late frame cannot recreate an owner after the cancellation state itself
+	// has been removed following successful persistent deletion.
+	if err := sink.Append(context.Background(), 1, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	h.runtimeFS.close()
+	if tx.published {
+		t.Fatal("late callback revived the checkpoint")
 	}
 }
