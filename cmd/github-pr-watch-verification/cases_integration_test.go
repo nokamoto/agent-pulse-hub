@@ -139,42 +139,9 @@ func gpwObservationCase() {
 	}
 	host.send(t, map[string]any{"type": "delivery_notice", "subscription_id": "selected", "event_id": event["event_id"], "status": "accepted"})
 	accepted := gpwState(t, host.checkpoint(t, "selected", "accepted"))
-	beforeSequence := accepted["sequence"]
-	fixture.mu.Lock()
-	fixture.extra = 30
-	fixture.mu.Unlock()
-	if !waitMVP(t, time.Second, func() bool { return strings.Contains(readMVPFile(host.log), "coverage_capacity_exceeded") }) {
-		t.Fatalf("missing capacity diagnostic: %s", readMVPFile(host.log))
-	}
-	overflow := gpwState(t, host.checkpoint(t, "selected", "overflow"))
-	if overflow["sequence"] != beforeSequence {
-		t.Fatalf("capacity failure advanced sequence: %v", overflow)
-	}
-	fixture.mu.Lock()
-	fixture.extra = 0
-	fixture.mu.Unlock()
-	fixture.set(2, "complete")
-	// Nine observed edits of one retained item exceed a notification's eight
-	// transitions while keeping complete-observation metadata within capacity.
-	for edit := 1; edit <= 9; edit++ {
-		fixture.mu.Lock()
-		fixture.edit = edit
-		fixture.mu.Unlock()
-		fixture.waitRounds(t, fixture.count()+2)
-	}
-	beforeOverflow := gpwState(t, host.checkpoint(t, "selected", "before-context-overflow"))
-	host.send(t, map[string]any{"type": "resume_watch", "request_id": "context-overflow-resume", "subscription_id": "selected", "generation": "g2", "confirmation_position": context["confirmation_position"]})
-	if response := host.receive(t, "resume_result", "context-overflow-resume"); response["accepted"] != true {
-		t.Fatalf("could not prepare overflow verification: %v", response)
-	}
-	host.send(t, map[string]any{"type": "activate_watch", "subscription_id": "selected", "generation": "g2"})
-	if !waitMVP(t, time.Second, func() bool { return strings.Contains(readMVPFile(host.log), "notification_capacity_exceeded") }) {
-		t.Fatalf("missing notification capacity failure: %s", readMVPFile(host.log))
-	}
-	afterOverflow := gpwState(t, host.checkpoint(t, "selected", "context-overflow"))
-	if !reflect.DeepEqual(beforeOverflow["positions"], afterOverflow["positions"]) || beforeOverflow["attempted"] != afterOverflow["attempted"] {
-		t.Fatalf("context overflow issued/advanced position: before=%v after=%v", beforeOverflow, afterOverflow)
-	}
+	// Large observations and multi-context continuation are covered by GPW-I04
+	// and GPW-I05. Neither a 33rd item nor a ninth outstanding transition is an
+	// expected capacity failure under the revised requirements.
 	fixture.set(2, "graphql-error")
 	callsBefore := len(fixture.calls())
 	if !waitMVP(t, time.Second, func() bool { return len(fixture.calls()) > callsBefore }) {
@@ -185,8 +152,8 @@ func gpwObservationCase() {
 	fixture.waitRounds(t, fixture.count()+2)
 	host.noEvent(t)
 	recovered := gpwState(t, host.checkpoint(t, "selected", "recovered"))
-	if recovered["sequence"] != afterOverflow["sequence"] {
-		t.Fatalf("failed GraphQL/recovery invented changes: before=%v after=%v", afterOverflow, recovered)
+	if recovered["sequence"] != accepted["sequence"] {
+		t.Fatalf("failed GraphQL/recovery invented changes: before=%v after=%v", accepted, recovered)
 	}
 	for _, request := range fixture.calls() {
 		if request.Host != "api.github.com" || request.Path != "/graphql" || request.Token != "high" {
