@@ -377,7 +377,9 @@ All IDs below refer to `requirements/notification-delivery` unless qualified.
 Prefer units with mocked file/process/time ports for every JSON/UUID/binding
 combination, number canonicalization, pagination/revision change, failure at each
 guard/snapshot/compaction write-close-rename/delete, clock/expiry, cancellation
-interleaving and classification. They require no real processes. Retain four
+interleaving and classification. They require no real processes.
+Include unchanged-ledger gate changes rejecting an old inspection revision and
+identical projections producing identical revision and payload bytes. Retain four
 assembled cases for actual control, Session, filesystem, process and restart
 wiring. Combine overlapping observations rather than duplicate every matrix.
 Reuse legacy CQ-V02's real 20-second timeout; the new action case uses immediate
