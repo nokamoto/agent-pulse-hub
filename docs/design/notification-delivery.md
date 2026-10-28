@@ -290,7 +290,9 @@ For a usable input Session send one terminal outcome per notification, not per
 attempt. Intermediate retryable unsubmitted results keep the event and rewait
 outstanding flag pending. Accepted sends accepted; unknown sends unknown;
 permanent/exhausted/rejected/expired unaccepted work sends failed; pre-admission
-rejection sends discarded. The finite policy plus attempt deadlines bounds waiting.
+rejection sends discarded. While issuance remains available, the finite policy
+and attempt deadlines bound retry waiting. Storage and plugin gates follow the
+stop/repair/restart procedure above; they add no terminal-notice deadline.
 
 Normal stop closes admission/issuance. At the existing runtime cutoff, save known
 outcomes, mark issued-unconfirmed reservations unknown, and retain queued/waiting
@@ -418,6 +420,13 @@ process bounded to ten seconds; its exact path is
 It proves public frame transport and cleanup, not product policy. Existing Codex
 feasibility proves process argv, capture and cancellation machinery. Record executed
 times separately from forecasts and product acceptance in the PR.
+
+Before starting notification implementation, verify that the separate
+[cancellation implementation](subscription-cancellation.md) has human approval
+and is merged. Its base feature is outside notification implementation scope;
+notification work adds only the evidence/scheduler integration specified here.
+This ordering makes the conditional cancellation variant of AC-006 available
+for ND-V03 without weakening the four-case completion gate.
 
 Run Mage `test` and `integrationAll` separately; compile and register ND cases
 with integration enabled and execute the minimal probe. Implementation completion:

@@ -239,11 +239,11 @@ and control-deadline limits. Keep plugin requests bounded by the existing
 1,024 registrations and at most one cancellation request per target. Slow
 storage can exceed the client deadline and yields an uncertain client result.
 
-The [capacity requirements](../requirements/trigger-runtime-state.md)
-may change the checkpoint envelope or reservation. Cancellation does not select
-those changes: it drains the current per-target save and deletes the entire
-owned runtime directory regardless of payload size. Reconcile any approved
-replacement checkpoint contract before dependent implementation.
+The [streamed-state contract](runtime-state-stream.md) owns checkpoint capacity,
+transfer and storage. Cancellation drains the current per-target save and deletes
+the entire owned runtime directory, including stream generations and staging,
+regardless of payload size. It does not change the stream's bounds or add capacity
+implementation to cancellation scope.
 
 The separate [notification-delivery design](notification-delivery.md)
 owns automatic retry, status and evidence retention. Cancellation closes
@@ -323,7 +323,6 @@ This check runs during delivery, separately from service-free implementation CI.
 ## Open questions and risks
 
 The cancellation decisions above define the selective-removal contract.
-No capacity design is assumed approved. Its eventual shared-contract
-integration must be reviewed before combined implementation; each design owner
-owns reconciliation of its changed contract. Slow storage and legacy input
+The streamed-state contract above preserves the same per-target drain and removal
+boundary; no capacity-policy decision is deferred here. Slow storage and legacy input
 compatibility remain explicit operating limits, not weaker success conditions.
