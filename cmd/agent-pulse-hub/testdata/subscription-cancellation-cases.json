@@ -1,0 +1,12 @@
+{
+  "suites": [
+    {
+      "package": "./cmd/agent-pulse-hub",
+      "cases": [
+        "SC-V01-SELECTIVE",
+        "SC-V02-RESTART",
+        "SC-V03-FAILURE"
+      ]
+    }
+  ]
+}
