@@ -163,7 +163,7 @@ func TestRestoreSuppressesAcceptedNotificationRetainsAssessment(t *testing.T) {
 	}
 }
 
-func TestCapacityRejectsCandidateWithoutProgress(t *testing.T) {
+func TestResourceBudgetRejectsCandidateWithoutProgress(t *testing.T) {
 	tr := tracker(t)
 	observe(t, tr, testObservation())
 	before, _ := tr.Checkpoint()
@@ -171,22 +171,21 @@ func TestCapacityRejectsCandidateWithoutProgress(t *testing.T) {
 	for i := 0; i < 33; i++ {
 		items = append(items, comment(fmt.Sprint(i), "body"))
 	}
-	if err := tr.Reconcile(testObservation(items...)); err == nil || err.Error() != "coverage_capacity_exceeded" {
+	tr.ObservationBudget = 1024
+	if err := tr.Reconcile(testObservation(items...)); err == nil || !strings.HasPrefix(err.Error(), "observation_resource_exhausted") {
 		t.Fatalf("error=%v", err)
 	}
 	after, _ := tr.Checkpoint()
 	if string(before.Marshal()) != string(after.Marshal()) {
 		t.Fatal("rejected observation mutated saved state")
 	}
+	tr.ObservationBudget = DefaultByteBudget
 	for i := 0; i < 9; i++ {
 		observe(t, tr, testObservation(comment("C1", fmt.Sprint(i))))
 	}
-	issued := len(tr.Saved.Positions)
-	if text, _, err := tr.Context(); err == nil || text != "" || err.Error() != "notification_capacity_exceeded" {
-		t.Fatalf("context=%q err=%v", text, err)
-	}
-	if len(tr.Saved.Positions) != issued {
-		t.Fatal("failed context issued position")
+	text, sequence, err := tr.Context()
+	if err != nil || text == "" || sequence < 2 || sequence > 9 || !strings.Contains(text, `"has_more":true`) {
+		t.Fatalf("context=%s sequence=%d err=%v", text, sequence, err)
 	}
 }
 

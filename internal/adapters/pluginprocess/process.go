@@ -31,21 +31,24 @@ const (
 )
 
 type Config struct {
-	Name       string
-	Role       domain.PluginRole
-	Executable string
-	Args       []string
+	Name                 string
+	Role                 domain.PluginRole
+	Executable           string
+	Args                 []string
+	RuntimeStateMaxBytes uint64
 }
 
 type pendingRequest struct {
-	kind     string
-	deadline time.Time
-	activate func() error
-	watchID  string
-	watch    *watchState
-	result   chan requestResult
-	sent     bool
-	claimed  bool
+	stream     *checkpointTransfer
+	restoreEnd bool
+	kind       string
+	deadline   time.Time
+	activate   func() error
+	watchID    string
+	watch      *watchState
+	result     chan requestResult
+	sent       bool
+	claimed    bool
 }
 
 type watchState struct {
@@ -95,6 +98,8 @@ type Process struct {
 	failure             error
 	deadline            time.Time
 	pending             map[string]*pendingRequest
+	streamFinished      map[string]*checkpointTransfer
+	streamFinishedWatch map[string]string
 
 	writeGate   chan struct{}
 	readyCh     chan struct{}
@@ -112,15 +117,17 @@ func New(config Config, logger *slog.Logger) *Process {
 	}
 	config.Args = append([]string(nil), config.Args...)
 	return &Process{
-		config:       config,
-		logger:       logger,
-		pending:      make(map[string]*pendingRequest),
-		capabilities: make(map[string]bool),
-		watches:      make(map[string]*watchState),
-		writeGate:    make(chan struct{}, 1),
-		readyCh:      make(chan struct{}),
-		doneCh:       make(chan struct{}),
-		setupDone:    make(chan struct{}),
+		config:              config,
+		logger:              logger,
+		pending:             make(map[string]*pendingRequest),
+		streamFinished:      make(map[string]*checkpointTransfer),
+		streamFinishedWatch: make(map[string]string),
+		capabilities:        make(map[string]bool),
+		watches:             make(map[string]*watchState),
+		writeGate:           make(chan struct{}, 1),
+		readyCh:             make(chan struct{}),
+		doneCh:              make(chan struct{}),
+		setupDone:           make(chan struct{}),
 	}
 }
 
@@ -242,6 +249,12 @@ func (p *Process) ValidateDestination(ctx context.Context, request hub.Destinati
 }
 
 func (p *Process) Watch(ctx context.Context, request hub.WatchRequest, activate func() error) error {
+	p.mu.Lock()
+	stream := p.capabilities[pluginprotocol.RuntimeStateStreamCapability]
+	p.mu.Unlock()
+	if stream {
+		return p.WatchStream(ctx, request, request.Source, activate)
+	}
 	if p.config.Role != domain.InputRole {
 		return &hub.WatchError{Code: "invalid_role", Message: "Watch requires an input plugin."}
 	}
@@ -494,6 +507,10 @@ func (p *Process) requestWithSent(parent context.Context, frame pluginprotocol.F
 }
 
 func (p *Process) requestInternal(parent context.Context, frame pluginprotocol.Frame, resultType string, timeout time.Duration, activate func() error, watchID string, watch *watchState, onSent func()) (pluginprotocol.Frame, error) {
+	return p.requestExtended(parent, frame, resultType, timeout, activate, watchID, watch, onSent, nil, nil)
+}
+
+func (p *Process) requestExtended(parent context.Context, frame pluginprotocol.Frame, resultType string, timeout time.Duration, activate func() error, watchID string, watch *watchState, onSent func(), transfer *checkpointTransfer, afterSend func(context.Context, *pendingRequest) error) (pluginprotocol.Frame, error) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
@@ -501,7 +518,10 @@ func (p *Process) requestInternal(parent context.Context, frame pluginprotocol.F
 	if err != nil {
 		return pluginprotocol.Frame{}, &requestError{message: "request exceeds the protocol limit", cause: err}
 	}
-	pending := &pendingRequest{kind: resultType, deadline: deadline, activate: activate, watchID: watchID, watch: watch, result: make(chan requestResult, 1)}
+	pending := &pendingRequest{kind: resultType, deadline: deadline, activate: activate, watchID: watchID, watch: watch, result: make(chan requestResult, 1), stream: transfer, restoreEnd: afterSend == nil}
+	if transfer != nil {
+		transfer.ctx = ctx
+	}
 	p.mu.Lock()
 	if !p.ready || p.failed || p.stopping || p.stream == nil {
 		cause := p.failure
@@ -559,6 +579,13 @@ func (p *Process) requestInternal(parent context.Context, frame pluginprotocol.F
 		onSent()
 	}
 	p.releaseWrite()
+	if afterSend != nil {
+		if err := afterSend(ctx, pending); err != nil {
+			p.removePending(frame.RequestID, pending)
+			p.fail(err)
+			return pluginprotocol.Frame{}, &requestError{message: "stream restoration could not complete", cause: err, sent: true, unavailable: true}
+		}
+	}
 
 	select {
 	case result := <-pending.result:
@@ -773,6 +800,7 @@ func (p *Process) receive(stream pluginprotocol.SessionClient) {
 		}
 		frame, err := pluginprotocol.ParsePayload(payload, pluginprotocol.PluginToDaemon)
 		if err != nil {
+			p.rejectMalformedStream(payload)
 			if status.Code(err) == codes.ResourceExhausted {
 				p.fail(fmt.Errorf("plugin payload exceeds limit: %w", err))
 				return
@@ -785,6 +813,10 @@ func (p *Process) receive(stream pluginprotocol.SessionClient) {
 }
 
 func (p *Process) handleFrame(frame pluginprotocol.Frame) {
+	if frame.Type == "checkpoint_stream_begin" || frame.Type == "checkpoint_stream_chunk" || frame.Type == "checkpoint_stream_end" {
+		p.handleCheckpointStream(frame)
+		return
+	}
 	p.callbackMu.Lock()
 	p.mu.Lock()
 	if p.failed || p.stopping {
@@ -966,6 +998,22 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 		p.mu.Unlock()
 		p.callbackMu.Unlock()
 		p.logger.Warn("plugin_result_rejected", "plugin", p.config.Name, "request_id", safeText(frame.RequestID, 256), "type", frame.Type, "reason", "unknown, early, duplicate, or mismatched request")
+		return
+	}
+	if pending.stream != nil {
+		p.mu.Unlock()
+		p.callbackMu.Unlock()
+		if frame.Type != "checkpoint_result" || frame.Accepted == nil || *frame.Accepted {
+			p.expireCheckpoint(frame.RequestID, pending, errors.New("stream checkpoint returned a positive legacy result"))
+			return
+		}
+		p.expireCheckpoint(frame.RequestID, pending, errors.New(safeText(frame.Error, 256)))
+		return
+	}
+	if frame.Type == "watch_result" && frame.Accepted != nil && *frame.Accepted && !pending.restoreEnd {
+		p.mu.Unlock()
+		p.callbackMu.Unlock()
+		p.fail(errors.New("stream watch accepted before complete state handoff"))
 		return
 	}
 	pending.claimed = true

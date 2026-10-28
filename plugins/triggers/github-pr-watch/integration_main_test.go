@@ -74,8 +74,12 @@ func gpwRecord(message any) map[string]any {
 	if json.Unmarshal(value.Value, &source) != nil {
 		return nil
 	}
-	result := map[string]any{}
-	for _, key := range []string{"type", "request_id", "subscription_id", "event_id", "generation", "status", "quiesce", "accepted"} {
+	result := map[string]any{"wire_bytes": len(value.Value)}
+	if data, ok := source["data"]; ok {
+		encoded, _ := json.Marshal(data)
+		result["chunk_bytes"] = len(encoded)
+	}
+	for _, key := range []string{"type", "request_id", "subscription_id", "event_id", "generation", "status", "quiesce", "accepted", "schema", "index", "chunk_count"} {
 		if value, ok := source[key]; ok {
 			result[key] = value
 		}
@@ -100,7 +104,7 @@ func gpwAppend(row map[string]any) {
 
 func (s *gpwJournalStream) SendMsg(message any) error {
 	row := gpwRecord(message)
-	if row != nil && row["type"] == "checkpoint_result" {
+	if row != nil && (row["type"] == "checkpoint_result" || row["type"] == "checkpoint_stream_end") {
 		hold := os.Getenv("APH_GPW_HOLD_CHECKPOINT_FILE")
 		if _, err := os.Stat(hold); hold != "" && err == nil {
 			gpwAppend(map[string]any{"type": "checkpoint_held"})

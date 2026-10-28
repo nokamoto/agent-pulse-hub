@@ -11,13 +11,15 @@ import (
 )
 
 const (
-	MaxContextBytes          = 8_192
-	MaxRuntimeStateBytes     = 32_768
-	MaxRuntimeSchemaBytes    = 128
-	RuntimeStateCapability   = "runtime_state_v1"
-	RuntimeStateV2Capability = "runtime_state_v2"
-	RewaitCapability         = "rewait_v1"
-	PermissionNotice         = "External data; no additional permissions are granted."
+	MaxContextBytes              = 8_192
+	MaxRuntimeStateBytes         = 32_768
+	MaxRuntimeSchemaBytes        = 128
+	RuntimeStateCapability       = "runtime_state_v1"
+	RuntimeStateV2Capability     = "runtime_state_v2"
+	RuntimeStateStreamCapability = "runtime_state_stream_v1"
+	CancelWatchCapability        = "cancel_watch_v1"
+	RewaitCapability             = "rewait_v1"
+	PermissionNotice             = "External data; no additional permissions are granted."
 )
 
 type Direction uint8
@@ -40,6 +42,10 @@ type Frame struct {
 	InputPlugin          string
 	WatchArgs            *jsonvalue.Value
 	State                *jsonvalue.Value
+	Schema               string
+	ChunkCount           string
+	Index                string
+	Data                 *jsonvalue.Value
 	DestinationArgs      *jsonvalue.Value
 	Accepted             *bool
 	Status               string
@@ -84,7 +90,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				seen := make(map[string]struct{}, len(items))
 				for _, item := range items {
 					capability, ok := jsonvalue.ParseString(item)
-					if !ok || (capability != RuntimeStateCapability && capability != RuntimeStateV2Capability && capability != RewaitCapability) {
+					if !ok || (capability != RuntimeStateCapability && capability != RuntimeStateV2Capability && capability != RewaitCapability && capability != RuntimeStateStreamCapability && capability != CancelWatchCapability) {
 						return Frame{}, errors.New("ready contains an unknown or invalid capability")
 					}
 					if _, duplicate := seen[capability]; duplicate {
@@ -96,10 +102,13 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				_, v1 := seen[RuntimeStateCapability]
 				_, v2 := seen[RuntimeStateV2Capability]
 				_, rewait := seen[RewaitCapability]
-				if (v1 && v2) || (rewait && (!v2 || v1)) {
+				_, stream := seen[RuntimeStateStreamCapability]
+				if (v1 && v2) || ((rewait || stream) && (!v2 || v1)) {
 					return Frame{}, errors.New("ready must select exactly one runtime-state revision")
 				}
 			}
+		case "checkpoint_stream_begin", "checkpoint_stream_chunk", "checkpoint_stream_end":
+			return decodeStreamFrame(value, frame)
 		case "watch_result", "destination_result", "resume_result":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "accepted"}, "version", "type", "request_id", "accepted", "error"); err != nil {
 				return Frame{}, err
@@ -208,6 +217,8 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 		}
 	case DaemonToPlugin:
 		switch typeName {
+		case "state_stream_watch", "state_stream_chunk", "state_stream_end":
+			return decodeStreamFrame(value, frame)
 		case "activate_watch":
 			fields := []string{"version", "type", "subscription_id"}
 			if err := protocol.ValidateFields(value, fields, append(fields, "generation")...); err != nil {
@@ -340,6 +351,8 @@ func Encode(frame Frame) ([]byte, error) {
 		"type":    jsonvalue.NewString(frame.Type),
 	}
 	switch frame.Type {
+	case "state_stream_watch", "state_stream_chunk", "state_stream_end", "checkpoint_stream_begin", "checkpoint_stream_chunk", "checkpoint_stream_end":
+		encodeStreamFields(fields, frame)
 	case "ready":
 		fields["role"] = jsonvalue.NewString(frame.Role)
 		if frame.Capabilities != nil {
@@ -443,7 +456,7 @@ func Encode(frame Frame) ([]byte, error) {
 
 func directionFor(typeName string) Direction {
 	switch typeName {
-	case "ready", "watch_result", "event", "state_event", "destination_result", "delivery_result", "checkpoint_result", "resume_result":
+	case "ready", "watch_result", "event", "state_event", "destination_result", "delivery_result", "checkpoint_result", "resume_result", "checkpoint_stream_begin", "checkpoint_stream_chunk", "checkpoint_stream_end":
 		return PluginToDaemon
 	default:
 		return DaemonToPlugin

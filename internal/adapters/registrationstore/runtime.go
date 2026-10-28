@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -18,8 +19,9 @@ import (
 const MaxRuntimeRecordBytes = 49_152
 
 type runtimeGeneration struct {
-	number uint64
-	name   string
+	number   uint64
+	name     string
+	streamed bool
 }
 
 // LoadRuntime validates every runtime directory and restores only generations
@@ -101,6 +103,9 @@ func (s *Store) CommitRuntime(registration domain.Subscription, state *jsonvalue
 	if err := pluginprotocol.ValidateStateEnvelope(state); err != nil {
 		return 0, err
 	}
+	ownerLock := s.ownerLock(registration.ID)
+	ownerLock.Lock()
+	defer ownerLock.Unlock()
 	data := encodeRuntimeRecord(registration, state, 1)
 	if len(data) > MaxRuntimeRecordBytes {
 		return 0, fmt.Errorf("runtime state record exceeds %d bytes", MaxRuntimeRecordBytes)
@@ -187,7 +192,12 @@ func (s *Store) runtimeGenerations(directory string) ([]runtimeGeneration, error
 	generations := make([]runtimeGeneration, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
-		number, valid := parseGenerationName(name)
+		streamed := strings.HasSuffix(name, ".stream")
+		parseName := name
+		if streamed {
+			parseName = strings.TrimSuffix(name, ".stream") + ".json"
+		}
+		number, valid := parseGenerationName(parseName)
 		if !valid {
 			return nil, fmt.Errorf("runtime state generation filename %s is invalid", filepath.Join(directory, name))
 		}
@@ -196,13 +206,19 @@ func (s *Store) runtimeGenerations(directory string) ([]runtimeGeneration, error
 		if err != nil {
 			return nil, fmt.Errorf("inspect runtime state generation %s: %w", path, err)
 		}
-		if !isRegularFile(info) {
+		if (!streamed && !isRegularFile(info)) || (streamed && !isDirectory(info)) {
 			return nil, fmt.Errorf("runtime state generation %s must be a regular file", path)
 		}
-		if info.Size() > MaxRuntimeRecordBytes {
+		if !streamed && info.Size() > MaxRuntimeRecordBytes {
 			return nil, fmt.Errorf("runtime state file %s exceeds %d bytes", path, MaxRuntimeRecordBytes)
 		}
-		generations = append(generations, runtimeGeneration{number: number, name: name})
+		generations = append(generations, runtimeGeneration{number: number, name: name, streamed: streamed})
+	}
+	sort.Slice(generations, func(i, j int) bool { return generations[i].number < generations[j].number })
+	for i := 1; i < len(generations); i++ {
+		if generations[i].number == generations[i-1].number {
+			return nil, errors.New("runtime generation occurs in both formats")
+		}
 	}
 	return generations, nil
 }

@@ -57,15 +57,16 @@ func (osFileSystem) OpenFile(path string, flags int, mode os.FileMode) (writeFil
 // Store owns the exclusive state-directory marker until Close. The caller
 // keeps it open until configured plugins have stopped.
 type Store struct {
-	mu        sync.Mutex
-	files     fileSystem
-	root      string
-	lockPath  string
-	records   string
-	staging   string
-	runtime   string
-	lockOwned bool
-	closed    bool
+	mu           sync.Mutex
+	files        fileSystem
+	root         string
+	lockPath     string
+	records      string
+	staging      string
+	runtime      string
+	lockOwned    bool
+	closed       bool
+	runtimeLocks map[string]*sync.Mutex
 }
 
 func Open(root string) (*Store, error) { return open(root, osFileSystem{}) }
@@ -323,6 +324,16 @@ func (s *Store) cleanStaging() error {
 	}
 	for _, entry := range entries {
 		path := filepath.Join(s.staging, entry.Name())
+		if strings.HasPrefix(entry.Name(), "runtime-stream-") {
+			nonce := strings.TrimPrefix(entry.Name(), "runtime-stream-")
+			if !validID(nonce) {
+				return fmt.Errorf("unsafe runtime staging directory %s", path)
+			}
+			if err := s.removeStreamDirectory(path, true); err != nil {
+				return err
+			}
+			continue
+		}
 		info, err := s.files.Lstat(path)
 		if err != nil {
 			return fmt.Errorf("inspect staging entry %s: %w", path, err)
