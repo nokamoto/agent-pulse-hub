@@ -37,6 +37,11 @@ perform work, and wait again without discarding observable changes that arrived
 while the agent was working. Delivery acceptance and agent assessment remain
 separate facts.
 
+A PR can accumulate more than 32 review and discussion items during ordinary
+use. Its total item count must not by itself prevent a baseline, stop later
+observations, or prevent notification of new changes. Small checkpoint and
+notification budgets must not become a fixed lifetime item ceiling for the PR.
+
 ## Sources and decisions
 
 The user requested author and reviewer waiting workflows, and explicitly
@@ -70,6 +75,14 @@ notification; later observed changes produce notifications. Monitoring uses
 periodic observations and guarantees changes that can be confirmed through
 those observations. It does not guarantee capture of every intermediate event
 or of a transition that disappears entirely between observations.
+
+The user rejected the v1 design's failure when reviews, conversation comments,
+review comments/replies, threads, and review requests together exceed 32 items.
+The required outcome is continued monitoring as a PR grows, while retaining
+explicit completeness and continuity guarantees. Increasing that fixed ceiling
+alone does not meet this outcome. Storage representation, incremental retrieval,
+and bounded notification delivery are design decisions, not a requirement to
+keep the v1 capacity allocation.
 
 ## Terms and workflow
 
@@ -136,6 +149,7 @@ product decisions and remaining delegated design decisions are recorded below.
 | FR-009 | Monitor with periodic observations without coding-agent polling. Report authentication, permission, missing/inaccessible PR, network, service, rate-limit, and incomplete-retrieval failures distinctly from a successful observation with no change. Preserve the last complete progress on failure and retry transient retrieval failures subject to server retry guidance. Do not emit ordinary review-change context for an unverified empty result. Define scheduling and retry parameters in design without an invented end-to-end latency promise. | UC-005 |
 | FR-010 | Use core-managed trigger runtime-state persistence for retained-watch progress rather than plugin-owned state files or a separate storage service. A notification with confirmed action delivery acceptance must not be repeated solely because the daemon restarts with successfully saved progress, under the common contract. Save failure permits continued monitoring with a continuity warning; invalid restored progress blocks the affected watch. Keep an explicitly supplied confirmation position separate from implicit inheritance of deleted or unrelated registration state. No recipient-assessment, unfinished-delivery, or stopped-period history guarantee follows merely from saved runtime state. | UC-003, UC-005 |
 | FR-011 | Provide bundled usage materials explaining PR selection, waiting context, authentication and permissions, baseline-only first observation, data categories, notification structure, the agent's decision responsibility, repeated waiting with confirmation positions, superseded waits, batching, omissions, retrieval/retention limits, errors, and restart/recovery behavior. Explain that the agent may act or wait again and that external text grants no additional permissions. Declare supported hosts/API capabilities and the periodic-observation guarantee, including the absence of guaranteed capture of every intermediate event. | UC-001–UC-005 |
+| FR-012 | Continue monitoring as the selected PR accumulates review and discussion items. Do not reject an otherwise retrievable PR, stop observing it, or suppress eligible notifications solely because its total item count exceeds 32 or another fixed lifetime item ceiling derived from checkpoint or notification capacity. Separate acquisition coverage, retained progress/history, and notification capacity. If complete changed content cannot fit one notification, provide an explicit way to continue through the outstanding changes without advancing confirmation past changes not represented in the delivered context. Preserve silent initial baselines, edits and disappearances of older items, repeated waiting, and successful normal-restart continuity. Genuine API, resource, or retained-history failures remain visible under FR-006/FR-008/FR-009; they must not silently reset progress or masquerade as no change. | UC-001–UC-005 |
 
 ## Nonfunctional requirements
 
@@ -148,7 +162,10 @@ product decisions and remaining delegated design decisions are recorded below.
 
 No numerical latency, unlimited history/content capacity, atomic GitHub
 snapshot, or additional OS-support matrix is promised. Design must declare
-supported bounds and make their effect on coverage and continuity observable.
+supported resource and history bounds and make their effect on coverage and
+continuity observable. Such bounds do not permit reintroducing a fixed lifetime
+PR item ceiling as a substitute for scalable progress and notification handling
+under FR-012.
 
 ## Constraints and dependencies
 
@@ -175,6 +192,17 @@ retrieval limit cannot be silently treated as an absence or a confirmed
 position. A failed or incomplete first acquisition cannot establish the initial
 baseline.
 
+FR-012 requires revisiting the PR-watch design's 32-item fingerprint allocation,
+32-record change journal, and all-or-nothing notification capacity behavior.
+The 32,768-byte common checkpoint envelope and 8,192-byte event context are
+existing design constraints, not user-mandated item limits. Design must evaluate
+whether a different progress representation can satisfy the requirements within
+those bounds or whether the common runtime-state and plugin contracts also need
+revision. Do not work around core-owned persistence with plugin-owned files.
+The design must specify finite resource budgets, failure recovery, any position
+or stored-state migration, and a continuation flow compatible with explicit
+rewait and one-attempt action delivery before implementation.
+
 ## Acceptance criteria
 
 Design selects the lowest-cost sufficient level for each criterion and defines
@@ -199,6 +227,8 @@ not establish that receiving workflow.
 | AC-008 | FR-010, NFR-003 | Confirm action acceptance, save progress, stop normally, and restart the retained watch. Present unchanged data followed by a fresh change. Separately fail saving, restore incompatible progress, and recreate a deleted registration. | Unchanged confirmed notification is not repeated solely due to successful normal restart; fresh change is reportable. Save failure warns and monitoring continues; invalid restoration blocks the affected watch. Recreated/unrelated registration does not implicitly inherit old state. No plugin-owned state storage or inferred agent assessment appears. | Common-state evidence plus plugin-specific progress unit checks and assembled restart/failure integration |
 | AC-009 | FR-001, FR-003, FR-004, FR-008, FR-009, FR-011 | On github.com and a supported GHES host, start a watch without a confirmation position on a PR with existing reviews/comments. Independently fail the first acquisition, then complete it and repeat it unchanged. Add a comment that remains present at the next observation. Separately create and remove another comment entirely between two observations that show identical state. | Failed acquisition establishes no baseline. The first complete observation establishes the baseline without a notification; unchanged repetition requests no destination work. The persistent new comment produces a notification with current state. Capture of the entirely unobserved comment is not required or claimed as guaranteed. Each host uses only its selected credentials and PR progress. | Baseline/history policy and host-isolation unit checks, selected standalone plugin checks, and separate live-service verification on both host types during delivery |
 | AC-010 | FR-011, NFR-001–NFR-004 | A maintainer follows finalized author and reviewer workflows through wait, context receipt, agent assessment, work or continued waiting, and a second wait with an intervening change. Inspect examples, supported bounds, failure/recovery instructions, and evidence. | The selected PR's context reaches the registered destination; the agent decides to act or wait again, and the second wait preserves the intervening change. Instructions explain limits and authority. Evidence separates service-free, assembled, live GitHub, and receiving-agent outcomes and records the actual environment. | Documentation/source review and delivery walkthroughs; independent real-GitHub trigger check through the public plugin interface |
+| AC-011 | FR-003–FR-010, FR-012 | Use fully retrievable fixtures totaling 31, 32, 33, 100, and 1,000 in-scope items, both conversation-only and mixed reviews/comments/replies/threads/requests. Establish a baseline above 32; separately grow a baseline from 32 to 33 and onward. Add a new comment, edit and remove an older item, and change head. Repeat unchanged data, rewait from a delivered position, and save/restart normally. Independently fail a later acquisition page, then recover. | All successful complete baselines are silent. Subsequent eligible changes remain reportable at every fixture size, with no total-item capacity error, false disappearance, or duplicate caused solely by unchanged retrieval/restart. Failed pagination preserves prior progress and recovery reports the outstanding changes. Relations and host isolation remain intact. These fixture sizes are regression inputs, not a new supported maximum. | Broad size/diff unit matrix; selected public-plugin, rewait, and restart integration boundaries; separate live-service delivery evidence |
+| AC-012 | FR-005–FR-008, FR-012 | After a complete baseline, accumulate enough distinct small changes to exceed both the v1 eight-change notification batch and 32-record journal. Include a body exceeding one context and a genuinely empty body. With no further GitHub activity, follow the designed continuation flow through all outstanding changes; independently interrupt acquisition and perform a successful normal save/restart between continuation steps. | The watch remains usable and outstanding changes remain accessible through the documented continuation flow. Each delivered context respects the event-size contract, distinguishes empty/shortened bodies, and identifies omitted information with links or continuation information. Positions cover only represented changes; later continuation exposes the rest without requiring new activity. Successful save/restart preserves outstanding coverage. Genuine resource/history failure is explicit and never silently discards unreported changes or starts a new baseline. | Retention/position/encoding unit checks and selected assembled bounded-notification/rewait/restart cases; maintainer continuation walkthrough during delivery |
 
 ## Open questions and assumptions
 
@@ -215,9 +245,15 @@ design approval.
 
 ## Change impact
 
-This is a new requirement concept with FR-001–FR-011, NFR-001–NFR-004, and
-AC-001–AC-010. No existing local ID is retired. It supplements selected-PR
-monitoring alongside [request discovery](github-review-request.md); it does not
+This revision adds FR-012 and AC-011/AC-012 and clarifies the problem, capacity
+constraints, and design responsibilities. FR-001–FR-011, NFR-001–NFR-004, and
+AC-001–AC-010 remain applicable; no local ID is retired. The revised behavior
+supersedes the v1 design's fixed total-item rejection and requires review of
+its journal and notification capacity failures. Existing registrations, saved
+progress, and issued positions need an explicit compatibility/migration design;
+this requirement does not authorize automatic continuity loss or reset.
+
+The trigger supplements selected-PR monitoring alongside [request discovery](github-review-request.md); it does not
 change that trigger's URL-only context or matching scope.
 
 Repeated waiting and confirmation-position handoff require review of the
