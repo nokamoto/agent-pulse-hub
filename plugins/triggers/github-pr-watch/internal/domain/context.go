@@ -22,6 +22,9 @@ func (t *Tracker) Context() (string, uint64, error) {
 		return "", 0, nil
 	}
 	current := t.currentSummary()
+	if t.SignalProfile {
+		t.signalSummary(current)
+	}
 	encode := func(changes []Change) ([]byte, error) {
 		through := changes[len(changes)-1].Sequence
 		continuation := map[string]any{"has_more": len(changes) < count, "remaining_changes": count - len(changes), "through_sequence": through, "observed_through_sequence": t.Saved.Sequence}
@@ -31,6 +34,10 @@ func (t *Tracker) Context() (string, uint64, error) {
 		views := make([]map[string]any, 0, len(changes))
 		omissions := []any{}
 		for _, c := range changes {
+			if c.Signal != nil {
+				views = append(views, t.signalChangeView(c))
+				continue
+			}
 			view := changeView(c)
 			if previous, ok := t.previous[c.Sequence]; ok {
 				view["previous"] = previous
@@ -104,6 +111,13 @@ func (t *Tracker) Context() (string, uint64, error) {
 		selected = selected[:len(selected)-1]
 	}
 	sequence := selected[len(selected)-1].Sequence
+	if t.SignalProfile {
+		t.fillSignalDetails(current, func() ([]byte, error) { return encode(selected) })
+		raw, err = encode(selected)
+		if err != nil {
+			return "", 0, err
+		}
+	}
 	position := t.position(sequence)
 	positions := append([]Position{}, t.Saved.Positions...)
 	found := false

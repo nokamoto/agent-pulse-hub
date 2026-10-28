@@ -28,6 +28,7 @@ const (
 )
 
 type Client struct {
+	signals    bool
 	http       *http.Client
 	now        func() time.Time
 	byteBudget uint64
@@ -53,6 +54,7 @@ func NewWithHTTPClient(client *http.Client) *Client {
 }
 
 func (c *Client) WithByteBudget(budget uint64) *Client { c.byteBudget = budget; return c }
+func (c *Client) WithSignals(enabled bool) *Client     { c.signals = enabled; return c }
 func (c *Client) budget() uint64 {
 	if c.byteBudget == 0 {
 		return domain.DefaultByteBudget
@@ -61,6 +63,10 @@ func (c *Client) budget() uint64 {
 }
 
 func (c *Client) Validate(ctx context.Context, config domain.WatchConfig, token string) error {
+	if c.signals {
+		_, err := c.Observe(ctx, config, token)
+		return err
+	}
 	query := `query ValidatePullRequest($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name,followRenames:false){pullRequest(number:$number){` + aggregateFields + ` reviews(first:1){nodes{` + reviewFields + `} ` + pageInfo + `} comments(first:1){nodes{` + discussionFields + `} ` + pageInfo + `} reviewRequests(first:1){nodes{` + requestFields + `} ` + pageInfo + `} reviewThreads(first:1){nodes{` + threadFields + ` comments(first:1){nodes{` + commentFields + `} ` + pageInfo + `}} ` + pageInfo + `}}}}`
 	total := uint64(0)
 	data, err := c.request(ctx, config, token, query, variables(config), &total)
@@ -117,6 +123,12 @@ func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token s
 	result.PR, err = parseAggregate(pr)
 	if err != nil {
 		return result, err
+	}
+	if c.signals {
+		result.PR, result.Signals, err = c.beginSignals(roundCtx, config, token, &total)
+		if err != nil {
+			return result, err
+		}
 	}
 	for _, category := range []struct{ name, queryName, fields, kind string }{{"reviews", "PullRequestReviews", reviewFields, "review"}, {"comments", "PullRequestComments", discussionFields, "conversation"}, {"reviewRequests", "PullRequestRequests", requestFields, "request"}, {"reviewThreads", "PullRequestThreads", threadFields, "thread"}} {
 		cursor := ""
@@ -183,6 +195,12 @@ func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token s
 			}
 			seenCursors[end] = true
 			cursor = end
+		}
+	}
+	if c.signals {
+		result.PR, err = c.finishSignals(roundCtx, config, token, result.Signals, &total)
+		if err != nil {
+			return result, err
 		}
 	}
 	result.EndedAt = c.now()
@@ -316,6 +334,8 @@ func (c *Client) request(ctx context.Context, config domain.WatchConfig, token, 
 			code = "authentication_rejected"
 		case response.StatusCode == 404:
 			code = "not_found_or_inaccessible"
+		case response.StatusCode == 410:
+			code = "unsupported_api"
 		case response.StatusCode >= 500:
 			code = "service"
 		case response.StatusCode >= 300 && response.StatusCode < 400:

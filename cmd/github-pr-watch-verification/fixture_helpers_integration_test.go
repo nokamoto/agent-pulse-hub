@@ -422,7 +422,7 @@ func startGPWHost(t mvpReporter, directory, host string, f *gpwFixture, override
 	for k, v := range overrides {
 		env[k] = v
 	}
-	command := exec.Command(gpwPlugin, "--host", host, "--poll-interval", "5")
+	command := exec.Command(gpwPlugin, "--host", host, "--poll-interval", "5", "--state-profile", "discussion-v2")
 	command.Env = gpwEnvironment(env)
 	logPath := filepath.Join(directory, fmt.Sprintf("plugin-%d.log", time.Now().UnixNano()))
 	file, err := os.Create(logPath)

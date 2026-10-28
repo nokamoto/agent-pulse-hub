@@ -231,7 +231,7 @@ func copyGPWFile(source, target string) error {
 func gpwNewDaemon(t mvpReporter, fixture *gpwFixture, directory string) (*mvpDaemon, string, string, string) {
 	t.Helper()
 	gpwDaemonEnvironment = fixture.environment(directory)
-	config := writeMVPConfig(t, directory, mvpConfig{Plugins: []mvpPluginConfig{{Name: "pr", Role: "input", Executable: gpwPlugin, Args: []string{"--host", "github.com", "--poll-interval", "5"}}, {Name: "out", Role: "output", Executable: gpwSuite.model, Args: []string{}}}})
+	config := writeMVPConfig(t, directory, mvpConfig{Plugins: []mvpPluginConfig{{Name: "pr", Role: "input", Executable: gpwPlugin, Args: []string{"--host", "github.com", "--poll-interval", "5", "--state-profile", "discussion-v2"}}, {Name: "out", Role: "output", Executable: gpwSuite.model, Args: []string{}}}})
 	output := filepath.Join(directory, "A.jsonl")
 	other := filepath.Join(directory, "B.jsonl")
 	state := filepath.Join(directory, "state")

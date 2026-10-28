@@ -10,27 +10,28 @@ import (
 )
 
 type Item struct {
-	ID             string  `json:"id"`
-	Kind           string  `json:"kind"`
-	Body           string  `json:"body"`
-	Author         *string `json:"author"`
-	CreatedAt      *string `json:"created_at"`
-	UpdatedAt      *string `json:"updated_at"`
-	SubmittedAt    *string `json:"submitted_at,omitempty"`
-	URL            string  `json:"url"`
-	State          string  `json:"state,omitempty"`
-	Commit         *string `json:"commit"`
-	OriginalCommit *string `json:"original_commit,omitempty"`
-	Review         *string `json:"review,omitempty"`
-	ReplyTo        *string `json:"reply_to,omitempty"`
-	Thread         string  `json:"thread,omitempty"`
-	Resolved       *bool   `json:"resolved,omitempty"`
-	Outdated       *bool   `json:"outdated,omitempty"`
-	ResolvedBy     *string `json:"resolved_by,omitempty"`
-	ReviewerType   string  `json:"reviewer_type,omitempty"`
-	Reviewer       string  `json:"reviewer,omitempty"`
-	ReviewerID     string  `json:"reviewer_id,omitempty"`
-	BodyDigest     string  `json:"body_digest,omitempty"`
+	Signal         *SignalRecord `json:"signal,omitempty"`
+	ID             string        `json:"id"`
+	Kind           string        `json:"kind"`
+	Body           string        `json:"body"`
+	Author         *string       `json:"author"`
+	CreatedAt      *string       `json:"created_at"`
+	UpdatedAt      *string       `json:"updated_at"`
+	SubmittedAt    *string       `json:"submitted_at,omitempty"`
+	URL            string        `json:"url"`
+	State          string        `json:"state,omitempty"`
+	Commit         *string       `json:"commit"`
+	OriginalCommit *string       `json:"original_commit,omitempty"`
+	Review         *string       `json:"review,omitempty"`
+	ReplyTo        *string       `json:"reply_to,omitempty"`
+	Thread         string        `json:"thread,omitempty"`
+	Resolved       *bool         `json:"resolved,omitempty"`
+	Outdated       *bool         `json:"outdated,omitempty"`
+	ResolvedBy     *string       `json:"resolved_by,omitempty"`
+	ReviewerType   string        `json:"reviewer_type,omitempty"`
+	Reviewer       string        `json:"reviewer,omitempty"`
+	ReviewerID     string        `json:"reviewer_id,omitempty"`
+	BodyDigest     string        `json:"body_digest,omitempty"`
 }
 
 type Aggregate struct {
@@ -42,10 +43,11 @@ type Aggregate struct {
 }
 
 type Observation struct {
-	StartedAt time.Time `json:"started_at"`
-	EndedAt   time.Time `json:"ended_at"`
-	PR        Aggregate `json:"pr"`
-	Items     []Item    `json:"items"`
+	Signals   *SignalObservation `json:"signals,omitempty"`
+	StartedAt time.Time          `json:"started_at"`
+	EndedAt   time.Time          `json:"ended_at"`
+	PR        Aggregate          `json:"pr"`
+	Items     []Item             `json:"items"`
 }
 
 type Fingerprint struct {
