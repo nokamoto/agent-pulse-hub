@@ -9,6 +9,8 @@ sources:
     resource: requirements/mvp.md
   - id: runtime-state-requirements
     resource: requirements/trigger-runtime-state.md
+  - id: subscription-cancellation-requirements
+    resource: requirements/subscription-cancellation.md
 ---
 
 # Repeated waiting on a retained trigger registration
@@ -30,9 +32,10 @@ The daemon owns service-independent operations and notification admission,
 preserving MVP C-002. Plugins perform requested monitoring and position
 comparison. A rewait never cancels a subscription, deletes a registration,
 replaces a route, changes its destination, or transfers another registration's
-saved state. This preserves the MVP cancellation exclusion and runtime-state
-FR-005. No new requirements, delivery retries or recipient-processing guarantee
-are introduced.
+saved state. Explicit deletion instead follows
+[subscription cancellation](subscription-cancellation.md), including its
+coordination with this profile. No delivery retries or recipient-processing
+guarantee are introduced by rewait.
 
 ## Chosen lifetime
 
@@ -144,6 +147,14 @@ the result remains uncertain; a new ID is a deliberate new wait, subject to
 `wait_active`/`rewait_busy`, rather than recovery of an old response. No automatic
 retry or exactly-once guarantee across failures is claimed.
 
+Unsubscribe does not prematurely expire these safety receipts. Retain terminal
+responses through their existing validity window even after removal of the
+associated route, and resolve an identical existing receipt before requiring
+a live route. A replay of an earlier successful rewait reports that historical
+commit only; it issues no grant and does not assert that the subscription is
+still active. A new operation ID for a cancelled subscription returns
+`unknown_subscription`. Expiry and conflicting reuse retain their normal rules.
+
 ## Optional public input profile
 
 Add capability `rewait_v1`, permitted only alongside `runtime_state_v2`:
@@ -152,11 +163,13 @@ Add capability `rewait_v1`, permitted only alongside `runtime_state_v2`:
 {"version":2,"type":"ready","role":"input","capabilities":["runtime_state_v2","rewait_v1"]}
 ```
 
-Array order is immaterial. Adding the optional `runtime_state_stream_v1` is
-also allowed under the [stream capability rules](runtime-state-stream.md#capability-and-compatibility).
-Duplicate, unknown or other combinations remain malformed. Ordinary inputs,
-runtime-state v1, and runtime-state v2 without either optional profile keep
-every existing message shape and behavior. Output readiness
+Array order is immaterial. The optional `runtime_state_stream_v1` follows
+[stream capability rules](runtime-state-stream.md#capability-and-compatibility).
+The independent `cancel_watch_v1` may also accompany this profile, including
+its streamed-state combination, under [subscription cancellation](subscription-cancellation.md).
+Duplicate, unknown or otherwise invalid combinations remain malformed.
+Each optional profile changes only its own conditional messages; inputs without
+it retain the corresponding existing message shapes. Output readiness
 still has no capabilities. An older strict host may reject the new capability;
 there is no fallback that weakens this profile's lifetime.
 
@@ -185,7 +198,8 @@ second poller is required in the daemon.
 ## Rewait ordering and failure atomicity
 
 Serialize this state machine with admission, terminal delivery outcomes,
-checkpoints, stop and plugin unavailability for the affected registration:
+checkpoints, individual cancellation, stop and plugin unavailability for the
+affected registration:
 
 1. Validate the local request, capability and retained route. Resolve an existing
    receipt before checking `wait_active`. Require a consumed generation and no
@@ -202,8 +216,9 @@ checkpoints, stop and plugin unavailability for the affected registration:
    or emitting an event. Finish sending `resume_result` before applying a grant.
 4. On a negative result, discard the staged position, retain the consumed old
    generation/progress and record `position_rejected`. On an accepted result,
-   recheck stop and both plugins under lifecycle serialization, install the new
-   admission token, record success in the receipt, then dispatch exactly one
+   recheck stop, the cancellation fence and both plugins under lifecycle
+   serialization, install the new admission token, record success in the receipt,
+   then dispatch exactly one
    matching `activate_watch`. This installation is the rewait commit point.
 5. On its matching grant the input applies the staged position, discards the
    preparation and reconciles already retained/observable changes without
@@ -220,6 +235,15 @@ unconfirmed plugin exchange. Stop before commit cancels the preparation and
 permits no grant. After commit, grant-send failure follows the existing
 post-commit input-unavailability rule and keeps the receipt's committed result;
 client success promises installation, not successful source polling or delivery.
+
+If cancellation wins before a preparation commits, finish that pending receipt
+with an identifiable failure, expire its request correlation and issue no grant.
+If rewait commits first, cancellation still closes the newly installed token
+and prevents any not-yet-issued grant from restarting the watch. The plugin's
+selective cancellation discards staged positions and permanently terminates
+that watch; late resume results or grants cannot recreate it. A completed
+receipt keeps its committed response under the replay rule above. Cancellation
+does not discard other registrations' preparations or receipts.
 
 Process `state_event` under the same admission ordering. Verify ownership,
 fresh event ID, current generation and an armed token before admitting. Consume
@@ -268,6 +292,10 @@ shutdown. All consumed and armed generation tokens expire with the Session.
 Offline reset/deletion remains an explicit operator procedure. A recreated or
 unrelated registration receives no old progress; a position is useful only
 when explicitly supplied and accepted by the plugin's position contract.
+Live ID-based unsubscribe follows the cancellation design. It removes this
+watch's staged and committed progress and notification token, while preserving
+the bounded historical receipts needed to prevent replay. Normal stop excludes
+the fenced registration from grants, checkpoint saves and restoration.
 
 Positions and checkpoints are trusted local opaque data, not routing authority.
 Keep both out of diagnostics. External GitHub text cannot select a subscription,
@@ -288,7 +316,7 @@ rejection/timeout, stop races, exact message limits and save-failure semantics.
 Independent runtime-state and model cases remain required; this profile does
 not establish real GitHub or receiving-agent acceptance.
 
-One continuing registration avoids cancellation APIs, state transfer and an
+One continuing registration avoids per-wait cancellation, state transfer and an
 accumulation of superseded retained routes. Session-scoped receipts avoid a
 new core persistence format. Continuous multi-notification generations would
 need a more complex reconciliation policy for notifications already delivered

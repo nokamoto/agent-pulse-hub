@@ -12,6 +12,8 @@ sources:
     title: Plugin-based event routing MVP
   - id: runtime-state-design
     resource: design/trigger-runtime-state.md
+  - id: cancellation-design
+    resource: design/subscription-cancellation.md
 ---
 
 # Model-plugin operations
@@ -396,8 +398,9 @@ process handle and log, and do not call forced termination normal shutdown.
 
 Normal shutdown retains committed registrations and releases state exclusion.
 Queued/in-flight events and incomplete registrations are not restored; an
-unconfirmed interrupted delivery is unknown. There is no per-subscription
-unsubscribe, delivery retry, automatic plugin restart, stopped-event collection,
+unconfirmed interrupted delivery is unknown. For selective removal use
+[Cancel one subscription](#cancel-one-subscription). There is no delivery retry,
+automatic plugin restart, stopped-event collection,
 or forced-termination/power-loss recovery guarantee. Output records remain
 separate ordinary files; registration state establishes restoration.
 
@@ -556,7 +559,7 @@ runtime-progress guarantee.
 | --- | --- |
 | Invalid configuration, executable, role, or endpoint | Correct the reported input and retain diagnostics; require both model roles before continuing. |
 | Rejected watch/destination or unavailable plugin | No active subscription is established. Check argument files, trigger absence, lexical path conflicts, and output parent/file validity. |
-| Output exit after an input watch request | The route stays inactive; its residual watch may consume capacity until daemon shutdown. It cannot deliver or be reused. Stop/restart deliberately before reusing a conflicted model trigger. |
+| Output exit after an input watch request | The route stays inactive; its residual watch may consume capacity until daemon shutdown. It cannot deliver or be reused. With a retained returned ID and a capable input, use [explicit unsubscribe](#cancel-one-subscription) to release it; otherwise stop/restart deliberately before reusing a conflicted model trigger. |
 | Missing registration response | Acceptance may be uncertain. An explicit identical request can recover the same still-active ID; the client never guesses a destination. |
 | Invalid trigger encoding/size or claim/read/remove failure | No event is emitted for that file. Inspect the claimed path and preserve leftovers before a new publication; no claim retry occurs. |
 | Output open failure before writing | The plugin reports `failed`; no retry occurs. Correct the destination before deliberately publishing a distinct event. |
@@ -702,8 +705,8 @@ Do not remove just the latest generation, which could select older progress.
 `DELETE` removes both saved registration and runtime directory. Restart, wait
 for readiness, then repeat the original register command with the chosen
 arguments. Even identical arguments create a new UUID with initial state;
-other retained registrations keep their own progress. No live deletion command
-is introduced. If interrupted between offline removals, finish the chosen
+other retained registrations keep their own progress. Prefer the live unsubscribe
+procedure below for ordinary selective removal. If interrupted between offline removals, finish the chosen
 procedure while still stopped or restore the complete backup before restarting.
 
 For repair that preserves continuity, keep every owner stopped and restore a
@@ -713,6 +716,46 @@ together. Old daemons reject `runtime/`; deliberate rollback requires preserving
 it separately from a stopped working tree and using old-compatible trigger
 artifacts. An old daemon cannot maintain the newer runtime progress; returning
 to the new daemon requires an explicit restore/reset decision.
+
+## Cancel one subscription
+
+Use a daemon and input built with the
+[individual cancellation profile](subscription-cancellation.md). Keep the
+`subscription_id` printed by each successful registration, along with its daemon
+address. It is the cancellation target; argument files and conversation identity
+are not substitutes. With the daemon running, use the same hub executable.
+Replace `<absolute-hub-path>` with the absolute path held in the Python `hub`
+variable from the build step:
+
+```sh
+<absolute-hub-path> unsubscribe --subscription-id <returned-id> --address 127.0.0.1:47831
+```
+
+Success exits zero and prints `{"ok":true,"subscription_id":"<returned-id>"}`.
+Only that monitor stops; other subscriptions and shared plugins continue.
+Already-issued output may still arrive, but no new attempt for that ID begins.
+Its saved registration and progress are removed. Stop normally, wait for all
+configured processes to exit, and restart with the same configuration/state:
+the cancelled watch remains absent. Explicit registration of its old arguments
+creates a fresh ID and initial progress without the old resource reservation.
+
+Malformed IDs fail before changes. A valid unknown/already-cancelled ID returns
+`unknown_subscription`. `unsubscribe_unsupported` means upgrade the input and
+daemon together while stopped, restart from the same state, then use the same
+ID; do not re-register to find it. Plugin or storage failures are not success.
+Read the bounded error's stage: before durable intent commit, restart can restore
+the target; after commit, startup finishes deletion before readiness. Repair
+the reported cause and explicitly retry the same ID, or stop normally and
+restart after repair. Never modify a live state tree. A missing response is
+uncertain; retry deliberately, knowing an already-completed removal returns
+not-found rather than another success. Do not automatically select another ID.
+
+If startup reports an incomplete cancellation, keep all owners stopped and
+preserve the entire tree before repairing the reported obstruction. Keep
+`cancellations/` intents intact so startup can finish the requested removal.
+Do not run the offline RESET example on a target with a pending intent, and do
+not delete intents to bypass recovery. The cancellation design defines rollback
+of the new reserved directory. Outputs already delivered cannot be recalled.
 
 ## Source-layout migration
 

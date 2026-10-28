@@ -5,6 +5,8 @@ description: Restore optional trigger-owned progress through core-managed coordi
 sources:
   - id: runtime-requirements
     resource: requirements/trigger-runtime-state.md
+  - id: subscription-cancellation-requirements
+    resource: requirements/subscription-cancellation.md
   - id: registration-design
     resource: design/state-persistence.md
   - id: routing-design
@@ -26,6 +28,10 @@ persistence prevents a completed update from being notified again solely because
 of restart. Recipient processing, unfinished notifications, crash recovery,
 automatic retries, and collection of updates while stopped remain outside this
 guarantee. Actions have no new interface or state obligations.
+
+[Subscription cancellation](subscription-cancellation.md) governs selective
+live deletion. Its registration fence stops checkpoint scheduling and commits
+for the target, while this design continues to govern retained watches.
 
 Participation is an optional capability in application/framework version 2.
 `runtime_state_v2` adds explicit activation once route admission is ready. The
@@ -191,6 +197,10 @@ uncommitted registration tombstones. Runtime directories for IDs absent from
 the committed registration set are never loaded or assigned to another route;
 offline deletion removes them. Validate their entry names/types without
 interpreting their payloads as live registrations.
+Explicit unsubscribe removes target runtime state through the
+[cancellation transaction](subscription-cancellation.md); committed removal
+intents are resolved before runtime loading. A remaining orphan alone does not
+make an ID eligible for unsubscribe or transfer progress to a new registration.
 
 A missing per-registration directory means initial state, including an explicit
 offline reset. An existing saved checkpoint requires a participating input;
@@ -330,6 +340,27 @@ processing claim. The final protocol phase is bounded; existing filesystem and
 framework-cleanup limits remain separately observable. Successful checkpoint
 diagnostics identify the registration and committed generation without payloads.
 
+### Coordination with individual cancellation
+
+The [cancellation design](subscription-cancellation.md) owns the target's
+terminal lifecycle fence. Serialize that fence with admission, activation,
+rewait commits, outcome handling, checkpoint scheduling and every runtime save
+commit. Remove the target from future periodic and final-stop selections.
+An already selected checkpoint or save job must recheck the same registration
+identity and fence before publishing state. Drain any save that already won
+this ordering before deleting runtime files; checking only at snapshot
+selection or removing the watch from a map is insufficient.
+
+Cancellation does not need a final target checkpoint: the requested outcome
+is removal of that progress. Late checkpoint results, delivery notices and
+action results may be diagnosed or finish existing outcome correlation, but
+cannot schedule another save, recreate a runtime directory, rearm a generation
+or restore a route. An issued action attempt may finish after unsubscribe
+succeeds; this does not make its deleted checkpoint state live again. Keep the
+bounded correlation necessary to finalize that attempt without retaining
+cancelled service progress. Other watches continue their ordinary notices,
+checkpoint schedule and normal-stop persistence.
+
 ### Offline reset, deletion, and recreation
 
 The [operation guide](windows-operations.md#trigger-runtime-state-recovery)
@@ -349,8 +380,9 @@ and its entire runtime directory while stopped. Recreate by normal registration
 after restart; it receives a new UUID and initial state even with identical
 arguments. Removing only a registration file never transfers its orphan runtime
 directory to the recreated ID. Restore a preserved valid tree/configuration for
-repair instead of resetting when continuity is required. No live removal API or
-automatic corrupt-state salvage is added.
+repair instead of resetting when continuity is required. This recovery
+procedure adds no automatic corrupt-state salvage. Explicit live removal is
+separately governed by [subscription cancellation](subscription-cancellation.md).
 
 ## Specification documents
 
@@ -359,7 +391,10 @@ recovery, and runtime-state acceptance. [Plugin v2](plugin-v1.md) is the separat
 authoritative wire specification for authors in any language; its optional
 extension derives from this design. [Registration persistence](state-persistence.md)
 retains immutable registration storage/commit/exclusion authority and incorporates
-this mutable runtime extension by reference. [MVP](mvp.md) retains recipient,
+this mutable runtime extension by reference. The
+[cancellation design](subscription-cancellation.md) owns selective termination,
+save fencing and the removal-intent recovery exception to restoration.
+[MVP](mvp.md) retains recipient,
 delivery and configuration authority. The [operation guide](windows-operations.md)
 derives reusable operator procedures; [bundled design](bundled-plugins.md) retains
 unchanged model-plugin artifacts and its verification authority. No additional
@@ -512,7 +547,9 @@ inputs require a v2-capable host; older strict hosts reject its unknown capabili
 visibly. Use matching binaries and stopped-tree preservation for rollback. V1
 on the new host remains supported with its explicit pre-readiness discard limit.
 Old registration v1 files need no rewrite; absent runtime directories mean
-initial state. Manual/model plugins remain nonparticipating and unchanged.
+initial state. Manual/model plugins remain nonparticipating in runtime state;
+their independent cancellation capability follows the
+[cancellation migration](subscription-cancellation.md).
 Existing pure-registration storage failure semantics remain intact.
 
 Stop before replacing binaries and preserve the entire tree. Old daemons reject

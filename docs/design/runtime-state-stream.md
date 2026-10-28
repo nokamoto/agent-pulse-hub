@@ -36,7 +36,9 @@ designs own each state schema and how its ordered objects reconstruct progress.
 ## Capability and compatibility
 
 An input opts in with both `runtime_state_v2` and `runtime_state_stream_v1`.
-It may additionally advertise `rewait_v1`; array order is immaterial. The stream
+It may additionally advertise `rewait_v1` and the independent
+`cancel_watch_v1` from [subscription cancellation](subscription-cancellation.md);
+array order is immaterial. Their existing semantics remain unchanged. The stream
 capability alone, with `runtime_state_v1`, duplicate capabilities or unknown
 capabilities is invalid. Nonparticipating inputs, runtime-state v1/v2 without
 the new capability, outputs and the application version `2` remain unchanged.
@@ -177,7 +179,10 @@ has exactly these fields:
 `version` is number token `2`; `data_bytes` is the sum of chunk-file byte
 lengths and uses the same canonical decimal-string rules. Bound manifest reads
 to 16,384 bytes and every chunk read to 32,768 bytes. Validate the complete
-selected generation before any watch transmission: exact count, per-object
+selected generation for each retained route before any watch transmission:
+process committed cancellation intents first under the cancellation contract,
+without interpreting a removed target's payload. Retained-state validation
+checks exact count, per-object
 strict JSON, summed bytes, owner, schema shape and budget. Semantic validation
 remains the input's job. This is trusted local storage; no authenticity or
 crash-durability guarantee is added.
@@ -189,7 +194,9 @@ above both filename forms. Write/close chunks as they arrive with backpressure.
 After a valid end, close all files, write/close the manifest, then rename the
 complete staging directory to the absent final `.stream` path on the same
 filesystem. That rename is the single commit point; do not replace a populated
-directory or commit any chunk separately. A save succeeds only after rename.
+directory or commit any chunk separately. A save succeeds only after rename. Recheck the existing
+[registration cancellation fence](trigger-runtime-state.md#coordination-with-individual-cancellation)
+under the same per-registration ordering immediately before publishing it.
 As with existing runtime generations, filesystem work has no portable hard
 deadline or power-loss guarantee; protocol expiration before valid end forbids
 commit even if queued filesystem work finishes later.
@@ -200,7 +207,15 @@ active snapshots or block the Session reader indefinitely behind one watch.
 When a bounded write queue cannot accept more work within the protocol window,
 fail that transfer and continue draining/discarding its expired correlation.
 A save finalized after valid end may take the existing filesystem latency;
-shutdown waits for that save before input cleanup and lock release.
+shutdown waits for that save before input cleanup and lock release. This does
+not bypass the existing cancellation fence: expire a fenced target's stream
+correlation without waiting for end, discard queued chunks and remove its
+uncommitted staging. Apply the existing cleanup diagnostic if staging removal
+fails; residue is never a committed generation. Drain
+writes or a save that already won lifecycle ordering before target deletion;
+no late end, result or filesystem callback may recreate its runtime directory.
+Do not interpret this compatibility rule as adding cancellation behavior to
+the PR-watch capacity scope; the cancellation design owns that feature.
 
 On failure remove the unique staging directory and remove a newly created
 empty runtime directory when possible; diagnose cleanup failure. Staging is
@@ -288,7 +303,8 @@ on the new host keep their existing envelope files and wire shapes.
 Mocked protocol/clock/filesystem unit tests cover every capability combination,
 exact byte boundaries, unknown/duplicate/foreign/late frames, zero/missing/excess
 chunks, index/count exhaustion, deadlines without renewal, concurrent watches,
-snapshot mutation and notice fences, write/close/rename/cleanup faults, mixed
+snapshot mutation, notice/cancellation fences and late-result non-resurrection,
+write/close/rename/cleanup faults, mixed
 format selection, invalid newest state, budget reduction, old-schema migration
 and legacy-profile regression. They assert no activation, fallback, overwrite,
 cross-registration application or payload disclosure on failure. Keep most

@@ -11,6 +11,8 @@ sources:
     resource: design/trigger-runtime-state.md
   - id: runtime-stream-design
     resource: design/runtime-state-stream.md
+  - id: cancellation-design
+    resource: design/subscription-cancellation.md
 ---
 
 # Agent Pulse Hub plugin protocol v2
@@ -220,8 +222,9 @@ been issued,
 registration cannot become active. An already accepted or uncertain watch
 may continue until input shutdown, but its route is an inactive tombstone:
 no event is delivered and no registration reuses it. The governing design owns
-capacity accounting and duplicate-registration behavior for this state. There
-is no per-watch cancellation or new rollback RPC.
+capacity accounting and duplicate-registration behavior for this state.
+Registration failure does not automatically issue cancellation or rollback.
+An explicit request can use the [cancellation profile](#optional-individual-watch-cancellation).
 
 ```json
 {"version":2,"type":"event","subscription_id":"subscription-a","context":"PULSE-MODEL-001"}
@@ -233,6 +236,49 @@ logged. Ordinary events have no acknowledgement and expose no delivery result
 to the input. Repeated valid events remain distinct; plugins do not retransmit for
 confirmation. The daemon's [routing rules](mvp.md) bind each admitted event
 to its registered output and arguments.
+
+## Optional individual watch cancellation
+
+This profile derives from [individual cancellation](subscription-cancellation.md),
+which owns local control, persistence and lifecycle fencing. A capable input
+includes `cancel_watch_v1` in `ready.capabilities`, alone or with the valid
+runtime-state/rewait combinations below. Output readiness is unchanged.
+
+| Direction / type | Exact additional fields | Meaning |
+| --- | --- | --- |
+| Host to input / `cancel_watch` | `request_id`, `subscription_id`: nonempty strings | Stop this accepted watch and release its watch-specific resources. |
+| Input to host / `cancel_result` | `request_id`: nonempty string; `accepted`: boolean; `error`: bounded nonempty string only when false | Confirm completed selective termination, or report why it could not complete. |
+
+Both messages include `version:2` and `type` and follow existing strict encoding,
+ownership and bounds. The host sends this request only for an ID owned by that
+input. Use a fresh request ID on each explicit attempt. An input must process
+cancellation concurrently with its monitor, stop emission and staged rewait,
+discard watch-owned logical progress, and release equivalent-watch reservations
+before sending a positive result. Other watches and the Session remain live.
+Cancelling an already-absent watch is a positive no-op; local unknown-ID control
+requests still fail before any plugin exchange. IDs cannot be reused within the
+Session, so a late grant/preparation must never recreate a removed watch.
+
+One ten-second deadline covers queuing, send and result. A negative result or
+timeout keeps the target fenced in the host. Timeout alone expires that request
+correlation and removes any unsent request; it does not kill a healthy shared
+input. Late results are ignored. An explicitly retried cancellation is safe
+because stopping an absent or stopping watch is idempotent; overlapping plugin
+requests must converge on the same termination. Actual stream/send failure
+retains normal instance-unavailability handling. No automatic retry is added.
+
+The host sends already-owed delivery notices before cancellation on the same
+ordered stream. A checkpoint/preparation already transmitted may finish before
+cancellation, but its late result cannot save or grant a cancelled watch. After
+positive cancellation the host sends no further checkpoint, notice, preparation
+or grant for that watch. Already-issued action outcomes remain correlated in
+the core and do not require reviving the input watch.
+
+An unchanged input remains usable but live unsubscribe returns
+`unsubscribe_unsupported`. Upgrade the host and input together while stopped;
+retained registration IDs and arguments require no migration. Old strict hosts
+may reject the new capability. Bundled inputs adopt this profile together with
+the cancellation feature; actions require no cancellation capability.
 
 ## Optional trigger runtime state
 
@@ -266,6 +312,10 @@ compatibility rules. It replaces `state_watch` and successful checkpoint
 responses only for that profile. It retains the 65,536-byte application bound,
 8,192-byte event context and all activation, rewait and delivery rules. Inputs
 without `runtime_state_stream_v1` keep every existing schema and state bound.
+The independent `cancel_watch_v1` capability above may appear alone or alongside
+either runtime-state revision and any otherwise valid rewait combination.
+It does not relax duplicate, role, unknown-capability or incompatible-revision
+validation. Array order is immaterial.
 
 Every message below includes `version: 2` and `type`. Existing strict encoding,
 size, request-ID and subscription ownership rules apply. The state envelope,
@@ -488,7 +538,7 @@ in integration tests.
 | Both roles, framework selection, readiness, shutdown | Correct role and gRPC negotiation; readiness gates operations; startup failure is visible; standard cleanup stops configured processes. |
 | Strict schemas, Unicode, nested duplicates, direction, versions, payload/context bounds | Invalid input activates no route and performs no delivery; bounded malformed messages permit recovery; oversized transport input isolates its instance. |
 | Sequential destination/watch acceptance, immediate event, concurrent and duplicate results | No active route before both accept; no result/event race; foreign or late correlations never activate or retarget a route. |
-| Destination rejection and output loss after watch dispatch | No active registration or delivery; accepted orphan watches remain inactive and consume governed capacity until shutdown. |
+| Destination rejection and output loss after watch dispatch | No active registration or delivery; accepted orphan watches remain inactive and consume governed capacity until successful explicit cancellation, input exit or shutdown. |
 | Delivery correlation, rejection, unknown acceptance, real deadline | Exactly one attempt; invalid result never establishes success; timeout is unknown and isolates output; no retry/restart. |
 | Event ownership, plugin failures, duplicate registration, restart | Registered recipient is fixed; unavailable routes reject new events; separate available routes continue; equivalent active registration keeps its ID; saved IDs survive restart only after current plugin acceptance and complete startup restoration. |
 | Independent-language replacements for each role | Both executables can be substituted without daemon code changes; registration and routing succeed through public interfaces. |

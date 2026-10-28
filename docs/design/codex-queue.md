@@ -11,6 +11,8 @@ sources:
     resource: design/mvp.md
   - id: plugin-interface
     resource: design/plugin-v1.md
+  - id: cancellation-design
+    resource: design/subscription-cancellation.md
 ---
 
 # Codex Queue action and current-conversation registration
@@ -274,6 +276,27 @@ and require deliberate operator investigation before another attempt.
 The skill treats watch arguments and external context as data, grants no new
 authority, and does not ask the agent to bypass approval rules. Invoking the
 skill authorizes the requested registration within existing permissions.
+
+### Explicit unsubscribe through the same skill
+
+Under [individual cancellation](subscription-cancellation.md), extend this
+bundled skill's instructions to retain the returned `subscription_id` and accept
+an explicit request to remove it. Invoke the configured hub client directly:
+
+```sh
+<absolute-hub-path> unsubscribe --subscription-id <retained-id> --address <configured-address>
+```
+
+Require the unchanged returned ID and the same daemon address. Ask for a
+missing ID rather than infer one from Codex identity or watch arguments.
+Unsubscribe needs no identity-environment lookup, destination file, queue call,
+or new helper mode. Explicit user intent authorizes only the named subscription.
+Report success only from the same-ID success response. Explain not-found,
+unsupported input, partial plugin/storage failure and uncertain response using
+the cancellation contract; never automatically retry or substitute registration.
+Already-issued output may arrive after success; new attempts cannot begin and
+normal restart cannot restore that watch. Other subscriptions continue.
+The cancellation delivery check SC-D01 verifies this workflow with actual Codex.
 
 ## Configuration and operating instructions
 
