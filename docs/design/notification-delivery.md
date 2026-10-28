@@ -183,11 +183,16 @@ destination arguments contain only the registered thread UUID.
 To preserve existing argument-size limits, the CLI assembles read-only chunks.
 Request: `version`, `op:"notification"`, `notification_id`, optional integer
 `offset` (default zero), optional `revision`. Initial reads omit revision and
-require offset zero. Response: `ok:true`, `notification_id`, `revision` (canonical
-positive ledger generation string), `offset`, `total_bytes`, `data` (base64 of at
-most 16,384 bytes of UTF-8 JSON). Later reads supply the revision and next byte
-offset. No per-client snapshot is allocated: if ledger generation changed,
-return `notification_changed`. The CLI restarts once, then fails visibly rather
+require offset zero. Response: `ok:true`, `notification_id`, `revision` (64 lowercase
+hexadecimal SHA-256 digits), `offset`, `total_bytes`, `data` (base64 of at most
+16,384 bytes of UTF-8 JSON). Each read captures an immutable view of the record
+and current inspection gates under lifecycle serialization, then deterministically
+encodes the complete inspection object. Its exact UTF-8 bytes determine the digest;
+gate projections, including `blocked` and `storage_blocked`, are covered too.
+Later reads supply that revision and the next byte offset. No per-client snapshot
+is retained: if the current payload digest differs, return `notification_changed`
+without a chunk. Equal revisions identify identical payload bytes. The CLI
+restarts once, then fails visibly rather
 than presenting mixed/partial JSON. Bound assembled payload to 131,072 bytes
 and the entire CLI operation to 25 seconds. All reads are non-submitting.
 
