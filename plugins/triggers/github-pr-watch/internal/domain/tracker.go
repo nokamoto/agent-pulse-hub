@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -45,17 +46,25 @@ type Saved struct {
 	Comparison   *uint64       `json:"comparison,omitempty"`
 }
 type Tracker struct {
-	Saved    Saved
-	current  *Observation
-	cursor   uint64
-	prepared *uint64
+	Saved             Saved
+	current           *Observation
+	cursor            uint64
+	prepared          *uint64
+	ObservationBudget uint64
+	HistoryBudget     uint64
+	RefreshFailure    string
+	Observations      uint64
+	previous          map[uint64]Item
+	legacyItems       map[string]bool
+	legacyChanges     map[uint64]bool
+	historyBytes      uint64
 }
 
 func NewTracker(scope WatchConfig, nonce []byte) (*Tracker, error) {
 	if len(nonce) != 16 {
 		return nil, errors.New("invalid nonce")
 	}
-	return &Tracker{Saved: Saved{Scope: scope, Nonce: hex.EncodeToString(nonce), Fingerprints: []Fingerprint{}, Journal: []Change{}, Positions: []Position{}, Metadata: []Item{}}}, nil
+	return &Tracker{Saved: Saved{Scope: scope, Nonce: hex.EncodeToString(nonce), Fingerprints: []Fingerprint{}, Journal: []Change{}, Positions: []Position{}, Metadata: []Item{}}, ObservationBudget: DefaultByteBudget, HistoryBudget: DefaultByteBudget}, nil
 }
 
 func Restore(scope WatchConfig, envelope *jsonvalue.Value) (*Tracker, error) {
@@ -154,9 +163,11 @@ func Restore(scope WatchConfig, envelope *jsonvalue.Value) (*Tracker, error) {
 	if !saved.Baseline && (saved.Sequence != 0 || len(saved.Fingerprints) != 0 || len(saved.Journal) != 0 || len(saved.Positions) != 0) {
 		return nil, errors.New("invalid restored state")
 	}
-	if err := t.capacity(); err != nil {
+	if err := t.legacyCapacity(); err != nil {
 		return nil, errors.New("invalid restored state")
 	}
+	t.ObservationBudget = DefaultByteBudget
+	t.HistoryBudget = DefaultByteBudget
 	return t, nil
 }
 
@@ -174,6 +185,9 @@ func (t *Tracker) ValidatePosition(value string) (uint64, error) {
 		if p.Value == value {
 			return p.Sequence, nil
 		}
+	}
+	if t.Saved.Comparison != nil && value == t.position(*t.Saved.Comparison) {
+		return *t.Saved.Comparison, nil
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, "gpw1."))
 	if err != nil || !strings.HasPrefix(value, "gpw1.") || len(raw) != 25 || raw[0] != 1 {
@@ -194,13 +208,43 @@ func (t *Tracker) Prepare(sequence uint64) { t.prepared = &sequence }
 func (t *Tracker) CancelPreparation()      { t.prepared = nil }
 
 func (t *Tracker) Reconcile(o Observation) error {
+	if err := observationCapacity(o, t.observationBudget()); err != nil {
+		return err
+	}
 	fs, err := fingerprints(o)
 	if err != nil {
 		return err
 	}
 	candidate := *t
+	if candidate.Observations == math.MaxUint64 {
+		return errors.New("sequence_exhausted")
+	}
+	candidate.Observations++
 	candidate.Saved = t.Saved
 	candidate.Saved.Journal = append([]Change{}, t.Saved.Journal...)
+	candidate.previous = make(map[uint64]Item, len(t.previous))
+	for sequence, item := range t.previous {
+		candidate.previous[sequence] = item
+	}
+	candidate.legacyChanges = make(map[uint64]bool, len(t.legacyChanges))
+	for sequence, legacy := range t.legacyChanges {
+		candidate.legacyChanges[sequence] = legacy
+	}
+	candidate.legacyItems = nil
+	candidate.pruneAccepted()
+	journalStart := len(candidate.Saved.Journal)
+	candidate.historyBytes = 2
+	for i, c := range candidate.Saved.Journal {
+		raw, _ := compact(candidate.retainedChange(c))
+		n := uint64(len(raw))
+		if i > 0 {
+			n++
+		}
+		if candidate.historyBytes > candidate.historyBudget() || n > candidate.historyBudget()-candidate.historyBytes {
+			return &ResourceError{"history_resource_exhausted", "--history-byte-budget", candidate.historyBudget(), saturatedAdd(candidate.historyBytes, n)}
+		}
+		candidate.historyBytes += n
+	}
 	if !candidate.Saved.Baseline {
 		candidate.Saved.Sequence = 1
 		candidate.Saved.Confirmed = 1
@@ -261,12 +305,25 @@ func (t *Tracker) Reconcile(o Observation) error {
 					}
 				}
 			}
-			if err := candidate.appendChange(kind, item, d, o.EndedAt.Format("2006-01-02T15:04:05.999999999Z07:00")); err != nil {
+			var previousItem *Item
+			if was {
+				for _, previous := range t.Saved.Metadata {
+					if previous.Kind == before.Kind && previous.ID == before.ID {
+						previousItem = &previous
+						break
+					}
+				}
+			}
+			if !is && item.Kind == "" && t.legacyItems[key] {
+				candidate.legacyChanges[candidate.Saved.Sequence+1] = true
+			}
+			if err := candidate.appendChange(kind, item, d, o.EndedAt.Format("2006-01-02T15:04:05.999999999Z07:00"), previousItem); err != nil {
 				return err
 			}
 		}
 		if t.Saved.Aggregate.Head != o.PR.Head {
-			if err := candidate.appendChange("head_changed", Item{ID: o.PR.ID, Kind: "pull_request", URL: o.PR.URL, State: o.PR.Head}, digest(o.PR.Head), o.EndedAt.Format("2006-01-02T15:04:05.999999999Z07:00")); err != nil {
+			previousItem := Item{ID: t.Saved.Aggregate.ID, Kind: "pull_request", URL: t.Saved.Aggregate.URL, State: t.Saved.Aggregate.Head}
+			if err := candidate.appendChange("head_changed", Item{ID: o.PR.ID, Kind: "pull_request", URL: o.PR.URL, State: o.PR.Head}, digest(o.PR.Head), o.EndedAt.Format("2006-01-02T15:04:05.999999999Z07:00"), &previousItem); err != nil {
 				return err
 			}
 		}
@@ -278,10 +335,14 @@ func (t *Tracker) Reconcile(o Observation) error {
 			if o.PR.State == "MERGED" {
 				kind = "merged"
 			}
-			if err := candidate.appendChange(kind, Item{ID: o.PR.ID, Kind: "pull_request", URL: o.PR.URL, State: o.PR.State}, digest(o.PR), o.EndedAt.Format("2006-01-02T15:04:05.999999999Z07:00")); err != nil {
+			previousItem := Item{ID: t.Saved.Aggregate.ID, Kind: "pull_request", URL: t.Saved.Aggregate.URL, State: t.Saved.Aggregate.State}
+			if err := candidate.appendChange(kind, Item{ID: o.PR.ID, Kind: "pull_request", URL: o.PR.URL, State: o.PR.State}, digest(o.PR), o.EndedAt.Format("2006-01-02T15:04:05.999999999Z07:00"), &previousItem); err != nil {
 				return err
 			}
 		}
+	}
+	if t.Saved.Baseline {
+		candidate.orderNewChanges(journalStart, t.Saved.Sequence)
 	}
 	candidate.Saved.Fingerprints = fs
 	candidate.Saved.Aggregate = o.PR
@@ -291,23 +352,66 @@ func (t *Tracker) Reconcile(o Observation) error {
 		item.Body = ""
 		candidate.Saved.Metadata = append(candidate.Saved.Metadata, item)
 	}
+	candidate.sortMetadata()
 	candidate.Saved.StartedAt = o.StartedAt.Format("2006-01-02T15:04:05.999999999Z07:00")
 	candidate.Saved.EndedAt = o.EndedAt.Format("2006-01-02T15:04:05.999999999Z07:00")
 	candidate.current = &o
-	if err := candidate.capacity(); err != nil {
-		candidate.pruneAccepted()
-		if err := candidate.capacity(); err != nil {
-			return err
+	candidate.RefreshFailure = ""
+	candidate.pruneAccepted()
+	for i := range candidate.Saved.Journal {
+		c := &candidate.Saved.Journal[i]
+		raw, _ := compact(candidate.retainedChange(*c))
+		if len(raw)+32 > 32768 && c.Item.Body != "" {
+			c.Item.Body = ""
+			c.BodyStatus = "shortened"
+			c.Omission = "body omitted to retain identity and relationships"
 		}
+	}
+	if err := candidate.capacity(); err != nil {
+		return err
 	}
 	*t = candidate
 	return nil
 }
 
 func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
+	sort.Strings(s)
+}
+
+func (t *Tracker) orderNewChanges(start int, base uint64) {
+	type entry struct {
+		change   Change
+		previous *Item
+		legacy   bool
+	}
+	entries := make([]entry, 0, len(t.Saved.Journal)-start)
+	for _, c := range t.Saved.Journal[start:] {
+		e := entry{change: c, legacy: t.legacyChanges[c.Sequence]}
+		if old, ok := t.previous[c.Sequence]; ok {
+			e.previous = &old
+		}
+		entries = append(entries, e)
+		delete(t.previous, c.Sequence)
+		delete(t.legacyChanges, c.Sequence)
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		a, b := entries[i].change, entries[j].change
+		if a.Item.Kind != b.Item.Kind {
+			return a.Item.Kind < b.Item.Kind
+		}
+		if a.Item.ID != b.Item.ID {
+			return a.Item.ID < b.Item.ID
+		}
+		return a.Kind < b.Kind
+	})
+	for i, e := range entries {
+		e.change.Sequence = base + uint64(i) + 1
+		t.Saved.Journal[start+i] = e.change
+		if e.legacy {
+			t.legacyChanges[e.change.Sequence] = true
+		}
+		if e.previous != nil {
+			t.previous[e.change.Sequence] = *e.previous
 		}
 	}
 }
@@ -322,14 +426,13 @@ func excerpt(body string, limit int) string {
 	return body[:limit]
 }
 
-func (t *Tracker) appendChange(kind string, item Item, d, at string) error {
+func (t *Tracker) appendChange(kind string, item Item, d, at string, previous *Item) error {
 	if t.Saved.Sequence == math.MaxUint64 {
 		return errors.New("sequence_exhausted")
 	}
-	t.Saved.Sequence++
 	full := item.Body
-	item.Body = excerpt(full, 64)
-	c := Change{Sequence: t.Saved.Sequence, Kind: kind, At: at, Item: item, Digest: d, BodyStatus: "complete"}
+	item.Body = excerpt(full, 512)
+	c := Change{Sequence: t.Saved.Sequence + 1, Kind: kind, At: at, Item: item, Digest: d, BodyStatus: "complete"}
 	if full == "" {
 		c.BodyStatus = "empty"
 	}
@@ -341,114 +444,30 @@ func (t *Tracker) appendChange(kind string, item Item, d, at string) error {
 		c.BodyStatus = "unavailable"
 		c.Omission = "disappeared content is no longer retrievable; inspect related PR link"
 	}
-	raw, _ := json.Marshal(c)
-	if len(raw) > 640 {
+	if previous != nil {
+		t.previous[c.Sequence] = *previous
+	}
+	raw, _ := compact(t.retainedChange(c))
+	if len(raw)+32 > 32768 {
 		c.Item.Body = ""
 		c.BodyStatus = "shortened"
 		c.Omission = "body omitted to retain identity and relationships"
-		raw, _ = json.Marshal(c)
+		raw, _ = compact(t.retainedChange(c))
 	}
-	if len(raw) > 640 {
-		return errors.New("coverage_capacity_exceeded")
+	if len(raw)+32 > 32768 {
+		return errors.New("item_metadata_exhausted")
 	}
+	n := uint64(len(raw))
+	if len(t.Saved.Journal) > 0 {
+		n++
+	}
+	if t.historyBytes > t.historyBudget() || n > t.historyBudget()-t.historyBytes {
+		return &ResourceError{"history_resource_exhausted", "--history-byte-budget", t.historyBudget(), saturatedAdd(t.historyBytes, n)}
+	}
+	t.historyBytes += n
+	t.Saved.Sequence = c.Sequence
 	t.Saved.Journal = append(t.Saved.Journal, c)
 	return nil
-}
-
-func (t *Tracker) Context() (string, uint64, error) {
-	eligible := []Change{}
-	for _, change := range t.Saved.Journal {
-		if change.Sequence > t.cursor {
-			if t.current != nil {
-				for _, item := range t.current.Items {
-					if item.Kind == change.Item.Kind && item.ID == change.Item.ID && bodyDigest(item.Body) == change.Digest {
-						change.Item.Body = item.Body
-						change.Omission = ""
-						change.BodyStatus = "complete"
-						if item.Body == "" {
-							change.BodyStatus = "empty"
-						}
-						break
-					}
-				}
-			}
-			eligible = append(eligible, change)
-		}
-	}
-	if len(eligible) == 0 {
-		return "", 0, nil
-	}
-	if len(eligible) > 8 {
-		return "", 0, errors.New("notification_capacity_exceeded")
-	}
-	sequence := eligible[len(eligible)-1].Sequence
-	position := t.position(sequence)
-	current := map[string]any{"pr": t.Saved.Aggregate, "reviews": []any{}, "requests": []any{}, "threads": []any{}}
-	for _, f := range t.Saved.Fingerprints {
-		if f.Kind == "review" || f.Kind == "request" || f.Kind == "thread" {
-			entry := map[string]any{"id": f.ID, "digest": f.Digest}
-			for _, item := range t.Saved.Metadata {
-				if item.ID == f.ID && item.Kind == f.Kind {
-					entry["state"] = item.State
-					entry["resolved"] = item.Resolved
-					entry["outdated"] = item.Outdated
-					entry["reviewer"] = item.Reviewer
-					entry["reviewer_id"] = item.ReviewerID
-					entry["reviewer_type"] = item.ReviewerType
-				}
-			}
-			key := map[string]string{"review": "reviews", "request": "requests", "thread": "threads"}[f.Kind]
-			current[key] = append(current[key].([]any), entry)
-		}
-	}
-	if encoded, _ := json.Marshal(eligible); len(encoded) > 5120 {
-		for i := range eligible {
-			if len(eligible[i].Item.Body) > 64 {
-				eligible[i].Item.Body = excerpt(eligible[i].Item.Body, 64)
-				eligible[i].BodyStatus = "shortened"
-				eligible[i].Omission = "body shortened for notification capacity; inspect item link"
-			}
-		}
-	}
-	omissions := []any{}
-	for _, c := range eligible {
-		if c.Omission != "" {
-			omissions = append(omissions, map[string]any{"id": c.Item.ID, "reason": c.Omission, "url": c.Item.URL, "digest": c.Digest})
-		}
-	}
-	views := make([]map[string]any, 0, len(eligible))
-	for _, change := range eligible {
-		views = append(views, changeView(change))
-	}
-	contextValue := map[string]any{"external_data": true, "pr": t.Saved.Aggregate, "waiting_reason": t.Saved.Scope.WaitingReason, "represented_actor": t.Saved.Scope.RepresentedActor, "observation": map[string]string{"started_at": t.Saved.StartedAt, "ended_at": t.Saved.EndedAt}, "changes": views, "current": current, "omissions": omissions, "confirmation_position": position}
-	changed, _ := json.Marshal(views)
-	summary, _ := json.Marshal(current)
-	raw, _ := json.Marshal(contextValue)
-	metadata, _ := json.Marshal(map[string]any{"pr": t.Saved.Aggregate, "waiting_reason": t.Saved.Scope.WaitingReason, "represented_actor": t.Saved.Scope.RepresentedActor, "position": position, "omissions": omissions})
-	if len(changed) > 5120 || len(summary) > 1536 || len(metadata) > 1024 || len(raw) > 8192 {
-		return "", 0, errors.New("notification_capacity_exceeded")
-	}
-	candidate := *t
-	candidate.Saved = t.Saved
-	candidate.Saved.Positions = append([]Position{}, t.Saved.Positions...)
-	found := false
-	for _, p := range candidate.Saved.Positions {
-		if p.Value == position {
-			found = true
-		}
-	}
-	if !found {
-		candidate.Saved.Positions = append(candidate.Saved.Positions, Position{position, sequence})
-		if len(candidate.Saved.Positions) > 4 {
-			candidate.Saved.Positions = candidate.Saved.Positions[len(candidate.Saved.Positions)-4:]
-		}
-	}
-	candidate.Saved.Attempted = sequence
-	if err := candidate.capacity(); err != nil {
-		return "", 0, err
-	}
-	*t = candidate
-	return string(raw), sequence, nil
 }
 
 func (t *Tracker) Notice(sequence uint64, status string) {
@@ -462,8 +481,13 @@ func (t *Tracker) Notice(sequence uint64, status string) {
 
 func (t *Tracker) pruneAccepted() {
 	through := t.Saved.Confirmed
-	if t.cursor < through {
-		through = t.cursor
+	if t.Saved.Comparison != nil && *t.Saved.Comparison < through {
+		through = *t.Saved.Comparison
+	}
+	for _, position := range t.Saved.Positions {
+		if position.Sequence < through {
+			through = position.Sequence
+		}
 	}
 	if t.prepared != nil && *t.prepared < through {
 		through = *t.prepared
@@ -473,6 +497,8 @@ func (t *Tracker) pruneAccepted() {
 	for _, change := range t.Saved.Journal {
 		if change.Sequence <= through {
 			removed = change.Sequence
+			delete(t.previous, change.Sequence)
+			delete(t.legacyChanges, change.Sequence)
 		} else {
 			journal = append(journal, change)
 		}
@@ -481,19 +507,14 @@ func (t *Tracker) pruneAccepted() {
 		return
 	}
 	t.Saved.Journal = journal
-	positions := []Position{}
-	for _, position := range t.Saved.Positions {
-		if position.Sequence >= removed {
-			positions = append(positions, position)
-		}
-	}
-	t.Saved.Positions = positions
 }
 
 func changeView(change Change) map[string]any {
 	raw, _ := json.Marshal(change)
 	value := map[string]any{}
-	_ = json.Unmarshal(raw, &value)
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	_ = decoder.Decode(&value)
 	item := value["item"].(map[string]any)
 	if change.Item.Kind == "review" || change.Item.Kind == "conversation" || change.Item.Kind == "review_comment" {
 		unavailable := map[string]string{}
@@ -515,7 +536,7 @@ func changeView(change Change) map[string]any {
 	return value
 }
 
-func (t *Tracker) capacity() error {
+func (t *Tracker) legacyCapacity() error {
 	if len(t.Saved.Fingerprints) > 32 || len(t.Saved.Journal) > 32 || len(t.Saved.Positions) > 4 {
 		return errors.New("coverage_capacity_exceeded")
 	}
@@ -562,7 +583,7 @@ func validDigest(value string) bool {
 }
 
 func (t *Tracker) Checkpoint() (*jsonvalue.Value, error) {
-	if err := t.capacity(); err != nil {
+	if err := t.legacyCapacity(); err != nil {
 		return nil, err
 	}
 	raw, err := json.Marshal(map[string]any{"schema": StateSchema, "payload": t.Saved})

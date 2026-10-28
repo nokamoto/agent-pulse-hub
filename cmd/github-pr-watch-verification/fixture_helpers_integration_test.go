@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -132,6 +133,8 @@ type (
 		observedExtra    int
 		edit             int
 		observedEdit     int
+		capacity         int
+		observedCapacity int
 	}
 )
 
@@ -203,6 +206,7 @@ func (f *gpwFixture) serve(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(call.Query, "PullRequestMetadata") {
 		f.observedRevision, f.observedMode, f.observedLarge, f.observedExtra = f.revision, f.mode, f.large, f.extra
 		f.observedEdit = f.edit
+		f.observedCapacity = f.capacity
 	}
 	revision, mode, large, extra := f.observedRevision, f.observedMode, f.observedLarge, f.observedExtra
 	if strings.Contains(call.Query, "ValidatePullRequest") {
@@ -275,34 +279,103 @@ func (f *gpwFixture) serve(w http.ResponseWriter, r *http.Request) {
 	if revision >= 2 {
 		thread["resolvedBy"] = map[string]any{"login": "author"}
 	}
+	capacity := f.observedCapacity
+	if strings.Contains(call.Query, "ValidatePullRequest") {
+		capacity = f.capacity
+	}
+	if capacity > 0 {
+		pr["headRefOid"] = "H1"
+		pr["state"] = "OPEN"
+		review["state"] = "APPROVED"
+		thread["isResolved"] = false
+		thread["resolvedBy"] = nil
+		comments = []any{}
+		for i := 1; i <= capacity-6; i++ {
+			if capacity == 1000 && revision >= 1 && i == 2 {
+				continue
+			}
+			body := "baseline"
+			if capacity == 1000 && revision >= 1 && i == 1 {
+				body = "old item edit"
+			}
+			if capacity == 1000 && revision >= 2 && i == 3 {
+				body = "second old item edit"
+			}
+			comments = append(comments, gpwComment(fmt.Sprintf("C%04d", i), body))
+		}
+		if capacity == 1000 && revision >= 1 {
+			comments = append(comments, gpwComment("C1001", "new item"))
+			pr["headRefOid"] = "H2"
+		}
+		if capacity == 100 && revision >= 1 {
+			comments = append(comments, gpwComment("seed", "seed change"))
+		}
+		if capacity == 100 && revision >= 3 {
+			comments = append(comments, gpwComment("D41", "post-save-failure"))
+		}
+		if capacity == 100 && revision >= 2 {
+			for i := 1; i <= 40; i++ {
+				body := fmt.Sprintf("backlog %d", i)
+				if i == 1 {
+					body = strings.Repeat("日本語", 1200)
+				}
+				if i == 2 {
+					body = ""
+				}
+				comments = append(comments, gpwComment(fmt.Sprintf("D%02d", i), body))
+			}
+		}
+	}
 	validate := strings.Contains(call.Query, "ValidatePullRequest")
 	switch {
 	case validate:
 		pr["reviews"] = gpwConnection([]any{review}, false, "")
 		pr["comments"] = gpwConnection([]any{comments[0]}, false, "")
-		pr["reviewRequests"] = gpwConnection([]any{request}, false, "")
+		requests := []any{request}
+		if capacity > 0 {
+			request = map[string]any{"id": "Q1", "requestedReviewer": map[string]any{"__typename": "User", "id": "U1", "login": "reviewer"}}
+			requests = []any{request, map[string]any{"id": "Q2", "requestedReviewer": map[string]any{"__typename": "User", "id": "U2", "login": "other"}}}
+		}
+		pr["reviewRequests"] = gpwConnection(requests, false, "")
 		pr["reviewThreads"] = gpwConnection([]any{thread}, false, "")
 	case strings.Contains(call.Query, "PullRequestMetadata"):
 	case strings.Contains(call.Query, "PullRequestReviews"):
 		pr["reviews"] = gpwConnection([]any{review}, false, "")
 	case strings.Contains(call.Query, "PullRequestComments"):
-		if cursor == "comments-next" {
-			if mode == "failed-comments" {
-				http.Error(w, "page unavailable", 500)
+		start := 0
+		if cursor != "" {
+			var err error
+			start, err = strconv.Atoi(strings.TrimPrefix(cursor, "page-"))
+			if err != nil || start < 0 || start > len(comments) {
+				http.Error(w, "bad cursor", 400)
 				return
 			}
-			end := len(comments)
-			if end > 26 {
-				end = 26
-			}
-			pr["comments"] = gpwConnection(comments[1:end], len(comments) > end, "comments-last")
-		} else if cursor == "comments-last" {
-			pr["comments"] = gpwConnection(comments[26:], false, "")
-		} else {
-			pr["comments"] = gpwConnection(comments[:1], true, "comments-next")
 		}
+		if cursor != "" && mode == "failed-comments" {
+			http.Error(w, "page unavailable", 500)
+			return
+		}
+		pageSize := 25
+		if capacity == 0 && start == 0 {
+			pageSize = 1
+		}
+		end := min(start+pageSize, len(comments))
+		next := ""
+		if end < len(comments) {
+			next = fmt.Sprintf("page-%d", end)
+		}
+		more := end < len(comments) || (capacity == 0 && start == 0)
+		if more && next == "" {
+			next = fmt.Sprintf("page-%d", end)
+		}
+		pr["comments"] = gpwConnection(comments[start:end], more, next)
 	case strings.Contains(call.Query, "PullRequestRequests"):
-		pr["reviewRequests"] = gpwConnection([]any{request}, false, "")
+		requests := []any{request}
+		if capacity > 0 {
+			request = map[string]any{"id": "Q1", "requestedReviewer": map[string]any{"__typename": "User", "id": "U1", "login": "reviewer"}}
+			requests = []any{request, map[string]any{"id": "Q2", "requestedReviewer": map[string]any{"__typename": "User", "id": "U2", "login": "other"}}}
+		}
+		pr["reviewRequests"] = gpwConnection(requests, false, "")
 	case strings.Contains(call.Query, "PullRequestThreadComments"):
 		if cursor == "thread-next" && mode == "failed-thread" {
 			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []any{map[string]any{"message": "private-body-marker"}}})
@@ -314,6 +387,9 @@ func (f *gpwFixture) serve(w http.ResponseWriter, r *http.Request) {
 			nodes = []any{reply2}
 			if revision < 2 {
 				nodes = []any{}
+			}
+			if capacity > 0 {
+				nodes = []any{reply2}
 			}
 			more = false
 			next = ""
@@ -331,12 +407,14 @@ func (f *gpwFixture) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 type gpwHost struct {
-	client *plugin.Client
-	stream pluginprotocol.SessionClient
-	cancel context.CancelFunc
-	frames chan map[string]any
-	log    string
-	file   *os.File
+	client    *plugin.Client
+	stream    pluginprotocol.SessionClient
+	cancel    context.CancelFunc
+	frames    chan map[string]any
+	log       string
+	file      *os.File
+	streamed  bool
+	closeOnce sync.Once
 }
 
 func startGPWHost(t mvpReporter, directory, host string, f *gpwFixture, overrides map[string]string) *gpwHost {
@@ -378,6 +456,9 @@ func startGPWHost(t mvpReporter, directory, host string, f *gpwFixture, override
 				return
 			}
 			var frame map[string]any
+			if len(payload) > 65536 {
+				return
+			}
 			if json.Unmarshal(payload, &frame) != nil {
 				return
 			}
@@ -393,15 +474,24 @@ func startGPWHost(t mvpReporter, directory, host string, f *gpwFixture, override
 	if !strings.Contains(string(caps), "rewait_v1") || !strings.Contains(string(caps), "runtime_state_v2") {
 		t.Fatalf("missing capabilities: %s", caps)
 	}
+	h.streamed = strings.Contains(string(caps), "runtime_state_stream_v1")
+	if !h.streamed {
+		t.Fatal("missing streamed-state capability")
+	}
 	DeferCleanup(h.close)
 	return h
 }
-func (h *gpwHost) close() { h.cancel(); h.client.Kill(); _ = h.file.Close() }
+
+func (h *gpwHost) close() { h.closeOnce.Do(func() { h.cancel(); h.client.Kill(); _ = h.file.Close() }) }
+
 func (h *gpwHost) send(t mvpReporter, frame map[string]any) {
 	frame["version"] = 2
 	data, err := json.Marshal(frame)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(data) > 65536 {
+		t.Fatalf("oversized host frame %d", len(data))
 	}
 	if err := h.stream.Send(data); err != nil {
 		t.Fatal(err)
@@ -428,13 +518,59 @@ func (h *gpwHost) receive(t mvpReporter, kind, id string) map[string]any {
 }
 
 func (h *gpwHost) watch(t mvpReporter, id, host string) map[string]any {
-	h.send(t, map[string]any{"type": "state_watch", "request_id": "watch-" + id, "subscription_id": id, "watch_args": gpwArgs(host), "state": nil})
-	return h.receive(t, "watch_result", "watch-"+id)
+	return h.restore(t, id, host, "", nil)
+}
+
+func (h *gpwHost) restore(t mvpReporter, id, host, schema string, chunks []any) map[string]any {
+	request := "watch-" + id
+	var wireSchema any
+	if schema != "" {
+		wireSchema = schema
+	}
+	h.send(t, map[string]any{"type": "state_stream_watch", "request_id": request, "subscription_id": id, "watch_args": gpwArgs(host), "schema": wireSchema, "chunk_count": strconv.Itoa(len(chunks))})
+	for i, chunk := range chunks {
+		h.send(t, map[string]any{"type": "state_stream_chunk", "request_id": request, "subscription_id": id, "index": strconv.Itoa(i), "data": chunk})
+	}
+	h.send(t, map[string]any{"type": "state_stream_end", "request_id": request, "subscription_id": id, "chunk_count": strconv.Itoa(len(chunks))})
+	return h.receive(t, "watch_result", request)
 }
 
 func (h *gpwHost) checkpoint(t mvpReporter, id, request string) map[string]any {
 	h.send(t, map[string]any{"type": "checkpoint", "request_id": request, "subscription_id": id, "quiesce": false})
-	return h.receive(t, "checkpoint_result", request)
+	begin := h.receive(t, "checkpoint_stream_begin", request)
+	chunks := []any{}
+	for {
+		frame := h.nextFrame(t)
+		if frame["request_id"] != request || frame["subscription_id"] != id {
+			t.Fatalf("foreign checkpoint frame %v", frame)
+		}
+		if frame["type"] == "checkpoint_stream_end" {
+			if frame["chunk_count"] != strconv.Itoa(len(chunks)) || len(chunks) == 0 {
+				t.Fatalf("bad end %v", frame)
+			}
+			break
+		}
+		if frame["type"] != "checkpoint_stream_chunk" || frame["index"] != strconv.Itoa(len(chunks)) {
+			t.Fatalf("bad chunk %v", frame)
+		}
+		data := frame["data"]
+		raw, _ := json.Marshal(data)
+		if len(raw) > 32768 {
+			t.Fatalf("oversized chunk %d", len(raw))
+		}
+		chunks = append(chunks, data)
+	}
+	return map[string]any{"accepted": true, "schema": begin["schema"], "chunks": chunks}
+}
+
+func (h *gpwHost) nextFrame(t mvpReporter) map[string]any {
+	select {
+	case frame := <-h.frames:
+		return frame
+	case <-time.After(3 * time.Second):
+		t.Fatalf("missing stream frame: %s", readMVPFile(h.log))
+		return nil
+	}
 }
 
 func (h *gpwHost) noEvent(t mvpReporter) {

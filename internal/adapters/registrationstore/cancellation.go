@@ -65,6 +65,9 @@ func (s *Store) BeginCancellation(owner domain.Subscription) error {
 // RemoveCancelled requires confirmed watch termination and a committed intent.
 // A cleanup error concerns only the remaining intent; err means removal failed.
 func (s *Store) RemoveCancelled(owner domain.Subscription) (cleanupErr error, err error) {
+	ownerLock := s.ownerLock(owner.ID)
+	ownerLock.Lock()
+	defer func() { ownerLock.Unlock(); s.releaseOwnerLock(owner.ID, ownerLock) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -230,7 +233,17 @@ func (s *Store) cancellationRuntimeFiles(id domain.SubscriptionID) ([]string, er
 		if err != nil {
 			return nil, fmt.Errorf("inspect cancelled runtime entry %s: %w", path, err)
 		}
-		if _, valid := parseGenerationName(entry.Name()); !valid || !isRegularFile(info) {
+		if strings.HasSuffix(entry.Name(), ".stream") {
+			name := strings.TrimSuffix(entry.Name(), ".stream") + ".json"
+			if _, valid := parseGenerationName(name); !valid || !isDirectory(info) {
+				return nil, fmt.Errorf("cancelled runtime entry %s must be a real stream generation directory", path)
+			}
+			files, err := s.streamDirectoryFiles(path)
+			if err != nil {
+				return nil, fmt.Errorf("inspect cancelled stream generation %s: %w", path, err)
+			}
+			paths = append(paths, files...)
+		} else if _, valid := parseGenerationName(entry.Name()); !valid || !isRegularFile(info) {
 			return nil, fmt.Errorf("cancelled runtime entry %s must be a regular generation file", path)
 		}
 		paths = append(paths, path)

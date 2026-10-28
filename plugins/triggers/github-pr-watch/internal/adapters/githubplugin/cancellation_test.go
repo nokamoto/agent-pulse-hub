@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -48,7 +49,7 @@ func TestCancellationDiscardsPreparedRewaitAndJoinsOnlyTargetMonitor(t *testing.
 		}
 	}()
 	ready := receiveFrame(t, stream)
-	if len(ready.Capabilities) != 3 || ready.Capabilities[2] != pluginprotocol.CancelWatchCapability {
+	if len(ready.Capabilities) != 4 || ready.Capabilities[3] != pluginprotocol.CancelWatchCapability {
 		t.Fatalf("readiness: %+v", ready)
 	}
 	a := stateWatch(t, "a")
@@ -69,14 +70,12 @@ func TestCancellationDiscardsPreparedRewaitAndJoinsOnlyTargetMonitor(t *testing.
 	if err := tracker.Reconcile(observation); err != nil {
 		t.Fatal(err)
 	}
-	a.State, err = tracker.Checkpoint()
+	objects, err := tracker.StreamCheckpoint()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, frame := range []pluginprotocol.Frame{a, stateWatch(t, "b")} {
-		sendFrame(t, stream, frame)
-		assertResult(t, receiveFrame(t, stream), "watch_result", frame.RequestID, true)
-	}
+	registerStreamWatch(t, stream, a, objects)
+	registerStreamWatch(t, stream, stateWatch(t, "b"), nil)
 	sendFrame(t, stream, pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: "a", Generation: "generation-1"})
 	event := receiveFrame(t, stream)
 	if event.Type != "state_event" || event.SubscriptionID != "a" {
@@ -104,7 +103,7 @@ func TestCancellationDiscardsPreparedRewaitAndJoinsOnlyTargetMonitor(t *testing.
 	}
 	sendFrame(t, stream, pluginprotocol.Frame{Type: "cancel_watch", RequestID: "cancel-a-2", SubscriptionID: "a"})
 	sendFrame(t, stream, pluginprotocol.Frame{Type: "checkpoint", RequestID: "b-live", SubscriptionID: "b"})
-	assertResult(t, receiveFrame(t, stream), "checkpoint_result", "b-live", true)
+	receiveCheckpoint(t, stream, "b-live")
 	select {
 	case frame := <-stream.outgoing:
 		t.Fatalf("cancellation acknowledged before source exit: %s", frame)
@@ -125,10 +124,89 @@ func TestCancellationDiscardsPreparedRewaitAndJoinsOnlyTargetMonitor(t *testing.
 	assertResult(t, receiveFrame(t, stream), "resume_result", "late-prepare", false)
 	sendFrame(t, stream, pluginprotocol.Frame{Type: "checkpoint", RequestID: "a-absent", SubscriptionID: "a"})
 	assertResult(t, receiveFrame(t, stream), "checkpoint_result", "a-absent", false)
-	sendFrame(t, stream, stateWatch(t, "fresh-a"))
-	assertResult(t, receiveFrame(t, stream), "watch_result", "watch-fresh-a", true)
+	registerStreamWatch(t, stream, stateWatch(t, "fresh-a"), nil)
 	sendFrame(t, stream, pluginprotocol.Frame{Type: "cancel_watch", RequestID: "absent", SubscriptionID: "a"})
 	assertResult(t, receiveFrame(t, stream), "cancel_result", "absent", true)
+}
+
+func TestCancellationJoinsRestorationAndIgnoresLateStreamFrames(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	credentials, github := NewMockCredentials(ctrl), NewMockGitHub(ctrl)
+	credentials.EXPECT().Token(gomock.Any(), "github.com").Return("token", nil).AnyTimes()
+	started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releaseTarget := sync.OnceFunc(func() { close(release) })
+	defer releaseTarget()
+	validation := github.EXPECT().Validate(gomock.Any(), gomock.Any(), "token").DoAndReturn(func(ctx context.Context, _ domain.WatchConfig, _ string) error {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+		<-release
+		return nil // A late successful network result must not install this watch.
+	}).Times(1)
+	github.EXPECT().Validate(gomock.Any(), gomock.Any(), "token").Return(nil).After(validation).AnyTimes()
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &testSession{ctx: ctx, incoming: make(chan []byte, 16), outgoing: make(chan []byte, 16)}
+	p := New(slog.New(slog.NewTextHandler(io.Discard, nil)), credentials, github, "github.com", time.Hour)
+	done := make(chan error, 1)
+	go func() { done <- p.Session(stream) }()
+	defer func() {
+		releaseTarget()
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Session: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("Session did not stop")
+		}
+	}()
+	receiveFrame(t, stream)
+	a := stateWatch(t, "a")
+	sendFrame(t, stream, a)
+	sendFrame(t, stream, pluginprotocol.Frame{Type: "state_stream_end", RequestID: a.RequestID, SubscriptionID: "a", ChunkCount: "0"})
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restoration validation did not start")
+	}
+	sendFrame(t, stream, pluginprotocol.Frame{Type: "cancel_watch", RequestID: "cancel-a-1", SubscriptionID: "a"})
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restoration validation was not cancelled")
+	}
+	sendFrame(t, stream, pluginprotocol.Frame{Type: "cancel_watch", RequestID: "cancel-a-2", SubscriptionID: "a"})
+	late := []pluginprotocol.Frame{
+		{Type: "state_stream_chunk", RequestID: a.RequestID, SubscriptionID: "a", Index: "0", Data: jsonvalue.NewObject(nil)},
+		{Type: "state_stream_end", RequestID: a.RequestID, SubscriptionID: "a", ChunkCount: "0"},
+		{Type: "activate_watch", SubscriptionID: "a", Generation: "late"},
+	}
+	for _, frame := range late {
+		sendFrame(t, stream, frame)
+	}
+	// Another watch can validate and checkpoint while A's cancelled validation
+	// still holds its network resources. Neither cancel may acknowledge early.
+	registerStreamWatch(t, stream, stateWatch(t, "b"), nil)
+	sendFrame(t, stream, pluginprotocol.Frame{Type: "checkpoint", RequestID: "b-live", SubscriptionID: "b"})
+	receiveCheckpoint(t, stream, "b-live")
+	releaseTarget()
+	seen := map[string]bool{}
+	for range 2 {
+		frame := receiveFrame(t, stream)
+		assertResult(t, frame, "cancel_result", frame.RequestID, true)
+		seen[frame.RequestID] = true
+	}
+	if !seen["cancel-a-1"] || !seen["cancel-a-2"] {
+		t.Fatalf("overlapping cancellation results: %v", seen)
+	}
+	for _, frame := range late {
+		sendFrame(t, stream, frame)
+	}
+	sendFrame(t, stream, pluginprotocol.Frame{Type: "checkpoint", RequestID: "a-absent", SubscriptionID: "a"})
+	assertResult(t, receiveFrame(t, stream), "checkpoint_result", "a-absent", false)
+	sendFrame(t, stream, pluginprotocol.Frame{Type: "checkpoint", RequestID: "b-still-live", SubscriptionID: "b"})
+	receiveCheckpoint(t, stream, "b-still-live")
 }
 
 func stateWatch(t *testing.T, id string) pluginprotocol.Frame {
@@ -137,7 +215,41 @@ func stateWatch(t *testing.T, id string) pluginprotocol.Frame {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pluginprotocol.Frame{Type: "state_watch", RequestID: "watch-" + id, SubscriptionID: id, WatchArgs: args, State: jsonvalue.NewNull()}
+	return pluginprotocol.Frame{Type: "state_stream_watch", RequestID: "watch-" + id, SubscriptionID: id, WatchArgs: args, ChunkCount: "0"}
+}
+
+func registerStreamWatch(t *testing.T, stream *testSession, frame pluginprotocol.Frame, objects []*jsonvalue.Value) {
+	t.Helper()
+	if len(objects) > 0 {
+		frame.Schema = "github-pr-watch-v2"
+		frame.ChunkCount = strconv.Itoa(len(objects))
+	}
+	sendFrame(t, stream, frame)
+	for i, object := range objects {
+		sendFrame(t, stream, pluginprotocol.Frame{Type: "state_stream_chunk", RequestID: frame.RequestID, SubscriptionID: frame.SubscriptionID, Index: strconv.Itoa(i), Data: object})
+	}
+	sendFrame(t, stream, pluginprotocol.Frame{Type: "state_stream_end", RequestID: frame.RequestID, SubscriptionID: frame.SubscriptionID, ChunkCount: frame.ChunkCount})
+	assertResult(t, receiveFrame(t, stream), "watch_result", frame.RequestID, true)
+}
+
+func receiveCheckpoint(t *testing.T, stream *testSession, requestID string) {
+	t.Helper()
+	begin := receiveFrame(t, stream)
+	if begin.Type != "checkpoint_stream_begin" || begin.RequestID != requestID {
+		t.Fatalf("checkpoint begin: %+v", begin)
+	}
+	for count := 0; ; count++ {
+		frame := receiveFrame(t, stream)
+		if frame.RequestID != requestID {
+			t.Fatalf("checkpoint correlation: %+v", frame)
+		}
+		if frame.Type == "checkpoint_stream_end" && count > 0 && frame.ChunkCount == strconv.Itoa(count) {
+			return
+		}
+		if frame.Type != "checkpoint_stream_chunk" || frame.Index != strconv.Itoa(count) {
+			t.Fatalf("checkpoint chunk: %+v", frame)
+		}
+	}
 }
 
 type testSession struct {

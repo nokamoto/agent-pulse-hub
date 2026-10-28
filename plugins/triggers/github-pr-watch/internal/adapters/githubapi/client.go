@@ -28,8 +28,9 @@ const (
 )
 
 type Client struct {
-	http *http.Client
-	now  func() time.Time
+	http       *http.Client
+	now        func() time.Time
+	byteBudget uint64
 }
 
 func New() *Client {
@@ -48,12 +49,20 @@ func New() *Client {
 func NewWithHTTPClient(client *http.Client) *Client {
 	copyClient := *client
 	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Client{http: &copyClient, now: time.Now}
+	return &Client{http: &copyClient, now: time.Now, byteBudget: domain.DefaultByteBudget}
+}
+
+func (c *Client) WithByteBudget(budget uint64) *Client { c.byteBudget = budget; return c }
+func (c *Client) budget() uint64 {
+	if c.byteBudget == 0 {
+		return domain.DefaultByteBudget
+	}
+	return c.byteBudget
 }
 
 func (c *Client) Validate(ctx context.Context, config domain.WatchConfig, token string) error {
 	query := `query ValidatePullRequest($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name,followRenames:false){pullRequest(number:$number){` + aggregateFields + ` reviews(first:1){nodes{` + reviewFields + `} ` + pageInfo + `} comments(first:1){nodes{` + discussionFields + `} ` + pageInfo + `} reviewRequests(first:1){nodes{` + requestFields + `} ` + pageInfo + `} reviewThreads(first:1){nodes{` + threadFields + ` comments(first:1){nodes{` + commentFields + `} ` + pageInfo + `}} ` + pageInfo + `}}}}`
-	total := 0
+	total := uint64(0)
 	data, err := c.request(ctx, config, token, query, variables(config), &total)
 	if err != nil {
 		return err
@@ -91,10 +100,11 @@ func (c *Client) Validate(ctx context.Context, config domain.WatchConfig, token 
 }
 
 func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token string) (domain.Observation, error) {
-	roundCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	roundCtx, cancel := context.WithTimeout(ctx, 300*time.Second)
 	defer cancel()
 	result := domain.Observation{StartedAt: c.now(), Items: []domain.Item{}}
-	total := 0
+	total := uint64(0)
+	candidateBytes := uint64(256)
 	query := `query PullRequestMetadata($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name,followRenames:false){pullRequest(number:$number){` + aggregateFields + `}}}`
 	data, err := c.request(roundCtx, config, token, query, variables(config), &total)
 	if err != nil {
@@ -151,7 +161,7 @@ func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token s
 				}
 				seenItems[item.ID] = string(raw)
 				if category.kind == "thread" {
-					comments, err := c.threadComments(roundCtx, config, token, item.ID, &total)
+					comments, err := c.threadComments(roundCtx, config, token, item.ID, &total, &candidateBytes)
 					if err != nil {
 						return result, err
 					}
@@ -160,10 +170,10 @@ func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token s
 					}
 					result.Items = append(result.Items, comments...)
 				}
-				result.Items = append(result.Items, item)
-				if len(result.Items) > 32 {
-					return result, failure("coverage_capacity_exceeded")
+				if err := c.accountItem(item, &candidateBytes); err != nil {
+					return result, err
 				}
+				result.Items = append(result.Items, item)
 			}
 			if !next {
 				break
@@ -179,7 +189,7 @@ func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token s
 	return result, nil
 }
 
-func (c *Client) threadComments(ctx context.Context, config domain.WatchConfig, token, thread string, total *int) ([]domain.Item, error) {
+func (c *Client) threadComments(ctx context.Context, config domain.WatchConfig, token, thread string, total, candidateBytes *uint64) ([]domain.Item, error) {
 	result := []domain.Item{}
 	cursor := ""
 	seenCursors := map[string]bool{}
@@ -219,10 +229,10 @@ func (c *Client) threadComments(ctx context.Context, config domain.WatchConfig, 
 			}
 			seenItems[item.ID] = string(encoded)
 			item.Thread = thread
-			result = append(result, item)
-			if len(result) > 32 {
-				return nil, failure("coverage_capacity_exceeded")
+			if err := c.accountItem(item, candidateBytes); err != nil {
+				return nil, err
 			}
+			result = append(result, item)
 		}
 		if !next {
 			break
@@ -241,7 +251,22 @@ func variables(c domain.WatchConfig) map[string]any {
 }
 func failure(code string) error { return &application.Failure{Code: code} }
 
-func (c *Client) request(ctx context.Context, config domain.WatchConfig, token, query string, vars map[string]any, total *int) (map[string]json.RawMessage, error) {
+func (c *Client) accountItem(item domain.Item, used *uint64) error {
+	var raw bytes.Buffer
+	encoder := json.NewEncoder(&raw)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(item); err != nil {
+		return err
+	}
+	n := uint64(raw.Len())
+	if *used > c.budget() || n > c.budget()-*used {
+		return &domain.ResourceError{Code: "observation_resource_exhausted", Option: "--observation-byte-budget", Budget: c.budget(), Observed: *used + n}
+	}
+	*used += n
+	return nil
+}
+
+func (c *Client) request(ctx context.Context, config domain.WatchConfig, token, query string, vars map[string]any, total *uint64) (map[string]json.RawMessage, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	endpoint := "https://" + config.Host + "/api/graphql"
@@ -265,14 +290,24 @@ func (c *Client) request(ctx context.Context, config domain.WatchConfig, token, 
 		return nil, failure("network")
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, (256<<10)+1))
+	limit := uint64(256 << 10)
+	if *total > c.budget() {
+		return nil, &domain.ResourceError{Code: "observation_resource_exhausted", Option: "--observation-byte-budget", Budget: c.budget(), Observed: *total}
+	}
+	if remaining := c.budget() - *total; remaining < limit {
+		limit = remaining
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, int64(limit)+1))
 	if err != nil {
 		return nil, failure("network")
 	}
-	*total += len(body)
-	if len(body) > 256<<10 || *total > 1<<20 {
+	if len(body) > 256<<10 {
 		return nil, failure("coverage_capacity_exceeded")
 	}
+	if uint64(len(body)) > c.budget()-*total {
+		return nil, &domain.ResourceError{Code: "observation_resource_exhausted", Option: "--observation-byte-budget", Budget: c.budget(), Observed: *total + uint64(len(body))}
+	}
+	*total += uint64(len(body))
 	retry := retryGuidance(response.Header, c.now())
 	if response.StatusCode != http.StatusOK {
 		code := "access_denied"

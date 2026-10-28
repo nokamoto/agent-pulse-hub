@@ -66,8 +66,8 @@ func bodyDigest(body string) string {
 }
 
 func fingerprints(o Observation) ([]Fingerprint, error) {
-	if len(o.Items) > 32 || o.PR.ID == "" || o.PR.URL == "" || o.PR.Head == "" || o.PR.State == "" || o.EndedAt.Before(o.StartedAt) {
-		return nil, errors.New("coverage_capacity_exceeded")
+	if o.PR.ID == "" || o.PR.URL == "" || o.PR.Head == "" || o.PR.State == "" || o.EndedAt.Before(o.StartedAt) {
+		return nil, errors.New("incomplete_retrieval")
 	}
 	result := make([]Fingerprint, 0, len(o.Items))
 	seen := map[string]bool{}
@@ -84,12 +84,8 @@ func fingerprints(o Observation) ([]Fingerprint, error) {
 		canonical.SubmittedAt = nil
 		canonical.BodyDigest = ""
 		f := Fingerprint{ID: item.ID, Kind: item.Kind, Digest: digest(canonical)}
-		encoded, _ := json.Marshal(f)
-		if len(encoded) > 192 {
-			return nil, errors.New("coverage_capacity_exceeded")
-		}
 		result = append(result, f)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Kind+result[i].ID < result[j].Kind+result[j].ID })
+	sort.Slice(result, func(i, j int) bool { return result[i].Kind+":"+result[i].ID < result[j].Kind+":"+result[j].ID })
 	return result, nil
 }
