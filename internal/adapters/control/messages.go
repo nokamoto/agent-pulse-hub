@@ -28,6 +28,11 @@ type RegistrationResponse struct {
 }
 
 type controlRequest struct {
+	notificationID       string
+	after                string
+	limit                int
+	offset               int
+	revision             string
 	operation            string
 	registration         RegistrationRequest
 	subscriptionID       string
@@ -48,8 +53,11 @@ func parseRequest(frame []byte) (controlRequest, *hub.Error) {
 		return controlRequest{}, &hub.Error{Code: "unsupported_version", Message: "Control protocol version is missing or unsupported."}
 	}
 	operation, ok := protocol.StringField(value, "op")
-	if !ok || (operation != "register" && operation != "stop" && operation != "rewait" && operation != "unsubscribe") {
+	if !ok || (operation != "register" && operation != "stop" && operation != "rewait" && operation != "unsubscribe" && operation != "notifications" && operation != "notification") {
 		return controlRequest{}, &hub.Error{Code: "invalid_request", Message: "Control operation is invalid."}
+	}
+	if operation == "notification" || operation == "notifications" {
+		return parseNotificationRequest(value, operation)
 	}
 	if operation == "unsubscribe" {
 		fields := []string{"version", "op", "subscription_id"}

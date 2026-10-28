@@ -29,6 +29,11 @@ const (
 )
 
 type Frame struct {
+	Reason               string
+	Message              string
+	Receipt              *string
+	Retryable            *bool
+	RetryAfterMS         *int
 	Type                 string
 	Role                 string
 	Capabilities         []string
@@ -77,7 +82,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 			}
 			frame.Role = role
 			if capabilities, exists := value.Get("capabilities"); exists {
-				if role != "input" || capabilities.Kind() != jsonvalue.Array {
+				if capabilities.Kind() != jsonvalue.Array {
 					return Frame{}, errors.New("capabilities are only valid as an input array")
 				}
 				items := capabilities.Items()
@@ -85,7 +90,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				seen := make(map[string]struct{}, len(items))
 				for _, item := range items {
 					capability, ok := jsonvalue.ParseString(item)
-					if !ok || (capability != RuntimeStateCapability && capability != RuntimeStateV2Capability && capability != RewaitCapability && capability != CancelWatchCapability) {
+					if !ok || (role == "output" && capability != NotificationCapability) || (role == "input" && capability != RuntimeStateCapability && capability != RuntimeStateV2Capability && capability != RewaitCapability && capability != CancelWatchCapability) {
 						return Frame{}, errors.New("ready contains an unknown or invalid capability")
 					}
 					if _, duplicate := seen[capability]; duplicate {
@@ -101,6 +106,8 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 					return Frame{}, errors.New("ready must select exactly one runtime-state revision")
 				}
 			}
+		case "notification_result", "notification_evidence":
+			return decodeNotification(value, typeName)
 		case "watch_result", "destination_result", "resume_result", "cancel_result":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "accepted"}, "version", "type", "request_id", "accepted", "error"); err != nil {
 				return Frame{}, err
@@ -289,7 +296,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 			}
 			frame.RequestID = requestID
 			frame.DestinationArgs = args
-		case "deliver":
+		case "deliver", "notification_deliver":
 			fields := []string{"version", "type", "request_id", "delivery_id", "input_plugin", "subscription_id", "destination_args", "context", "external_data", "permission_notice"}
 			if err := protocol.ValidateFields(value, fields, fields...); err != nil {
 				return Frame{}, err
@@ -304,6 +311,9 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 			permissionNotice, noticeOK := protocol.StringField(value, "permission_notice")
 			if !requestOK || requestID == "" || !deliveryOK || deliveryID == "" || !inputOK || inputPlugin == "" || !subscriptionOK || subscriptionID == "" || !argsOK || !contextOK || contextText == "" || !utf8.ValidString(contextText) || len([]byte(contextText)) > MaxContextBytes || !externalOK || !externalData || !noticeOK || permissionNotice != PermissionNotice {
 				return Frame{}, errors.New("delivery request fields are invalid")
+			}
+			if typeName == "notification_deliver" && (!notificationUUID(requestID) || !notificationUUID(deliveryID)) {
+				return Frame{}, errors.New("invalid notification identifiers")
 			}
 			frame.RequestID = requestID
 			frame.DeliveryID = deliveryID
@@ -352,6 +362,8 @@ func Encode(frame Frame) ([]byte, error) {
 		"type":    jsonvalue.NewString(frame.Type),
 	}
 	switch frame.Type {
+	case "notification_result", "notification_evidence":
+		fields = encodeNotification(frame)
 	case "cancel_watch":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
@@ -404,7 +416,7 @@ func Encode(frame Frame) ([]byte, error) {
 	case "validate_destination":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		fields["destination_args"] = frame.DestinationArgs
-	case "deliver":
+	case "deliver", "notification_deliver":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		fields["delivery_id"] = jsonvalue.NewString(frame.DeliveryID)
 		fields["input_plugin"] = jsonvalue.NewString(frame.InputPlugin)
@@ -458,7 +470,7 @@ func Encode(frame Frame) ([]byte, error) {
 
 func directionFor(typeName string) Direction {
 	switch typeName {
-	case "ready", "watch_result", "event", "state_event", "destination_result", "delivery_result", "checkpoint_result", "resume_result", "cancel_result":
+	case "notification_result", "notification_evidence", "ready", "watch_result", "event", "state_event", "destination_result", "delivery_result", "checkpoint_result", "resume_result", "cancel_result":
 		return PluginToDaemon
 	default:
 		return DaemonToPlugin
