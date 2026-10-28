@@ -108,7 +108,8 @@ file containing only the validated thread ID. If it cannot remove that file,
 it writes a `register-current warning:` line to stderr before reporting the
 outcome; the warning does not change the registration result. Confirmed success
 exits with code 0 and prints the hub's successful JSON response, including the
-subscription ID. A valid client rejection exits with code 1 and reports its
+subscription ID. Retain that ID together with the daemon address for explicit
+cancellation. A valid client rejection exits with code 1 and reports its
 `code` and `message` on stderr. Local validation or process-start failures also
 exit with code 1 and write a stderr line beginning with
 `register-current failed:`. If the client starts but the result cannot be
@@ -168,10 +169,51 @@ conversation before publishing another event for the same purpose. The action
 does not retry. If the target is busy, queue delivery waits without interrupting
 it; the action never substitutes a steering or new-conversation command.
 
+## Cancel one subscription
+
+Use the unchanged `subscription_id` returned by the registration you want to
+remove, and its configured hub address. Ask the bundled skill to cancel that
+explicit ID, or run its direct command yourself:
+
+```text
+HUB_EXECUTABLE unsubscribe --subscription-id REGISTERED_SUBSCRIPTION_ID --address LOOPBACK_ADDRESS
+```
+
+Replace the placeholders with your retained ID and configured values. This
+operation does not use `register-current`, either Codex identity variable, or
+the original argument files. Never infer the target from the conversation.
+Require exit zero and `{"ok":true,"subscription_id":"REGISTERED_SUBSCRIPTION_ID"}`
+with the exact requested ID. Only that watch and its saved registration/progress
+are removed. An already-issued queue request may still complete, and an
+accepted Codex message may still be processed. Cancellation cannot recall it.
+
+Keep an unrelated subscription B registered with its own returned ID and a
+different manual trigger path. After success, publish distinct A/B markers as
+described above. Observe B's accepted delivery and later message processing in
+its registered conversation, with no new A `delivery_attempt`. Stop normally
+and wait for daemon/plugin exits, then restart from the same configuration and
+state: A remains absent, B is restored with its saved ID. The root
+[local example](../../../README.md#cancel-one-subscription) shows the two-watch
+publication and restart sequence using file output.
+
+`unknown_subscription` includes an already-removed ID and is a failure, not
+proof of which caller removed it. `unsubscribe_unsupported` requires upgrading
+the daemon and input together while stopped; reuse the saved ID after restart.
+For `unsubscribe_busy`, wait for the executing request's result before an
+explicit retry. `cancellation_rejected`, `plugin_unavailable` and `storage_error`
+can stop new attempts while leaving the registration saved: report the
+diagnostic's failing stage and whether the removal request was durably saved.
+Before that request is saved, restart may restore the watch; afterwards startup
+completes deletion before readiness. Repair the cause before
+an explicit same-ID retry or normal restart. Transport loss or a mismatched
+response ID leaves the outcome uncertain. Do not automatically retry or select
+another ID. Follow the [cancellation recovery guide](../../../docs/design/windows-operations.md#cancel-one-subscription)
+without modifying live state or discarding a pending intent.
+
 ## Stop and recover
 
 Stop the hub with its existing `stop --address` command and wait for both
-configured plugin processes to exit. Completed registrations and their IDs
+configured plugin processes to exit. Uncancelled registrations and their IDs
 survive normal shutdown. Reuse the same configuration/state, restore manual
 trigger absence deliberately while stopped, then restart and wait for
 `daemon_ready` with the saved route count before publishing a new event. No
