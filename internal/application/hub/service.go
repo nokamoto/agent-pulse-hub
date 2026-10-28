@@ -65,6 +65,8 @@ type RuntimeCheckpointRequest struct {
 }
 
 // PluginPort owns one configured go-plugin child and its role-specific stream.
+//
+//go:generate go run go.uber.org/mock/mockgen -source=service.go -destination=service_mock_test.go -package=hub
 type PluginPort interface {
 	Start(context.Context, PluginHandlers) error
 	ValidateDestination(context.Context, DestinationRequest) error
@@ -140,6 +142,7 @@ type Hub struct {
 
 	plugins            map[string]*pluginState
 	registrations      map[domain.SubscriptionID]domain.Subscription
+	savedRegistrations map[domain.SubscriptionID]domain.Subscription
 	retained           map[domain.SubscriptionID]struct{}
 	activeByKey        map[string]domain.SubscriptionID
 	pendingByKey       map[string]*pendingRegistration
@@ -150,6 +153,7 @@ type Hub struct {
 	runtimeWatches     map[domain.SubscriptionID]*runtimeWatch
 	admissionOpen      bool
 	queue              chan queuedEvent
+	queueReady         chan struct{}
 	pendingEvents      int
 	stopping           bool
 	shutdownStarted    bool
@@ -165,6 +169,9 @@ type Hub struct {
 	sessionStartMillis int64
 	rewaitNow          func() time.Time
 	rewaitWait         sync.WaitGroup
+	cancellations      map[domain.SubscriptionID]*cancellationState
+	lifecycles         map[domain.SubscriptionID]*subscriptionLifecycle
+	cancellationWait   sync.WaitGroup
 
 	stopCh     chan struct{}
 	workerDone chan struct{}
@@ -181,12 +188,14 @@ func New(logger *slog.Logger) *Hub {
 	hub := &Hub{
 		plugins:            make(map[string]*pluginState),
 		registrations:      make(map[domain.SubscriptionID]domain.Subscription),
+		savedRegistrations: make(map[domain.SubscriptionID]domain.Subscription),
 		retained:           make(map[domain.SubscriptionID]struct{}),
 		activeByKey:        make(map[string]domain.SubscriptionID),
 		pendingByKey:       make(map[string]*pendingRegistration),
 		runtimeStates:      make(map[domain.SubscriptionID]*jsonvalue.Value),
 		runtimeWatches:     make(map[domain.SubscriptionID]*runtimeWatch),
 		queue:              make(chan queuedEvent, MaxDeliveries),
+		queueReady:         make(chan struct{}, 1),
 		stopCh:             make(chan struct{}),
 		workerDone:         make(chan struct{}),
 		shutdownDone:       make(chan struct{}),
@@ -195,6 +204,8 @@ func New(logger *slog.Logger) *Hub {
 		activationBatches:  make(map[string]*activationBatch),
 		notificationWaits:  make(map[domain.SubscriptionID]*notificationWait),
 		rewaitReceipts:     make(map[string]*rewaitReceipt),
+		cancellations:      make(map[domain.SubscriptionID]*cancellationState),
+		lifecycles:         make(map[domain.SubscriptionID]*subscriptionLifecycle),
 		sessionStartMillis: time.Now().UnixMilli(),
 		rewaitNow:          time.Now,
 		ctx:                ctx,
@@ -356,6 +367,7 @@ func (h *Hub) Restore(ctx context.Context) error {
 		registration.Active = true
 		key := registrationKey(registration.InputPlugin, registration.WatchArgs, registration.OutputPlugin, registration.DestinationArgs)
 		h.registrations[registration.ID] = registration
+		h.savedRegistrations[registration.ID] = registration
 		h.activeByKey[key] = registration.ID
 		if input := h.plugins[registration.InputPlugin]; input.participates() {
 			h.runtimeWatches[registration.ID] = &runtimeWatch{
@@ -508,6 +520,16 @@ func (h *Hub) Register(inputName string, watchArgs *jsonvalue.Value, outputName 
 	key := registrationKey(inputName, watchArgs, outputName, destinationArgs)
 
 	h.mu.Lock()
+	for id := range h.cancellations {
+		registration, ok := h.registrations[id]
+		if !ok {
+			registration, ok = h.savedRegistrations[id]
+		}
+		if ok && registrationKey(registration.InputPlugin, registration.WatchArgs, registration.OutputPlugin, registration.DestinationArgs) == key {
+			h.mu.Unlock()
+			return "", &Error{Code: "unsubscribe_busy", Message: "An equivalent subscription is cancelling; explicitly retry after removal."}
+		}
+	}
 	if h.stopping || !h.admissionOpen {
 		h.mu.Unlock()
 		return "", &Error{Code: "plugin_unavailable", Message: "Daemon is not accepting registrations."}
@@ -678,6 +700,7 @@ func (h *Hub) activate(pending *pendingRegistration) error {
 				return nil
 			}
 			h.retained[pending.id] = struct{}{}
+			h.savedRegistrations[pending.id] = registration
 		}
 		registration.Active = true
 		h.activeByKey[pending.key] = pending.id
@@ -762,7 +785,7 @@ func (h *Hub) acceptGenerationEvent(pluginName string, port PluginPort, subscrip
 		return discard("discarded")
 	}
 	registration, ok := h.registrations[domain.SubscriptionID(subscriptionID)]
-	if !ok || !registration.Active || registration.InputPlugin != pluginName {
+	if !ok || !registration.Active || h.cancellations[registration.ID] != nil || registration.InputPlugin != pluginName {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "inactive or foreign subscription")
 		return discard("discarded")
 	}
@@ -810,6 +833,7 @@ func (h *Hub) acceptGenerationEvent(pluginName string, port PluginPort, subscrip
 	receivedAt := time.Now().UTC()
 	select {
 	case h.queue <- queuedEvent{event: event, outputPort: outputState.port, inputPort: port, eventID: eventID}:
+		h.signalQueueLocked()
 		if wait := h.notificationWaits[registration.ID]; wait != nil {
 			wait.armed = false
 			wait.outstanding = true
@@ -916,8 +940,18 @@ func (h *Hub) deliveryWorker() {
 		case <-h.stopCh:
 			h.discardQueued()
 			return
-		case item := <-h.queue:
+		case <-h.queueReady:
 			h.mu.Lock()
+			var item queuedEvent
+			select {
+			case item = <-h.queue:
+			default:
+				h.mu.Unlock()
+				continue
+			}
+			if len(h.queue) > 0 {
+				h.signalQueueLocked()
+			}
 			stopping := h.stopping
 			h.mu.Unlock()
 			if stopping {
@@ -930,16 +964,40 @@ func (h *Hub) deliveryWorker() {
 	}
 }
 
+func (h *Hub) signalQueueLocked() {
+	select {
+	case h.queueReady <- struct{}{}:
+	default:
+	}
+}
+
 func (h *Hub) deliver(item queuedEvent) {
 	event := item.event
 	started := time.Now().UTC()
 	h.mu.Lock()
 	state := h.plugins[event.OutputPlugin]
-	available := !h.stopping && state != nil && state.role == domain.OutputRole && state.available && state.port == item.outputPort
+	registration, retained := h.registrations[event.SubscriptionID]
+	available := retained && registration.Active && !h.stopping && h.cancellations[event.SubscriptionID] == nil && state != nil && state.role == domain.OutputRole && state.available && state.port == item.outputPort
 	h.mu.Unlock()
-	h.logger.Info("delivery_attempt", "input_plugin", event.InputPlugin, "output_plugin", event.OutputPlugin, "subscription_id", event.SubscriptionID, "delivery_id", event.ID, "attempted_at", started)
+	if !available {
+		h.discardEvent(item, "subscription or output unavailable")
+		return
+	}
 	result := DeliveryResult{Outcome: domain.DeliveryFailed, Detail: "output plugin unavailable before delivery"}
-	if available {
+	if guarded, ok := item.outputPort.(guardedDeliveryPort); ok {
+		result = guarded.DeliverGuarded(h.ctx, event, func(issue func()) bool {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			registration, retained := h.registrations[event.SubscriptionID]
+			state := h.plugins[event.OutputPlugin]
+			if !retained || !registration.Active || h.stopping || h.cancellations[event.SubscriptionID] != nil || state == nil || !state.available || state.port != item.outputPort {
+				return false
+			}
+			issue()
+			h.logger.Info("delivery_attempt", "input_plugin", event.InputPlugin, "output_plugin", event.OutputPlugin, "subscription_id", event.SubscriptionID, "delivery_id", event.ID, "attempted_at", started)
+			return true
+		})
+	} else {
 		result = item.outputPort.Deliver(h.ctx, event)
 	}
 	h.mu.Lock()
@@ -1002,6 +1060,7 @@ func (h *Hub) Shutdown() {
 	<-h.workerDone
 	h.activationWait.Wait()
 	h.rewaitWait.Wait()
+	h.cancellationWait.Wait()
 	if runtimeDone != nil {
 		<-runtimeDone
 	}

@@ -48,8 +48,16 @@ func parseRequest(frame []byte) (controlRequest, *hub.Error) {
 		return controlRequest{}, &hub.Error{Code: "unsupported_version", Message: "Control protocol version is missing or unsupported."}
 	}
 	operation, ok := protocol.StringField(value, "op")
-	if !ok || (operation != "register" && operation != "stop" && operation != "rewait") {
+	if !ok || (operation != "register" && operation != "stop" && operation != "rewait" && operation != "unsubscribe") {
 		return controlRequest{}, &hub.Error{Code: "invalid_request", Message: "Control operation is invalid."}
+	}
+	if operation == "unsubscribe" {
+		fields := []string{"version", "op", "subscription_id"}
+		id, valid := protocol.StringField(value, "subscription_id")
+		if protocol.ValidateFields(value, fields, fields...) != nil || !valid || !ValidSubscriptionID(id) {
+			return controlRequest{}, &hub.Error{Code: "invalid_request", Message: "Unsubscribe requires exactly one canonical lowercase subscription UUID."}
+		}
+		return controlRequest{operation: operation, subscriptionID: id}, nil
 	}
 	if operation == "rewait" {
 		fields := []string{"version", "op", "subscription_id", "operation_id", "confirmation_position"}

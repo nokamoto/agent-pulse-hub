@@ -62,6 +62,11 @@ type validationResult struct {
 	err            error
 }
 
+type cancellation struct {
+	requestID, subscriptionID string
+	watch                     *watch
+}
+
 func New(logger *slog.Logger, credentials application.Credentials, github application.GitHub) *Plugin {
 	if logger == nil {
 		logger = slog.Default()
@@ -85,17 +90,41 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 		p.active = false
 		p.mu.Unlock()
 	}()
-	if err := p.send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.RuntimeStateV2Capability}}); err != nil {
+	if err := p.send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.RuntimeStateV2Capability, pluginprotocol.CancelWatchCapability}}); err != nil {
 		return fmt.Errorf("send readiness: %w", err)
 	}
 
 	incomingFrames := make(chan incoming, 16)
 	observations := make(chan observation, 16)
 	validations := make(chan validationResult, maxConcurrentValidations)
+	cancellations := make(chan cancellation, maxConcurrentValidations)
 	go receive(ctx, stream, incomingFrames)
 	watches := make(map[string]*watch)
 	pending := make(map[string]struct{})
 	defer stopWatches(watches)
+	handle := func(frame pluginprotocol.Frame) error {
+		if frame.Type == "cancel_watch" {
+			delete(pending, frame.SubscriptionID)
+			current := watches[frame.SubscriptionID]
+			if current == nil {
+				return p.send(stream, pluginprotocol.Frame{Type: "cancel_result", RequestID: frame.RequestID, Accepted: boolPointer(true)})
+			}
+			current.quiesced = true
+			current.cancel()
+			activated := current.activated
+			go func() {
+				if activated {
+					<-current.done
+				}
+				select {
+				case cancellations <- cancellation{frame.RequestID, frame.SubscriptionID, current}:
+				case <-ctx.Done():
+				}
+			}()
+			return nil
+		}
+		return p.handleFrame(ctx, stream, watches, pending, observations, validations, frame)
+	}
 
 	for {
 		select {
@@ -108,7 +137,14 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 				}
 				return fmt.Errorf("receive daemon message: %w", message.err)
 			}
-			if err := p.handleFrame(ctx, stream, watches, pending, observations, validations, message.frame); err != nil {
+			if err := handle(message.frame); err != nil {
+				return err
+			}
+		case result := <-cancellations:
+			if watches[result.subscriptionID] == result.watch {
+				delete(watches, result.subscriptionID)
+			}
+			if err := p.send(stream, pluginprotocol.Frame{Type: "cancel_result", RequestID: result.requestID, Accepted: boolPointer(true)}); err != nil {
 				return err
 			}
 		case result := <-validations:
@@ -124,7 +160,7 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 					}
 					return fmt.Errorf("receive daemon message: %w", message.err)
 				}
-				if err := p.handleFrame(ctx, stream, watches, pending, observations, validations, message.frame); err != nil {
+				if err := handle(message.frame); err != nil {
 					return err
 				}
 				goto priorityValidationDrain
@@ -147,7 +183,7 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 					close(result.ack)
 					return fmt.Errorf("receive daemon message: %w", message.err)
 				}
-				if err := p.handleFrame(ctx, stream, watches, pending, observations, validations, message.frame); err != nil {
+				if err := handle(message.frame); err != nil {
 					close(result.ack)
 					return err
 				}

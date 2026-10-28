@@ -141,6 +141,12 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 		go func() {
 			defer wait.Done()
 			h.mu.Lock()
+			_, exists := h.registrations[watch.registration.ID]
+			if !exists || h.runtimeWatches[watch.registration.ID] != watch || h.cancellations[watch.registration.ID] != nil {
+				h.mu.Unlock()
+				return
+			}
+			life := h.lifecycleLocked(watch.registration.ID)
 			if notification := h.notificationWaits[watch.registration.ID]; notification != nil {
 				if notification.preparing || notification.checkpointBusy {
 					h.mu.Unlock()
@@ -150,6 +156,11 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 			}
 			h.mu.Unlock()
 			watch.mu.Lock()
+			if !quiesce && life.ctx.Err() != nil {
+				watch.mu.Unlock()
+				h.finishRewaitCheckpoint(watch)
+				return
+			}
 			flushed, err := h.flushRuntimeOutcomesLocked(ctx, watch)
 			if err != nil {
 				watch.mu.Unlock()
@@ -157,9 +168,16 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 				results <- runtimeCheckpointResult{watch: watch, err: err, operation: "delivery notice"}
 				return
 			}
-			state, err := watch.inputPort.Checkpoint(ctx, RuntimeCheckpointRequest{
+			checkpointCtx, checkpointCancel := context.WithCancel(ctx)
+			stopCancel := func() bool { return false }
+			if !quiesce {
+				stopCancel = context.AfterFunc(life.ctx, checkpointCancel)
+			}
+			state, err := watch.inputPort.Checkpoint(checkpointCtx, RuntimeCheckpointRequest{
 				SubscriptionID: watch.registration.ID, Quiesce: quiesce,
 			})
+			stopCancel()
+			checkpointCancel()
 			watch.mu.Unlock()
 			h.releasePendingEvents(flushed)
 			results <- runtimeCheckpointResult{watch: watch, state: state, err: err, operation: "checkpoint"}
@@ -208,6 +226,9 @@ func (h *Hub) runtimeWatchGroups() map[string][]*runtimeWatch {
 	h.mu.Lock()
 	groups := make(map[string][]*runtimeWatch)
 	for _, watch := range h.runtimeWatches {
+		if h.cancellations[watch.registration.ID] != nil {
+			continue
+		}
 		if state := h.plugins[watch.inputName]; state != nil && state.port == watch.inputPort {
 			groups[watch.inputName] = append(groups[watch.inputName], watch)
 		}
@@ -255,13 +276,27 @@ func (h *Hub) finishRuntimeOutcome(item queuedEvent, status string) {
 	h.mu.Lock()
 	watch := h.runtimeWatches[item.event.SubscriptionID]
 	stopping := h.stopping
+	cancelling := h.cancellations[item.event.SubscriptionID] != nil
 	h.mu.Unlock()
+	if cancelling {
+		h.releasePendingEvents(1)
+		return
+	}
 	if watch == nil || watch.inputPort != item.inputPort {
 		h.logger.Warn("runtime_state_persistence_error", "input_plugin", item.event.InputPlugin, "subscription_id", item.event.SubscriptionID, "operation", "delivery notice", "reason", "runtime state watch is unavailable", "message", runtimeWarning)
 		h.releasePendingEvents(1)
 		return
 	}
 	watch.mu.Lock()
+	h.mu.Lock()
+	cancelling = h.cancellations[item.event.SubscriptionID] != nil
+	_, exists := h.registrations[item.event.SubscriptionID]
+	h.mu.Unlock()
+	if cancelling || !exists {
+		watch.mu.Unlock()
+		h.releasePendingEvents(1)
+		return
+	}
 	if watch.unavailable {
 		watch.mu.Unlock()
 		h.releasePendingEvents(1)
@@ -354,6 +389,23 @@ func (h *Hub) reportCheckpointError(ctx context.Context, stopping bool, result r
 func (h *Hub) saveRuntimeState(watch *runtimeWatch, state *jsonvalue.Value) {
 	h.runtimeSaveGate <- struct{}{}
 	defer func() { <-h.runtimeSaveGate }()
+	h.mu.Lock()
+	_, exists := h.registrations[watch.registration.ID]
+	if !exists || h.runtimeWatches[watch.registration.ID] != watch || h.cancellations[watch.registration.ID] != nil {
+		h.mu.Unlock()
+		return
+	}
+	life := h.lifecycleLocked(watch.registration.ID)
+	h.mu.Unlock()
+	life.save.Lock()
+	defer life.save.Unlock()
+	h.mu.Lock()
+	_, exists = h.registrations[watch.registration.ID]
+	fenced := h.cancellations[watch.registration.ID] != nil
+	h.mu.Unlock()
+	if fenced || !exists {
+		return
+	}
 	if state == nil {
 		h.reportRuntimeStateError(watch, "save", errors.New("checkpoint returned no state"))
 		return

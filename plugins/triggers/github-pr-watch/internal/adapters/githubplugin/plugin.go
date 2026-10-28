@@ -20,6 +20,8 @@ import (
 
 type Option func(*Plugin)
 
+//go:generate go run go.uber.org/mock/mockgen -source=../../application/watch.go -destination=github_mock_test.go -package=githubplugin
+
 func WithWait(wait func(context.Context, time.Duration) bool) Option {
 	return func(p *Plugin) {
 		if wait != nil {
@@ -94,6 +96,11 @@ type observationValue struct {
 	err      error
 }
 
+type cancellation struct {
+	requestID, subscriptionID string
+	watch                     *watch
+}
+
 // Session serializes mutations, grants, notices and checkpoint snapshots. Source
 // I/O runs separately and cannot mutate retained state or write protocol frames.
 func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
@@ -120,17 +127,41 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 		p.active = false
 		p.mu.Unlock()
 	}()
-	if err := send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.RuntimeStateV2Capability, pluginprotocol.RewaitCapability}}); err != nil {
+	if err := send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.RuntimeStateV2Capability, pluginprotocol.RewaitCapability, pluginprotocol.CancelWatchCapability}}); err != nil {
 		return err
 	}
 	frames := make(chan incoming, 16)
 	validations := make(chan validation, 128)
 	observations := make(chan observation, 16)
+	cancellations := make(chan cancellation, 128)
 	pending := map[string]bool{}
 	go receive(ctx, stream, frames)
 	handle := func(message incoming) error {
 		if message.err != nil {
 			return message.err
+		}
+		frame := message.frame
+		if frame.Type == "cancel_watch" {
+			delete(pending, frame.SubscriptionID)
+			w := watches[frame.SubscriptionID]
+			if w == nil {
+				return send(stream, pluginprotocol.Frame{Type: "cancel_result", RequestID: frame.RequestID, Accepted: boolean(true)})
+			}
+			w.quiesced = true
+			w.preparedGeneration = ""
+			w.validated.Tracker.CancelPreparation()
+			w.cancel()
+			started := w.started
+			go func() {
+				if started {
+					<-w.done
+				}
+				select {
+				case cancellations <- cancellation{frame.RequestID, frame.SubscriptionID, w}:
+				case <-ctx.Done():
+				}
+			}()
+			return nil
 		}
 		return p.handle(ctx, stream, watches, pending, validations, observations, message.frame)
 	}
@@ -145,6 +176,13 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 				}
 				return err
 			}
+		case result := <-cancellations:
+			if watches[result.subscriptionID] == result.watch {
+				delete(watches, result.subscriptionID)
+			}
+			if err := send(stream, pluginprotocol.Frame{Type: "cancel_result", RequestID: result.requestID, Accepted: boolean(true)}); err != nil {
+				return err
+			}
 		case result := <-validations:
 			// Drain controls already received before publishing network completion.
 			for draining := true; draining; {
@@ -156,6 +194,9 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 				default:
 					draining = false
 				}
+			}
+			if !pending[result.subscriptionID] {
+				continue
 			}
 			delete(pending, result.subscriptionID)
 			if result.err != nil {

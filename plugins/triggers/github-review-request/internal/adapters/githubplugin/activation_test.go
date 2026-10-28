@@ -44,7 +44,7 @@ func TestSessionWaitsForActivationAndNeverReactivatesQuiescedWatches(t *testing.
 				}
 			}()
 			ready := receiveTestFrame(t, stream)
-			if len(ready.Capabilities) != 1 || ready.Capabilities[0] != pluginprotocol.RuntimeStateV2Capability {
+			if len(ready.Capabilities) != 2 || ready.Capabilities[0] != pluginprotocol.RuntimeStateV2Capability || ready.Capabilities[1] != pluginprotocol.CancelWatchCapability {
 				t.Fatalf("capabilities = %v", ready.Capabilities)
 			}
 			sendTestFrame(t, stream, pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: "unknown"})

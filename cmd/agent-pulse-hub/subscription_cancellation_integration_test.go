@@ -4,7 +4,7 @@ package main
 
 import . "github.com/onsi/ginkgo/v2"
 
-// Governed by docs/design/subscription-cancellation.md. These static Pending
+// Governed by docs/design/subscription-cancellation.md. These
 // cases define public command/process/storage acceptance. Implementation wires
 // the actual daemon and client; case-owned peers replace external endpoints,
 // never the application, state store, queue, or lifecycle coordinator.
@@ -31,7 +31,7 @@ var _ = Describe("Individual subscription cancellation acceptance", Serial, func
 	// cancel either route. Stop normally, await every configured process and
 	// remove the temporary tree. All gates have bounded observable waits; no
 	// fixed sleep or real 30-second output timeout is required for this case.
-	It("cancels one shared watch while fencing queued and late events around an issued attempt", Label("case:SC-V01-SELECTIVE"), Pending, func() {})
+	It("cancels one shared watch while fencing queued and late events around an issued attempt", Label("case:SC-V01-SELECTIVE"), runSCSelective)
 
 	// SC-V02-RESTART: Reuse runtimeStateInput, appendRuntimeUpdate, runtime record
 	// readers and mvpEnv's normal stop/restart helpers. Its command-local peer
@@ -53,7 +53,7 @@ var _ = Describe("Individual subscription cancellation acceptance", Serial, func
 	// repeated-wait races and every equivalent-registration interleaving are
 	// deterministic application unit tests with mocked ports and storage; this
 	// case retains only the assembled restart, file and reservation boundary.
-	It("removes cancelled progress across normal restart and recreates equivalent arguments fresh", Label("case:SC-V02-RESTART"), Pending, func() {})
+	It("removes cancelled progress across normal restart and recreates equivalent arguments fresh", Label("case:SC-V02-RESTART"), runSCRestart)
 
 	// SC-V03-FAILURE: Reuse isolated daemon trees, Python numbered commands and
 	// journals, state-file readers and command result parsing. Keep B's live
@@ -88,5 +88,5 @@ var _ = Describe("Individual subscription cancellation acceptance", Serial, func
 	// stop/kill and await all children, repair preserved fixture paths and clean
 	// temporary trees even on failure. Runtime-save, rewait, registration and
 	// normal-stop synchronization permutations remain mocked unit scenarios.
-	It("reports plugin and storage failures without restoring cancelled work or changing other routes", Label("case:SC-V03-FAILURE"), Pending, func() {})
+	It("reports plugin and storage failures without restoring cancelled work or changing other routes", Label("case:SC-V03-FAILURE"), runSCFailure)
 })

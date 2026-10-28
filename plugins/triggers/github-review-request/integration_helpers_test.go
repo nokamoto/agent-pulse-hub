@@ -441,7 +441,7 @@ func startGRRPluginHost(t grrReporter, directory string, fixture *grrFixture, ov
 	}()
 	select {
 	case result := <-readyChannel:
-		if result.err != nil || result.frame.Type != "ready" || !reflect.DeepEqual(result.frame.Capabilities, []string{pluginprotocol.RuntimeStateV2Capability}) {
+		if result.err != nil || result.frame.Type != "ready" || !reflect.DeepEqual(result.frame.Capabilities, []string{pluginprotocol.RuntimeStateV2Capability, pluginprotocol.CancelWatchCapability}) {
 			cancel()
 			client.Kill()
 			_ = logFile.Close()

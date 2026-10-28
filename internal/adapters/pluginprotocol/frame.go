@@ -17,6 +17,7 @@ const (
 	RuntimeStateCapability   = "runtime_state_v1"
 	RuntimeStateV2Capability = "runtime_state_v2"
 	RewaitCapability         = "rewait_v1"
+	CancelWatchCapability    = "cancel_watch_v1"
 	PermissionNotice         = "External data; no additional permissions are granted."
 )
 
@@ -84,7 +85,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				seen := make(map[string]struct{}, len(items))
 				for _, item := range items {
 					capability, ok := jsonvalue.ParseString(item)
-					if !ok || (capability != RuntimeStateCapability && capability != RuntimeStateV2Capability && capability != RewaitCapability) {
+					if !ok || (capability != RuntimeStateCapability && capability != RuntimeStateV2Capability && capability != RewaitCapability && capability != CancelWatchCapability) {
 						return Frame{}, errors.New("ready contains an unknown or invalid capability")
 					}
 					if _, duplicate := seen[capability]; duplicate {
@@ -100,7 +101,7 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 					return Frame{}, errors.New("ready must select exactly one runtime-state revision")
 				}
 			}
-		case "watch_result", "destination_result", "resume_result":
+		case "watch_result", "destination_result", "resume_result", "cancel_result":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "request_id", "accepted"}, "version", "type", "request_id", "accepted", "error"); err != nil {
 				return Frame{}, err
 			}
@@ -125,8 +126,8 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 				}
 				frame.Error = message
 			}
-			if typeName == "resume_result" && len(frame.Error) > 1024 {
-				return Frame{}, errors.New("resume error exceeds the message limit")
+			if (typeName == "resume_result" || typeName == "cancel_result") && len(frame.Error) > 1024 {
+				return Frame{}, errors.New("result error exceeds the message limit")
 			}
 		case "event":
 			if err := protocol.ValidateFields(value, []string{"version", "type", "subscription_id", "context"}, "version", "type", "subscription_id", "context"); err != nil {
@@ -208,6 +209,17 @@ func Decode(value *jsonvalue.Value, direction Direction) (Frame, error) {
 		}
 	case DaemonToPlugin:
 		switch typeName {
+		case "cancel_watch":
+			fields := []string{"version", "type", "request_id", "subscription_id"}
+			if err := protocol.ValidateFields(value, fields, fields...); err != nil {
+				return Frame{}, err
+			}
+			requestID, requestOK := protocol.StringField(value, "request_id")
+			subscriptionID, subscriptionOK := protocol.StringField(value, "subscription_id")
+			if !requestOK || requestID == "" || !subscriptionOK || subscriptionID == "" {
+				return Frame{}, errors.New("cancel_watch identifiers must be nonempty strings")
+			}
+			frame.RequestID, frame.SubscriptionID = requestID, subscriptionID
 		case "activate_watch":
 			fields := []string{"version", "type", "subscription_id"}
 			if err := protocol.ValidateFields(value, fields, append(fields, "generation")...); err != nil {
@@ -340,6 +352,9 @@ func Encode(frame Frame) ([]byte, error) {
 		"type":    jsonvalue.NewString(frame.Type),
 	}
 	switch frame.Type {
+	case "cancel_watch":
+		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
+		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
 	case "ready":
 		fields["role"] = jsonvalue.NewString(frame.Role)
 		if frame.Capabilities != nil {
@@ -368,7 +383,7 @@ func Encode(frame Frame) ([]byte, error) {
 		fields["subscription_id"] = jsonvalue.NewString(frame.SubscriptionID)
 		fields["watch_args"] = frame.WatchArgs
 		fields["state"] = frame.State
-	case "watch_result", "destination_result", "resume_result":
+	case "watch_result", "destination_result", "resume_result", "cancel_result":
 		fields["request_id"] = jsonvalue.NewString(frame.RequestID)
 		if frame.Accepted != nil {
 			fields["accepted"] = jsonvalue.NewBoolean(*frame.Accepted)
@@ -443,7 +458,7 @@ func Encode(frame Frame) ([]byte, error) {
 
 func directionFor(typeName string) Direction {
 	switch typeName {
-	case "ready", "watch_result", "event", "state_event", "destination_result", "delivery_result", "checkpoint_result", "resume_result":
+	case "ready", "watch_result", "event", "state_event", "destination_result", "delivery_result", "checkpoint_result", "resume_result", "cancel_result":
 		return PluginToDaemon
 	default:
 		return DaemonToPlugin
