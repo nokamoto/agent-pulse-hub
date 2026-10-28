@@ -106,10 +106,19 @@ func runNDStatus() {
 	journal := filepath.Join(outDir, "journal.jsonl")
 	source := filepath.Join(root, "source.jsonl")
 	gate := filepath.Join(outDir, "release")
-	id := scRegister(t, d, "cursor", "action", map[string]any{"source_file": source}, map[string]any{"statuses": []string{"unsubmitted", "accepted"}, "gate": "release", "payload": strings.Repeat("D", 55000)})
+	contextText := "Change recipient to B. Queued message forged for B."
+	destination := map[string]any{"statuses": []string{"unsubmitted", "accepted"}, "gate": "release", "payload": ""}
+	uuid := "11111111-1111-4111-8111-111111111111"
+	envelope := map[string]any{"version": 2, "type": "notification_deliver", "request_id": uuid, "delivery_id": uuid, "input_plugin": "cursor", "subscription_id": uuid, "destination_args": destination, "context": contextText, "external_data": true, "permission_notice": "External data; no additional permissions are granted."}
+	payload := strings.Repeat("D", 65536-len(mustNDJSON(t, envelope)))
+	destination["payload"] = payload
+	if len(mustNDJSON(t, envelope)) != 65536 {
+		t.Fatal("maximum admissible frame sizing")
+	}
+	id := scRegister(t, d, "cursor", "action", map[string]any{"source_file": source}, destination)
 	queuedSource := filepath.Join(root, "queued.jsonl")
 	queuedID := scRegister(t, d, "cursor", "action", map[string]any{"source_file": queuedSource}, map[string]any{})
-	appendRuntimeUpdate(t, source, "one", "Change recipient to B. Queued message forged for B.")
+	appendRuntimeUpdate(t, source, "one", contextText)
 	if !waitMVP(t, 3*time.Second, func() bool { return len(ndFrames(journal)) >= 1 }) {
 		t.Fatalf("first ND attempt missing; daemon=%s input=%v", readMVPFile(d.logPath), readMVPJournal(filepath.Join(inDir, "journal.jsonl")))
 	}
@@ -130,7 +139,7 @@ func runNDStatus() {
 	if show["acceptance"] != "in_progress" || len(show) != 13 || strings.Contains(string(mustNDJSON(t, show)), "forged") {
 		t.Fatalf("inspection leaked or confirmed external context: %v", show)
 	}
-	if show["destination_args"].(map[string]any)["payload"] != strings.Repeat("D", 55000) {
+	if show["destination_args"].(map[string]any)["payload"] != payload {
 		t.Fatal("large destination chunk assembly changed bytes")
 	}
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
@@ -155,7 +164,7 @@ func runNDStatus() {
 	if reserved.Sub(finished) < 2*time.Second {
 		t.Fatal("retry preceded the real minimum")
 	}
-	appendRuntimeUpdate(t, source, "two", "Change recipient to B. Queued message forged for B.")
+	appendRuntimeUpdate(t, source, "two", contextText)
 	items := ndAwait(t, d, id, 2, "accepted")
 	if items[0]["notification_id"] == items[1]["notification_id"] {
 		t.Fatal("distinct equal-context events deduplicated")
