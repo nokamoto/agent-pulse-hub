@@ -23,7 +23,15 @@ request. It reports changes and current review context without deciding whose
 turn it is. The receiving agent decides whether to act or wait again under its
 existing instructions. This design implements
 [the PR-watch requirements](../requirements/github-pr-watch.md); it does not
-discover PRs, fetch diffs/checks/source files, or write to GitHub.
+discover PRs, fetch diffs/source files, or write to GitHub.
+
+[Independent CI, conflict, and readiness notifications](github-pr-watch-signals.md)
+owns the additional FR-013/AC-013/AC-014 category contracts, their mixed
+GraphQL/REST acquisition, independent wake conditions, and verification.
+Its specified API origins extend the GraphQL-only endpoints below. The
+signal specification defines its v3 records, shared sequence/position coverage,
+bounded continuation and explicit profile compatibility using the FR-012
+capacity contract. It does not authorize silent signal-history reset.
 
 The [capacity specification](github-pr-watch-capacity.md) implements FR-012 and
 AC-011/AC-012 and governs the revised observation, state and continuation
@@ -42,7 +50,8 @@ This restart behavior is intentional and must appear in usage instructions.
 
 The [rewait control design](pr-watch-rewait.md) owns the shared client and
 plugin control extension. This design owns GitHub arguments, observations,
-positions, context, and verification. Individual cancellation and registration
+positions, context, and verification, with the additional signal categories
+owned by the linked specification. Individual cancellation and registration
 replacement are not added. Existing plugins retain their current behavior.
 
 ## Architecture and responsibilities
@@ -99,9 +108,10 @@ processes and host-specific environment assignments; never reuse one global
 environment token across hosts implicitly. The represented actor remains
 caller data regardless of the credential's account.
 
-Use HTTPS with system certificate verification. The only API origin is
+Use HTTPS with system certificate verification. The baseline GraphQL endpoint is
 `https://api.github.com/graphql` for github.com or
-`https://<host>/api/graphql` for GHES. Disable redirects; neither credentials
+`https://<host>/api/graphql` for GHES. The signal specification adds only
+selected-host REST commit-status GET endpoints. Disable redirects; neither credentials
 nor query data follow redirects. API-provided pagination cursors are values,
 never URLs. Diagnostic text must not include tokens, query bodies, waiting
 context, or private GitHub bodies.
@@ -194,16 +204,27 @@ journal retention and explicit continuation. It replaces v1's 32-item and
 32-record allocations and all-or-nothing eight-change notification failure.
 The 8,192-byte event context remains unchanged; a notification covers only a
 represented prefix and the next explicit rewait exposes its retained suffix.
+The signal specification defines `--state-profile=signals-v3` as the default
+and retains `discussion-v2` for explicit compatibility. Its v3 schema uses
+these stream/retention/continuation mechanisms with signal-aware records;
+discussion-only v1/v2 state does not claim signal coverage.
 
 
 ## Specification documents
+
+[Independent signal notifications](github-pr-watch-signals.md) is the
+authoritative companion specification for CI, base-branch conflict, and
+Draft/Ready state. It defines required acquisition, failure/episode identity,
+current-state content, incompatible-state handling, and category verification.
+Its saved-state and bounded-notification sections bind signal records to the
+common stream/position/continuation contracts.
 
 This document and the [capacity specification](github-pr-watch-capacity.md)
 are the plugin contract for implementers and verification authors. The latter
 owns capacity, v2 state records, compatible positions and continuation and
 takes precedence over the original v1 allocations. The
 [stream specification](runtime-state-stream.md) owns its common wire/storage
-profile. No specification is deferred to implementation. [Rewait control](pr-watch-rewait.md) owns the generic
+profile. [Rewait control](pr-watch-rewait.md) owns the generic
 control, its ordering, errors, and compatibility. The
 [public plugin specification](plugin-v1.md) owns wire encoding, handshake,
 deadlines, and the runtime-state extension; the
@@ -230,8 +251,11 @@ notification lifetime, or acceptance expectations as a routine refactor.
    unchanged notification; report a fresh change. An explicit older retained
    assessment position remains a separate caller choice.
 5. On save failure continue monitoring with the common continuity warning.
-   Invalid restored state rejects the affected watch. Failed/unknown delivery
-   receives no automatic retry and does not become agent assessment.
+   Invalid restored state rejects the affected watch. The trigger initiates
+   no delivery retry and does not infer agent assessment. Participating output
+   retries and terminal-outcome fencing follow the independent
+   [notification-delivery design](notification-delivery.md); they do not rearm
+   a source generation or advance its confirmation position by themselves.
 
 Poll at 60 seconds by default; `--poll-interval` accepts 5 through 3,600
 seconds. Schedule after completion to prevent overlapping rounds. Transient
@@ -251,7 +275,7 @@ and remain visible. A recovered unchanged round produces no invented change.
 | --- | --- | --- |
 | Same registration with daemon-owned rewait | Replacement/cancellation, plugin-owned cross-watch supersession | Keeps one identity and history, preserves cancellation exclusion and daemon control ownership. Requires a small shared protocol extension. |
 | One notification per explicit wait or daemon run | Continuous notifications while the agent works; permanent one-shot watch | Avoids overlapping wait notifications while preserving restart/fresh-change acceptance. Restart reopening a wait is visible operational behavior. |
-| GraphQL category queries | REST plus GraphQL; webhook history | Includes resolution and reply relationships without cross-API ID joins; explicit pagination is necessary. Polling matches approved observed-change scope. |
+| GraphQL queries for discussion categories | REST plus GraphQL; webhook history | Includes resolution and reply relationships without cross-API ID joins; explicit pagination is necessary. Polling matches approved observed-change scope. |
 | Streamed state and prefix continuation | Larger fixed envelope; plugin files; reject large batches | The [capacity decision](github-pr-watch-capacity.md#decisions-and-tradeoffs) separates state, retrieval and event budgets while preserving core storage ownership. |
 | Standard library HTTP/JSON | New GitHub SDK | No dependency or shared build prerequisite; generated query constants and parser unit tests are sufficient. |
 

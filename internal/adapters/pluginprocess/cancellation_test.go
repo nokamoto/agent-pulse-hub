@@ -246,6 +246,52 @@ func TestDeliveryGuardControlsIssuanceAndDoesNotHoldOwnerLockForResponse(t *test
 	}
 }
 
+func TestCancellationExpiresStreamAndIgnoresLateChunks(t *testing.T) {
+	for _, completed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "pending", true: "completed"}[completed], func(t *testing.T) {
+			p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{})
+			acceptV2Watch(t, p, session, "a")
+			p.mu.Lock()
+			p.capabilities[pluginprotocol.RuntimeStateStreamCapability] = true
+			p.mu.Unlock()
+			sink := &memoryStreamSink{}
+			result := make(chan error, 1)
+			go func() {
+				result <- p.CheckpointStream(context.Background(), hub.RuntimeCheckpointRequest{SubscriptionID: "a"}, sink)
+			}()
+			request := readFrame(t, session)
+			p.handleFrame(pluginprotocol.Frame{Type: "checkpoint_stream_begin", RequestID: request.RequestID, SubscriptionID: "a", Schema: "schema"})
+			if completed {
+				p.handleFrame(pluginprotocol.Frame{Type: "checkpoint_stream_chunk", RequestID: request.RequestID, SubscriptionID: "a", Index: "0", Data: jsonObject(t, `{}`)})
+				p.handleFrame(pluginprotocol.Frame{Type: "checkpoint_stream_end", RequestID: request.RequestID, SubscriptionID: "a", ChunkCount: "1"})
+				if err := await(t, result); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := p.FenceWatch("a"); err != nil {
+				t.Fatal(err)
+			}
+			if !completed && await(t, result) == nil {
+				t.Fatal("fenced checkpoint succeeded")
+			}
+			p.handleFrame(pluginprotocol.Frame{Type: "checkpoint_stream_chunk", RequestID: request.RequestID, SubscriptionID: "a", Index: "1", Data: jsonObject(t, `{}`)})
+			p.handleFrame(pluginprotocol.Frame{Type: "checkpoint_stream_end", RequestID: request.RequestID, SubscriptionID: "a", ChunkCount: "2"})
+			if err := p.CheckpointStream(context.Background(), hub.RuntimeCheckpointRequest{SubscriptionID: "a"}, &memoryStreamSink{}); err == nil {
+				t.Fatal("fenced watch admitted a new stream")
+			}
+			p.mu.Lock()
+			pending, finished, owners, failed := len(p.pending), len(p.streamFinished), len(p.streamFinishedWatch), p.failed
+			p.mu.Unlock()
+			sink.mu.Lock()
+			aborted, count := sink.aborted, sink.count
+			sink.mu.Unlock()
+			if !aborted || pending != 0 || finished != 0 || owners != 0 || failed || count > 1 || len(session.outgoing) != 0 {
+				t.Fatalf("cancelled stream retained work: aborted=%v pending=%d finished=%d owners=%d failed=%v count=%d", aborted, pending, finished, owners, failed, count)
+			}
+		})
+	}
+}
+
 func TestCancellationFenceWinsQueuedActivationAndPreservesOtherWatch(t *testing.T) {
 	for _, rewait := range []bool{false, true} {
 		t.Run(map[bool]string{false: "v2", true: "rewait"}[rewait], func(t *testing.T) {

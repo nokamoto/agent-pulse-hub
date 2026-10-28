@@ -135,6 +135,10 @@ func (h *Hub) Unsubscribe(subscriptionID string) *Error {
 	h.registrations[id] = registration
 	discarded := h.discardCancelledQueuedLocked(id)
 	targetWatch := h.runtimeWatches[id]
+	var stream *runtimeStreamSink
+	if targetWatch != nil {
+		stream = targetWatch.stream
+	}
 	for _, receipt := range h.rewaitReceipts {
 		if receipt.subscriptionID == subscriptionID && !receipt.completed {
 			receipt.result = &Error{Code: "unknown_subscription", Message: "Subscription cancellation closed rewait preparation."}
@@ -149,6 +153,12 @@ func (h *Hub) Unsubscribe(subscriptionID string) *Error {
 	h.mu.Unlock()
 	defer h.cancellationWait.Done()
 	defer func() { h.mu.Lock(); state.busy = false; h.mu.Unlock() }()
+	if stream != nil {
+		stream.Abort(errors.New("subscription cancellation expired the checkpoint stream"))
+		// Cleanup is queued behind all target chunks. Drain it before holding the
+		// save lock through intent storage and removal.
+		<-stream.finished
+	}
 	if len(discarded) > 0 {
 		if targetWatch != nil {
 			targetWatch.mu.Lock()
@@ -224,6 +234,7 @@ func (h *Hub) Unsubscribe(subscriptionID string) *Error {
 	delete(h.savedRegistrations, id)
 	delete(h.retained, id)
 	delete(h.runtimeStates, id)
+	delete(h.runtimeSources, id)
 	delete(h.runtimeWatches, id)
 	delete(h.notificationWaits, id)
 	delete(h.activeByKey, registrationKey(registration.InputPlugin, registration.WatchArgs, registration.OutputPlugin, registration.DestinationArgs))
