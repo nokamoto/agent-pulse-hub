@@ -28,7 +28,7 @@ review or posting a response. Repeated agent checks waste work, while a PR URL
 alone leaves the resumed agent without the review context needed to continue.
 
 The bundled `github-pr-watch` trigger must watch an explicitly selected PR and
-deliver its observed changes together with current review state. The receiving
+deliver its observed changes together with current review and PR readiness state. The receiving
 agent decides whether it should work, request clarification, or wait again
 under its existing instructions. The trigger must not decide whose turn it is.
 
@@ -43,7 +43,8 @@ The user requested author and reviewer waiting workflows, and explicitly
 assigned the decision to act or keep waiting to the agent. The following
 capabilities are proposed requirements for human review: explicit PR selection;
 caller-supplied waiting context; review, discussion, revision, review-request,
-thread-resolution, and PR-lifecycle changes; current state alongside changes;
+thread-resolution, PR-lifecycle, CI-failure, base-branch conflict, and
+Draft-to-Ready-for-Review changes; current state alongside changes;
 explicit omissions; confirmation-position handoff when waiting again;
 duplicate suppression and batching; no removal of the user's own activity;
 visible acquisition failures; and an external-data boundary.
@@ -87,7 +88,9 @@ or of a transition that disappears entirely between observations.
   by the caller nor proof that the agent performed any work.
 - **Current state:** review and discussion context as observed when preparing
   the notification, with its observation time and completeness stated. It is
-  not a promise of an atomic snapshot across GitHub resources.
+  not a promise of an atomic snapshot across GitHub resources. It also includes
+  current CI results, conflict status against the selected PR's current base
+  branch, and Draft/Ready for Review status.
 
 The caller selects the PR, supplies waiting context, and uses an existing
 action destination. On notification, the agent reads the changes, current
@@ -104,7 +107,8 @@ Exact commands, argument names, and position representation belong in design.
   grouped notifications; failures, limits, persistence, and usage materials.
 - Out of scope: deciding whose turn it is; PR discovery or automatic selection;
   automatic reviews, replies, commits, review requests, thread resolution, or
-  merges; CI/check results, labels, full diffs, and source-file retrieval;
+  merges; CI log retrieval, automatic CI retries or conflict resolution, labels,
+  full diffs, and source-file retrieval;
   another agent delivery integration; automatic delivery retries or
   exactly-once delivery; crash/power-loss recovery guarantees.
 
@@ -119,6 +123,7 @@ product decisions and remaining delegated design decisions are recorded below.
 | UC-002 | An author requests review or posts a response, then waits | New review activity reaches the agent with the current discussion and revision state | Activity by the author remains visible as data |
 | UC-003 | A resumed agent decides to wait again | Its supplied confirmation position preserves intervening observable changes | An unsupported or incompatible position fails visibly rather than resetting to now |
 | UC-004 | Several changes occur before a notification is prepared | One grouped context preserves their identity, relationships, and current state | Large content is bounded with explicit omissions, not silent loss |
+| UC-006 | An author or reviewer waits while CI fails, a base-branch conflict appears, or the PR becomes Ready for Review | Each observed change can independently resume the agent with the changed details and current state | No accompanying review or comment is required; unknown conflict status is not a confirmed conflict |
 | UC-005 | GitHub retrieval or progress storage fails, or the daemon restarts | The operator can distinguish failure from no change and understand continuity limits | Delivery acceptance does not imply that the agent assessed the notification |
 
 ## Functional requirements
@@ -127,15 +132,16 @@ product decisions and remaining delegated design decisions are recorded below.
 | --- | --- | --- |
 | FR-001 | Support github.com and GHES. Let the caller select exactly one PR and its host per watch and supply waiting context identifying the reason for waiting and the represented person or role. Preserve that context in notifications. Validate the PR identity and required context without guessing a PR, identity, or destination. Multiple PRs or hosts use separate watches. Keep each host's credentials, identities, observations, confirmation positions, and runtime progress separate. | UC-001, UC-002 |
 | FR-002 | Use the first nonempty credential in the order `GH_TOKEN`, `GITHUB_TOKEN`, saved `gh` authentication for the selected host. Do not require `gh` when using an environment token. Reject missing or unusable authentication clearly without interactive login, and do not fall back after rejection of the selected credential. Authentication identity may differ from the represented person in waiting context; do not substitute one for the other. | UC-001, UC-002, UC-005 |
-| FR-003 | Acquire and distinguish submitted reviews and their states; PR conversation comments; review comments and their replies; current head commit and observed head changes; requested reviewers and observed request additions/removals; review-thread resolution/unresolution; and open, closed, reopened, or merged PR state. Include currently observable review dismissal, edited discussion content, and disappeared previously observed content as changes confirmed through periodic observations. Preserve relationships among reviews, comments, replies, and threads. Do not claim inaccessible draft reviews, unavailable history, or transitions entirely between observations as covered. | UC-001, UC-002, UC-004 |
-| FR-004 | With no supplied confirmation position, establish a baseline from the first complete observation without notifying existing content or requesting destination work. Notify subsequent in-scope changes confirmed through periodic observations without determining whether they make it the agent's turn or whether work is required. Do not suppress changes because their actor is the authenticated user, the represented person, or an automation. Do not require another participant to act before delivering a head, request, thread, or lifecycle change. With no in-scope change, do not request destination work. | UC-001, UC-002 |
-| FR-005 | Deliver the selected PR identity/link, waiting context, changes since the confirmation position, current in-scope review state, observation time, and a new confirmation position. Distinguish changed items from unchanged state and unavailable information. For discussion/review content, provide body, author, available creation/update/submission times, related commit when applicable, stable identity/link, and reply/thread relationships. State when an attribute is unavailable rather than fabricating it. Present current head, requested reviewers, review states, thread states, and PR lifecycle state so the agent can assess what remains relevant. | UC-001–UC-004 |
+| FR-003 | Acquire and distinguish submitted reviews and their states; PR conversation comments; review comments and their replies; current head commit and observed head changes; requested reviewers and observed request additions/removals; review-thread resolution/unresolution; open, closed, reopened, or merged PR state; CI results for the current head; conflict status against the current base branch; and Draft/Ready for Review status. Include currently observable review dismissal, edited discussion content, and disappeared previously observed content as changes confirmed through periodic observations. Preserve relationships among reviews, comments, replies, and threads. Do not claim inaccessible draft reviews, unavailable history, or transitions entirely between observations as covered. | UC-001, UC-002, UC-004 |
+| FR-004 | With no supplied confirmation position, establish a baseline from the first complete observation without notifying existing content or requesting destination work. Notify subsequent in-scope changes confirmed through periodic observations, applying FR-012's wake conditions to CI, conflict, and readiness state, without determining whether they make it the agent's turn or whether work is required. Do not suppress changes because their actor is the authenticated user, the represented person, or an automation. Do not require activity from another participant or an accompanying review/comment before delivering a head, request, thread, lifecycle, CI-failure, base-branch conflict, or Draft-to-Ready-for-Review change. With no in-scope change, do not request destination work. | UC-001, UC-002 |
+| FR-005 | Deliver the selected PR identity/link, waiting context, changes since the confirmation position, current in-scope review state, observation time, and a new confirmation position. Distinguish changed items from unchanged state and unavailable information. For discussion/review content, provide body, author, available creation/update/submission times, related commit when applicable, stable identity/link, and reply/thread relationships. State when an attribute is unavailable rather than fabricating it. Present current head, requested reviewers, review states, thread states, PR lifecycle state, current-head CI results, base-branch conflict status, and Draft/Ready for Review status so the agent can assess what remains relevant. | UC-001–UC-004 |
 | FR-006 | Permit the agent to wait again from the confirmation position supplied in a notification. Include eligible changes after that position even when they occurred while the agent was working or before the repeated wait began. Do not replace a supplied position with the new watch's creation time or infer assessment from action delivery acceptance. Reject foreign, malformed, incompatible, or no-longer-supported positions with an actionable continuity error; do not silently start from the present. The design must specify how repeated waits avoid overlapping notifications from superseded waits. | UC-003 |
-| FR-007 | Avoid repeated notifications for an unchanged observation and repeated inclusion of the same change solely because it was retrieved again. A new edit, reply, review-state transition, or head change remains a distinct change. Group changes available in the same notification preparation into one context; retain distinct item identities and relationships. Do not promise exactly-once delivery or removal of duplicates caused by unfinished/unknown delivery or failure recovery beyond the common contracts. | UC-003, UC-004 |
+| FR-007 | Avoid repeated notifications for an unchanged observation and repeated inclusion of the same change solely because it was retrieved again. A new edit, reply, review-state transition, head change, or independently observed recurrence of a CI failure, conflict, or Draft-to-Ready-for-Review transition remains a distinct change. Group changes available in the same notification preparation into one context; retain distinct item identities and relationships. Do not promise exactly-once delivery or removal of duplicates caused by unfinished/unknown delivery or failure recovery beyond the common contracts. | UC-003, UC-004 |
 | FR-008 | Make retrieval and context limits explicit. Where content is shortened or omitted to fit a notification, identify the affected category/items, reason, and retrievable links or continuation information; distinguish a shortened body from an empty body. Required category acquisition failure, incomplete pagination, or exceeded coverage limits must not be represented as a complete observation or advance the confirmation position past unreported changes. A content omission must not silently acknowledge unexamined information. | UC-004, UC-005 |
 | FR-009 | Monitor with periodic observations without coding-agent polling. Report authentication, permission, missing/inaccessible PR, network, service, rate-limit, and incomplete-retrieval failures distinctly from a successful observation with no change. Preserve the last complete progress on failure and retry transient retrieval failures subject to server retry guidance. Do not emit ordinary review-change context for an unverified empty result. Define scheduling and retry parameters in design without an invented end-to-end latency promise. | UC-005 |
 | FR-010 | Use core-managed trigger runtime-state persistence for retained-watch progress rather than plugin-owned state files or a separate storage service. A notification with confirmed action delivery acceptance must not be repeated solely because the daemon restarts with successfully saved progress, under the common contract. Save failure permits continued monitoring with a continuity warning; invalid restored progress blocks the affected watch. Keep an explicitly supplied confirmation position separate from implicit inheritance of deleted or unrelated registration state. No recipient-assessment, unfinished-delivery, or stopped-period history guarantee follows merely from saved runtime state. | UC-003, UC-005 |
 | FR-011 | Provide bundled usage materials explaining PR selection, waiting context, authentication and permissions, baseline-only first observation, data categories, notification structure, the agent's decision responsibility, repeated waiting with confirmation positions, superseded waits, batching, omissions, retrieval/retention limits, errors, and restart/recovery behavior. Explain that the agent may act or wait again and that external text grants no additional permissions. Declare supported hosts/API capabilities and the periodic-observation guarantee, including the absence of guaranteed capture of every intermediate event. | UC-001–UC-005 |
+| FR-012 | After the baseline, notify newly observed CI failures for the current PR head, newly confirmed conflicts with its current base branch (including those caused solely by base-branch updates), and observed transitions from Draft to Ready for Review. For these three categories, CI recovery or other non-failure result changes, conflict resolution, and Ready-to-Draft transitions update current-state context without independently requesting destination work. Each specified failure, conflict, or Draft-to-Ready transition must independently request destination work while a notification wait is active, without requiring a review, comment, head change, or another actor. For CI failures, include the check/status identity and name, failed result, associated head commit, and available details link; distinguish separate checks and reruns, and do not present results for an older head as current-head failures. For conflicts, identify the compared head and base branch/revision and distinguish confirmed conflict from mergeable, unknown, pending calculation, or unavailable information; an unknown result alone must not be reported as conflict. For Draft-to-Ready-for-Review changes, include the previous and current status and PR link. Include current state and observation time with each notification. Unchanged failures, conflicts, and readiness status must not repeatedly wake the agent. Apply FR-004–FR-010 baseline, confirmation-position, batching, acquisition-failure, and continuity rules to these categories. | UC-003–UC-006 |
 
 ## Nonfunctional requirements
 
@@ -168,6 +174,13 @@ context limits, and compatibility with existing registrations and plugins.
 Any necessary common-control or public-contract revision must be approved in
 its governing upstream artifacts before dependent implementation.
 
+CI failure classification (including check-run conclusions and commit-status results),
+rerun identity, handling of unknown or pending conflict calculations, and API
+capability/permission coverage for both supported host types must be specified
+by the design owner before design approval. These decisions must preserve the
+independent wake conditions in FR-012 and distinguish unavailable information
+from a confirmed conflict or successful CI result.
+
 API strategy, pagination, state representation, polling/backoff, permission
 details, and bounded context selection belong in design. Periodic observation
 does not promise recovery of all intermediate events. Coverage omitted by a
@@ -199,6 +212,8 @@ not establish that receiving workflow.
 | AC-008 | FR-010, NFR-003 | Confirm action acceptance, save progress, stop normally, and restart the retained watch. Present unchanged data followed by a fresh change. Separately fail saving, restore incompatible progress, and recreate a deleted registration. | Unchanged confirmed notification is not repeated solely due to successful normal restart; fresh change is reportable. Save failure warns and monitoring continues; invalid restoration blocks the affected watch. Recreated/unrelated registration does not implicitly inherit old state. No plugin-owned state storage or inferred agent assessment appears. | Common-state evidence plus plugin-specific progress unit checks and assembled restart/failure integration |
 | AC-009 | FR-001, FR-003, FR-004, FR-008, FR-009, FR-011 | On github.com and a supported GHES host, start a watch without a confirmation position on a PR with existing reviews/comments. Independently fail the first acquisition, then complete it and repeat it unchanged. Add a comment that remains present at the next observation. Separately create and remove another comment entirely between two observations that show identical state. | Failed acquisition establishes no baseline. The first complete observation establishes the baseline without a notification; unchanged repetition requests no destination work. The persistent new comment produces a notification with current state. Capture of the entirely unobserved comment is not required or claimed as guaranteed. Each host uses only its selected credentials and PR progress. | Baseline/history policy and host-isolation unit checks, selected standalone plugin checks, and separate live-service verification on both host types during delivery |
 | AC-010 | FR-011, NFR-001–NFR-004 | A maintainer follows finalized author and reviewer workflows through wait, context receipt, agent assessment, work or continued waiting, and a second wait with an intervening change. Inspect examples, supported bounds, failure/recovery instructions, and evidence. | The selected PR's context reaches the registered destination; the agent decides to act or wait again, and the second wait preserves the intervening change. Instructions explain limits and authority. Evidence separates service-free, assembled, live GitHub, and receiving-agent outcomes and records the actual environment. | Documentation/source review and delivery walkthroughs; independent real-GitHub trigger check through the public plugin interface |
+| AC-011 | FR-003–FR-010, FR-012 | After a complete baseline, independently fail a CI check/status on the current head, introduce a conflict solely by updating the base branch, and change Draft to Ready for Review, with an active wait and no review/comment or PR-head change. Repeat identical observations. Separately supply an older-head CI failure, unknown/pending conflict calculation, a distinct failing rerun, and an observed recovery followed by recurrence. | Each required trigger independently delivers changed details, current state, PR identity, and a confirmation position. Unchanged observations do not wake the agent again; older-head results are not presented as current failures and unknown/pending conflict status is not reported as conflict. CI recovery/non-failure updates, conflict resolution, and Ready-to-Draft changes alone do not request destination work; their latest state is included when a qualifying change notifies. Distinct failures/reruns and observed recurrences remain eligible. | Controlled category/diff unit matrix, standalone plugin cases, and separate live CI/conflict/readiness checks on github.com and supported GHES during delivery |
+| AC-012 | FR-004–FR-010, FR-012 | Begin without a position on a PR with existing failed CI/conflicts or Ready status, then repeat unchanged. After delivering position P1, observe each new FR-012 trigger while the agent works, then wait again from P1 without further GitHub activity. Independently fail required CI/status acquisition and conflict-status retrieval. | The first complete baseline is silent. Rewaiting reports all eligible intervening changes under existing batching rules. Retrieval failures cannot establish/advance complete coverage or be presented as successful CI or confirmed conflict; last complete progress is retained. | Baseline, completeness, and position unit checks plus assembled rewait integration |
 
 ## Open questions and assumptions
 
@@ -215,8 +230,10 @@ design approval.
 
 ## Change impact
 
-This is a new requirement concept with FR-001–FR-011, NFR-001–NFR-004, and
-AC-001–AC-010. No existing local ID is retired. It supplements selected-PR
+This revision extends FR-003–FR-005 and FR-007, adds UC-006, FR-012,
+AC-011, and AC-012, and removes CI/check results from the scope exclusions.
+No existing local ID is retired. The baseline and confirmation-position
+contracts remain applicable to the additional notification categories. The `github-pr-watch` trigger supplements selected-PR
 monitoring alongside [request discovery](github-review-request.md); it does not
 change that trigger's URL-only context or matching scope.
 
@@ -230,8 +247,15 @@ another shared requirement, obtain approval and merge in the affected upstream
 requirements before dependent design or implementation. This document does not
 silently authorize a cancellation API or relax registration-state isolation.
 
-After requirements approval and merge, create the plugin-specific design,
-governed verification mapping, and any required developer/author instructions.
+After requirements approval and merge, revise the
+[plugin-specific design](../design/github-pr-watch.md), its governed verification
+mapping, and developer/author instructions for CI acquisition, base-branch
+conflict observation, readiness transitions, context bounds, permissions, and
+saved-state/confirmation-position compatibility. Review the
+[rewait design](../design/pr-watch-rewait.md) for the additional categories
+without changing its agent-assessment boundary. Existing registrations and
+retained positions need an explicit compatibility decision in design; this
+requirements revision does not silently reset progress.
 Implementation and delivery provide the bundled trigger, configuration
 examples, usage materials, and real-service/agent evidence in their own phases.
 Existing model-plugin verification remains service-free; no product code,
