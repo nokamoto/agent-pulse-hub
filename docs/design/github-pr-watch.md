@@ -25,6 +25,13 @@ existing instructions. This design implements
 [the PR-watch requirements](../requirements/github-pr-watch.md); it does not
 discover PRs, fetch diffs/checks/source files, or write to GitHub.
 
+The [capacity specification](github-pr-watch-capacity.md) implements FR-012 and
+AC-011/AC-012 and governs the revised observation, state and continuation
+contracts below. It applies the original review/discussion categories.
+FR-013 and AC-013/AC-014 (CI failure, conflict and readiness notifications),
+subscription cancellation and action confirmation/retry require separate
+revisions and are outside this capacity change.
+
 A registration remains a continuing monitor. Its notification wait is separate:
 one notification consumes a wait, while observation continues. The caller
 reuses the same registration and explicitly returns a confirmation position
@@ -42,8 +49,8 @@ replacement are not added. Existing plugins retain their current behavior.
 
 The daemon owns registration identity, destination, notification admission,
 wait generations, and state storage. The plugin owns GitHub authentication,
-queries, bounded observations, comparison, context construction, and its
-opaque saved payload. The action owns delivery acceptance. Neither delivery
+queries, complete observations, comparison, context construction, and its
+opaque streamed state. The action owns delivery acceptance. Neither delivery
 acceptance nor a position proves that the agent assessed the content.
 
 Place the executable at `plugins/triggers/github-pr-watch/main.go` and its
@@ -56,7 +63,8 @@ embedding a Codex-specific field in this trigger. A plugin-specific skill is
 not necessary: the ordinary registration and rewait commands are the workflow.
 
 The plugin participates in runtime-state v2 and the optional rewait capability
-specified by the shared design. It does not poll before activation. It uses
+specified by the shared design, plus
+[streamed runtime state](runtime-state-stream.md). It does not poll before activation. It uses
 no private state files, background service, webhook, or external checkpoint
 store. The hub remains unaware of GitHub schemas.
 
@@ -148,11 +156,10 @@ of a previously observed ID; failed enumeration cannot.
 
 ### Observation and comparison
 
-One observation records start/end times and all required categories. It is
-not an atomic GitHub snapshot. Each round has a 30-second total deadline,
-10-second request deadline, 256-KiB decoded response bound per page, and
-1-MiB decoded total response bound. Exceeding a bound fails the entire round.
-Only complete, capacity-valid rounds can establish or advance a baseline.
+The [capacity specification](github-pr-watch-capacity.md#acquisition-and-resource-budgets)
+governs complete pagination, request/round deadlines and adjustable byte
+budgets. There is no total-item limit. A failed or incomplete candidate cannot
+replace the last complete observation or imply disappearance.
 
 With no position, first complete observation establishes a silent baseline.
 Canonical comparison includes item identities, bodies, relationships, review
@@ -181,73 +188,22 @@ thread states, and lifecycle. External text is always JSON data, never a
 registration or executable instruction. Preserve the action's common external
 data notice and fixed destination.
 
-The bounded position/history contract below is part of this design and must
-fit the common 32,768-byte saved envelope. Limits are coverage boundaries,
-not claims of unlimited PR support. On failure retain the last valid state
-and report a specific continuity/retrieval error; never reset to now.
+The [capacity specification](github-pr-watch-capacity.md) is authoritative for
+streamed schema `github-pr-watch-v2`, legacy v1 migration, retained positions,
+journal retention and explicit continuation. It replaces v1's 32-item and
+32-record allocations and all-or-nothing eight-change notification failure.
+The 8,192-byte event context remains unchanged; a notification covers only a
+represented prefix and the next explicit rewait exposes its retained suffix.
 
-Use schema `github-pr-watch-v1`. Store a random 128-bit registration nonce,
-monotonic uint64 observation/change sequence, latest complete fingerprints,
-observed-change journal, issued positions, attempted and confirmed delivery
-progress, and current aggregate metadata. Sequence exhaustion fails visibly.
-A position is `gpw1.` followed by base64url without padding of one version
-byte, the 16-byte nonce, and the 8-byte big-endian covered sequence. Accept it
-only if it exactly matches an issued position retained by this registration.
-It is not an authorization token. Its logical sequence is unrelated to
-timestamps, Session event IDs, or shared wait-generation IDs.
-
-| Saved region | Hard bound on compact encoded JSON |
-| --- | --- |
-| Complete observation fingerprints | 32 items total, each at most 192 bytes; 6,144 bytes total |
-| Change journal | 32 records, each at most 640 bytes; 20,480 bytes total |
-| Issued positions | Latest four positions, at most 1,024 bytes total |
-| Scope, aggregate metadata, progress, schema and enclosing syntax | 4,096 bytes |
-
-Measure every region and the entire envelope after encoding; the envelope
-must still fit 32,768 bytes. The table leaves 1,024 bytes of reserve, not an
-extra permission to exceed a region. Items count reviews, conversation
-comments, review comments/replies, threads, and requests together. A record
-that cannot fit its bound fails coverage even if the total count is small.
-Canonical fingerprint records contain stable ID/type and SHA-256 of full
-acquired body and relevant metadata. Never hash only an excerpt. Journal
-records retain change kind, sequence/time, identity, provenance/relations,
-links, full-body digest, and bounded body excerpt with omission metadata.
-The latest complete acquisition supplies current bodies transiently; historical
-body text can be shortened, and disappeared content may no longer be
-retrievable. State these facts with that item's link and digest.
-
-Positions have no wall-clock TTL. Retain the latest four issued positions
-while their required history fits the journal bound. Prune only history
-already covered by accepted delivery and explicitly expire positions depending
-on it. Never prune unreported transitions to make a candidate round fit.
-If an observation exceeds a count or encoded-byte bound, reject the candidate
-round without committing its snapshot or sequence; retain prior progress and
-report `coverage_capacity_exceeded`. An expired position returns
-`continuity_expired`, with instructions to inspect the PR and explicitly
-start a new baseline if the caller accepts lost continuity. Do not substitute
-a newer position automatically. Normal restore preserves the nonce/history;
-a recreated registration creates a new nonce and rejects old positions.
-
-A notification batch covers at most eight journal records, with encoded
-change data at most 5,120 bytes, current-state summary at most 1,536 bytes,
-and identity/waiting context/position/omissions at most 1,024 bytes. Always
-measure the complete 8,192-byte string. Keep all required changed identities,
-provenance, relationships and current state summaries; shorten bodies first
-and mark each affected item with reason and retrievable link. An empty body
-has `body_status: empty`; shortened content has `body_status: shortened`
-and its digest. The returned position covers the explicitly described
-changes, including acknowledged limitations; it never asserts that omitted
-body text was read or evaluated. The caller must assess the omission and use
-the link before treating that information as examined. If this metadata or
-the full eligible batch cannot fit, report `notification_capacity_exceeded`,
-emit no ordinary context and issue no new position. Do not split a batch
-silently, advance past omitted changes, or disguise a capacity error as no
-change. Conservative capacity failures are deliberate, documented limits.
 
 ## Specification documents
 
-This document is the authoritative plugin contract for implementers and
-verification authors. [Rewait control](pr-watch-rewait.md) owns the generic
+This document and the [capacity specification](github-pr-watch-capacity.md)
+are the plugin contract for implementers and verification authors. The latter
+owns capacity, v2 state records, compatible positions and continuation and
+takes precedence over the original v1 allocations. The
+[stream specification](runtime-state-stream.md) owns its common wire/storage
+profile. No specification is deferred to implementation. [Rewait control](pr-watch-rewait.md) owns the generic
 control, its ordering, errors, and compatibility. The
 [public plugin specification](plugin-v1.md) owns wire encoding, handshake,
 deadlines, and the runtime-state extension; the
@@ -296,7 +252,7 @@ and remain visible. A recovered unchanged round produces no invented change.
 | Same registration with daemon-owned rewait | Replacement/cancellation, plugin-owned cross-watch supersession | Keeps one identity and history, preserves cancellation exclusion and daemon control ownership. Requires a small shared protocol extension. |
 | One notification per explicit wait or daemon run | Continuous notifications while the agent works; permanent one-shot watch | Avoids overlapping wait notifications while preserving restart/fresh-change acceptance. Restart reopening a wait is visible operational behavior. |
 | GraphQL category queries | REST plus GraphQL; webhook history | Includes resolution and reply relationships without cross-API ID joins; explicit pagination is necessary. Polling matches approved observed-change scope. |
-| Bounded retained history | Self-contained snapshot tokens; plugin-owned disk storage | Small positions fit event context and stay registration-bound; expiration and capacity failures must be visible. |
+| Streamed state and prefix continuation | Larger fixed envelope; plugin files; reject large batches | The [capacity decision](github-pr-watch-capacity.md#decisions-and-tradeoffs) separates state, retrieval and event budgets while preserving core storage ownership. |
 | Standard library HTTP/JSON | New GitHub SDK | No dependency or shared build prerequisite; generated query constants and parser unit tests are sufficient. |
 
 ## Quality and operations
@@ -333,7 +289,8 @@ All IDs in this table refer to
 | FR-008 | AC-006, AC-009 | Complete observations and bounded context/history | U03, U04, GPW-I01 |
 | FR-009 | AC-007, AC-009 | Failure categories and scheduling | U04, GPW-I01, D01 |
 | FR-010 | AC-008 | Runtime state and distinct positions | U03, GPW-I03 |
-| FR-011 | AC-009, AC-010 | Usage scope and delivery checks | D01, D02, documentation review |
+| FR-011 | AC-009, AC-010 | Usage scope and delivery checks | D01, D02, GPW-D03, documentation review |
+| FR-012; FR-003–FR-010 capacity behavior | AC-011, AC-012 | [Capacity specification](github-pr-watch-capacity.md) | U02–U05, GPW-I04, GPW-I05, GPW-D03 |
 | NFR-001 | AC-003, AC-010 | External JSON data and fixed route | U03, GPW-I02, D02 |
 | NFR-002 | AC-001, AC-007, AC-010 | Verified TLS, host isolation, redacted diagnostics | U01, U04, GPW-I01, D01 |
 | NFR-003 | AC-008, AC-010 | Component ownership and public protocol | GPW-I02, GPW-I03, source/spec review |
@@ -351,7 +308,10 @@ covers pagination, GraphQL partial errors, clocks, retry guidance, and secret
 markers. Mock network, subprocess, storage, and clock capabilities; unit tests
 must not launch servers or children.
 
-Three assembled cases retain only boundaries unit tests cannot establish.
+Three existing assembled cases retain their non-capacity coverage. The
+[capacity verification plan](github-pr-watch-capacity.md#verification-selection)
+adds GPW-I04/I05 and unit matrix U05, governs their paths and budgets, and
+supersedes GPW-I01's former 33-item/nine-change rejection expectations.
 Do not multiply process cases by every GitHub state or authentication input.
 The existing common runtime-state suites remain responsible for exhaustive
 host checkpoint/activation failures; this scope verifies the plugin's actual
@@ -361,12 +321,11 @@ payload and the new rewait path. No new dependency, runner, or CI job is needed.
 
 The governed suite is `cmd/github-pr-watch-verification/`; all suite/case
 files are directly there with `//go:build integration`. The inventory is
-`cmd/github-pr-watch-verification/testdata/cases.json`. The plugin directory
-is introduced during implementation, not by adding empty bundled artifacts.
+`cmd/github-pr-watch-verification/testdata/cases.json`. The existing plugin is exercised through its integration test launcher.
 
 | ID | Concrete inputs and actions | Observable expected results and boundaries |
 | --- | --- | --- |
-| GPW-I01 | Start real plugin through public Session against verified loopback TLS GraphQL. Supply selected-host token without `gh`; activate, fail one initial page, complete baseline, repeat, add review/comment/reply and head H2, then exceed context capacity and independently fail a nested page. | No preactivation or baseline event; one bounded event with current state and relationships; empty/shortened bodies distinguished; omissions explicit; failed coverage does not move position or fabricate deletion. Credentials reach only the configured TLS origin and do not occur in context/diagnostics. |
+| GPW-I01 | Start real plugin through public Session against verified loopback TLS GraphQL. Supply selected-host token without `gh`; activate, fail one initial page, complete baseline, repeat, add review/comment/reply and head H2, then shorten oversized bodies and independently fail a nested page. | No preactivation or baseline event; one bounded event with current state and relationships; empty/shortened bodies distinguished; omissions explicit; failed coverage does not move position or fabricate deletion. Credentials reach only the configured TLS origin and do not occur in context/diagnostics. |
 | GPW-I02 | Start real hub/client/plugin/model-output with PR A and destination A; receive P1. Observe C2/H2 while the wait is consumed, then rewait the same ID from P1 with no additional GitHub activity. Repeat the operation ID; submit foreign/expired position and adversarial content. | C2/H2 delivered once to A, same registration and immutable arguments; P1-only changes absent; no overlapping old generation or second delivery from retry; invalid rewait changes nothing; destination B untouched. Verify terminal-outcome fence and no inferred agent assessment. |
 | GPW-I03 | Accept a plugin notification, checkpoint and stop/restart the real hub with unchanged source, then add C3. Separately fail saving, restore invalid payload, and recreate a registration without old progress. | No unchanged duplicate after successful save; C3 delivered through the reopened wait; save warning with continued monitoring; invalid state blocks affected watch; new registration has silent fresh baseline and cannot use old position. |
 
@@ -377,13 +336,11 @@ the test launcher while retaining hostname validation and the test CA, as in
 the existing review-request fixture. Do not add production insecure TLS or
 arbitrary API-origin options for testing.
 
-Build binaries once per suite, budget 60 seconds for setup, 15 seconds each
-for I01/I02, 20 seconds for I03, and 10 seconds cleanup, within the existing
-two-minute scoped suite budget. Use observable deadlines, temporary directories,
-at most one hub, one input, one model output, one mock service, and serialized
-cases. Kill children and close servers on failure. Feasibility checks measure
-transport/setup only; static Pending cases prove registration, not product
-acceptance. Actual cost measurements and limitations belong in the design PR.
+Build binaries once per suite. The [capacity verification plan](github-pr-watch-capacity.md#verification-selection)
+allocates the existing two-minute scoped suite budget across all five cases,
+including setup and cleanup. Keep cases serialized and close servers/children
+on failure. Static Pending establishes registration, never product acceptance.
+
 
 Run `go run build/mage.go -d build -w . test` separately from
 `go run build/mage.go -d build -w . integrationAll` on the existing Ubuntu CI.
@@ -401,13 +358,15 @@ guardrails without claiming acceptance.
 | D02 | Use real hub, trigger, actual agent/action destination for both author and reviewer. Receive P1, let the agent decide act or wait, create C2/H2 while it works, rewait P1, and observe resumed context. Also normal restart after saved acceptance followed by a new change. | Maintainer records separate trigger evidence, action acceptance, agent's actual act/wait decision, same-registration continuity, explicit omissions, fixed destination and no granted authority. A successful action request alone is not receiving-agent success. |
 
 Delivery authors and checks the plugin README/examples against FR-011,
-including the normal-restart notification behavior. Execution of D01/D02
+including continuation and migration under
+[GPW-D03](github-pr-watch-capacity.md#delivery-quality-check). Execution of these checks
 belongs to delivery after approved implementation merge, not to design or
 implementation acceptance.
 
 ## Change and rollout impact
 
-Adoption adds one trigger and the optional shared rewait extension. The
+The capacity revision adds optional streamed checkpoints and explicit prefix
+continuation to the continuing trigger and shared rewait extension. The
 governing shared documents define compatibility with existing registrations
 and nonparticipating plugins. Existing request-discovery behavior, URL-only
 events, and service-free model tests remain intact. No product implementation
@@ -417,7 +376,7 @@ or delivery instructions are part of this design phase.
 
 GHES live infrastructure and receiving-agent credentials are delivery
 prerequisites, owned by the maintainer. Capability documentation alone does
-not close those checks. Very large PRs or long inactive waits can exceed the
-declared capacity; visible continuity failure is preferable to silently
-dropping changes. Position and context bounds must be reviewed together with
-the shared rewait contract before implementation.
+not close those checks. Finite API, memory and disk resources can fail visibly. The
+[capacity specification](github-pr-watch-capacity.md#risks-and-rollout)
+records resource controls, migration and verification risks; no fixed lifetime
+item ceiling or silent reset is authorized.
