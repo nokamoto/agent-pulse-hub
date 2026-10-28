@@ -164,12 +164,15 @@ The manual trigger accepts nonempty UTF-8 plain text from one watched file,
 between 1 and 8,192 bytes; it does not require a JSON structure. Publish by
 writing a temporary sibling file, closing it, and renaming it onto the watched
 path. Use a unique marker in the event so you can identify the resulting
-message later in the target conversation. To follow the action result, inspect
-the foreground hub's JSON logs: with one marked event published at a time,
+message later in the target conversation. In default mode, follow the action
+result in the foreground hub's JSON logs: with one marked event published at a time,
 find its `event_admitted` record by time and active subscription, then follow
 that `delivery_id` through `delivery_attempt` and `delivery_result`. These log
 records do not include the event context, so the marker itself cannot be
-matched directly to a log entry. The event context is treated as external data
+matched directly to a log entry. With `--notification-delivery`, use the
+[notification inspection commands below](#inspect-notifications-and-diagnose-stopping)
+instead: this mode does not emit those delivery attempt/result logs.
+The event context is treated as external data
 and encoded as JSON in the queue message; it cannot change the registered
 destination or grant the conversation additional authority.
 
@@ -179,8 +182,8 @@ a shell. A successful result requires a zero exit, valid output, and one exact
 queue acknowledgement naming the same thread. The result `accepted` confirms
 queue acceptance only. Verify later conversation processing separately.
 
-These log results describe the delivery outcome in either mode; opted-in
-routes also retain the more detailed evidence below.
+The following log results apply to default mode. Notification mode exposes
+acceptance and retry state through the inspection commands below.
 
 | Result | Meaning |
 | --- | --- |
