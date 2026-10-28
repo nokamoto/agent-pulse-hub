@@ -11,6 +11,8 @@ sources:
     resource: requirements/trigger-runtime-state.md
   - id: subscription-cancellation-requirements
     resource: requirements/subscription-cancellation.md
+  - id: notification-design
+    resource: design/notification-delivery.md
 ---
 
 # Repeated waiting on a retained trigger registration
@@ -35,7 +37,10 @@ replaces a route, changes its destination, or transfers another registration's
 saved state. Explicit deletion instead follows
 [subscription cancellation](subscription-cancellation.md), including its
 coordination with this profile. No delivery retries or recipient-processing
-guarantee are introduced by rewait.
+guarantee are introduced by rewait. The independent
+[notification-delivery design](notification-delivery.md) owns retained evidence
+and safe retry for participating outputs; it does not rearm source generations
+or reinterpret confirmation positions as receipts.
 
 ## Chosen lifetime
 
@@ -198,7 +203,9 @@ affected registration:
 
 1. Validate the local request, capability and retained route. Resolve an existing
    receipt before checking `wait_active`. Require a consumed generation and no
-   admitted event without a terminal outcome. Serialize that event's terminal
+   admitted event without a terminal outcome. Intermediate retryable unsubmitted
+   results in notification mode leave that outstanding event pending and keep
+   rewait busy until its notification receives a terminal outcome. Serialize that event's terminal
    notice before preparation. Do not withdraw queued/in-flight deliveries to
    make a rewait possible; return `rewait_busy` instead.
 2. Reserve the operation receipt and a new generation. The old generation is
@@ -242,7 +249,7 @@ does not discard other registrations' preparations or receipts.
 
 Process `state_event` under the same admission ordering. Verify ownership,
 fresh event ID, current generation and an armed token before admitting. Consume
-the token atomically with admission, preserving one delivery attempt and the
+the token atomically with admission, preserving one notification and the
 registered recipient. A valid fresh stale-generation or consumed-token event
 is discarded, diagnosed and receives the existing terminal `discarded` notice;
 it neither opens a token nor advances confirmed delivery progress. Invalid or
@@ -274,8 +281,13 @@ must not replace it with the
 delivery cursor. Invalid restored state blocks startup under the existing
 rule. Save failure reports the existing continuity warning and does not stop
 monitoring; fresh notification requires an armed generation, including explicit
-rewait after a prior generation was consumed. Failure recovery adds neither
-automatic delivery retries nor unfinished-notification guarantees.
+rewait after a prior generation was consumed. Rewait failure recovery itself
+adds neither automatic delivery retries nor unfinished-notification guarantees.
+Notification-profile retries resumed after restart update only their retained
+ledger; they send no old Session notice or successful-progress checkpoint
+update. The new Session still receives its ordinary fresh activation generation
+and source deduplication behavior. Distinct new source events remain independent
+notifications, not retries of the retained record.
 
 Normal stop closes rewait admission along with registration/event admission,
 finishes any already serialized commit decision, sends no further grants after
@@ -288,6 +300,9 @@ Live ID-based unsubscribe follows the cancellation design. It removes this
 watch's staged and committed progress and notification token, while preserving
 the bounded historical receipts needed to prevent replay. Normal stop excludes
 the fenced registration from grants, checkpoint saves and restoration.
+Cancellation also fences notification retry scheduling and durably cancels
+retained work before removal under its governing design. A delayed ACK may
+advance retained evidence only; it cannot resurrect a generation or watch.
 
 Positions and checkpoints are trusted local opaque data, not routing authority.
 Keep both out of diagnostics. External GitHub text cannot select a subscription,

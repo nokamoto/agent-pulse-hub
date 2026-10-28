@@ -12,11 +12,19 @@ sources:
     resource: design/trigger-runtime-state.md
   - id: subscription-cancellation-requirements
     resource: requirements/subscription-cancellation.md
+  - id: notification-design
+    resource: design/notification-delivery.md
 ---
 
 # Plugin-based event routing MVP
 
 ## Context and scope
+
+The optional [notification-delivery design](notification-delivery.md) qualifies
+the one-attempt and volatile-work rules below only for outputs advertising its
+profile. It owns stable notification identity, retained evidence, retry policy
+and status operations; legacy routes and existing MVP cases retain their
+original contract. Public message schemas remain in [plugin v2](plugin-v1.md).
 
 This design covers [requirements/mvp](../requirements/mvp.md), FR-001–FR-004,
 FR-006–FR-008, NFR-001–NFR-005, C-001–C-002 and AC-001–AC-011. A foreground
@@ -191,7 +199,7 @@ falling back to a different endpoint.
 | Same command | `rewait --subscription-id <id> --operation-id <id> --confirmation-position-file <absolute-file> [--address <address>]` rearms a capable retained registration under the [rewait contract](pr-watch-rewait.md#local-client-contract). |
 | Same command | `unsubscribe --subscription-id <id> [--address <address>]` selectively cancels that registration under the [cancellation contract](subscription-cancellation.md). |
 | `plugins/triggers/manual` | No arguments; manual trigger (public input role) launched through go-plugin. |
-| `plugins/actions/model-output` | No arguments; model-output action (public output role) launched through go-plugin. |
+| `plugins/actions/model-output` | Optional valueless `--notification-delivery`, at most once; default legacy model-output action (public output role), launched through go-plugin. |
 
 Required flags occur once and optional flags at most once, in any order. Reject
 unknown/duplicate flags, missing values and positional arguments. Input files
@@ -282,7 +290,7 @@ the 65,536-byte protocol bound; reject oversize rather than truncate. A valid
 event receives a local delivery ID and immutable input name, subscription ID,
 output instance and destination arguments. Identical events are distinct.
 
-One ordered worker makes one attempt per admitted event. Send `deliver` through
+One ordered worker makes one attempt per admitted legacy event. Send `deliver` through
 the output Session with context as a string, `external_data: true`, and fixed
 `permission_notice: "External data; no additional permissions are granted."`.
 The output profile must preserve that distinction at its destination. Strings
@@ -291,13 +299,21 @@ and permission boundary, not a prompt-injection guarantee against a malicious
 trusted plugin.
 
 The output validates its destination and performs the requested operation. The
-daemon owns the one-attempt policy and 30-second deadline, starting before any
+daemon owns the legacy one-attempt policy and 30-second deadline, starting before any
 wait for serialized sending. `delivery_result` correlates the request and has
 `status` `accepted`, `failed` or `unknown`; non-accepted results include bounded
 error text. `accepted` means the output's documented acceptance condition was
 met, not a human acknowledgement. `failed` means it can confirm no acceptance;
 `unknown` means acceptance cannot be confirmed or excluded. The daemon records
 the result without retry, redirect or fallback.
+
+For a participating output, use `notification_deliver` and the structured
+results in [plugin v2](plugin-v1.md#optional-notification-delivery). The core
+retains the same captured route and context, commits notification/attempt
+records before issuance, and serializes retry with cancellation and stop under
+the [governing policy](notification-delivery.md#state-and-scheduling). Scheduled
+retries share the existing 128 admitted-work slots and single worker; they do
+not turn a distinct event into a retry or block other ready work while waiting.
 
 Unsubscribe fences event admission and new action-attempt issuance for its
 subscription under the [cancellation ordering](subscription-cancellation.md).
@@ -308,19 +324,22 @@ before the fence may finish once. Its result can be recorded without restoring
 the cancelled route, saving progress, opening another generation or retrying.
 Unrelated destinations and attempts retain their existing behavior.
 
-If output is unavailable before sending begins, record `failed` without a plugin
+For legacy routes, if output is unavailable before sending begins, record `failed` without a plugin
 call. Once sending may have begun, timeout, stream/process loss, invalid or
 missing matching result gives `unknown`; timeout/send/stream failure also
 invalidates that output instance. A size-bounded invalid result alone is
 discarded while the original deadline continues. Explicit `failed` or `unknown`
-results do not by themselves invalidate a healthy output. Late results cannot
-change a final outcome. Admitted events survive input exit with their captured
+results do not by themselves invalidate a healthy output. Late legacy results cannot
+change a final outcome. Participating outputs may supply bounded same-Session
+acceptance evidence under the notification profile; it updates only retained
+evidence after a terminal source notice, without another notice or retry.
+Admitted legacy events survive input exit with their captured
 recipient; output exit makes not-yet-attempted deliveries fail. New events on
 any affected route are rejected. Other available routes remain usable.
 
 Normal stop closes admission/listener, prevents new commits and waits for an
 already serialized commit decision. Saved registrations survive; pending
-registrations do not resume. Stop discards queued events with reasons,
+registrations do not resume. Stop discards legacy queued events with reasons,
 marks a possibly sent in-flight delivery unknown. For participating inputs,
 complete the [ordered notices and final checkpoint/save](trigger-runtime-state.md#normal-stop-and-confirmed-delivery-fence)
 before cancelling their Sessions. Then cancel Sessions and call
@@ -330,6 +349,11 @@ process grace timer or descendant enumeration. The optional checkpoint phase
 has a bounded protocol deadline. Stop and Ctrl+C enter the same
 coordinator. CI exercises public stop and unit interrupt dispatch; delivery
 observes a foreground interrupt with configured-process exit evidence.
+For notification-profile work, stop saves known results, marks issued uncertain
+work unknown, and retains eligible queued/waiting unsubmitted work. Send its
+final source outcomes before checkpointing and await notification saves before
+releasing exclusion, as defined by the
+[notification stop contract](notification-delivery.md#source-outcomes-shutdown-and-cancellation).
 
 ## Bundled model plugin profiles
 
@@ -368,11 +392,11 @@ open with create/append, write one complete JSON object plus LF, then close.
 The record contains exactly `delivery_id`, `input_plugin`, `subscription_id`,
 `context`, `external_data`, `permission_notice` from the request and
 `observed_at`, a UTC RFC 3339 timestamp assigned when constructing the record.
-No destination work occurs before `deliver`. IDs and context are unmodified.
+No destination work occurs before `deliver` or `notification_deliver`. IDs and context are unmodified.
 The normal observation interface is reading the UTF-8 JSONL file with ordinary
 file tools; no harness endpoint or acknowledgement simulator is involved.
 
-Successful full write and close produce `accepted`. Failure before opening or
+In legacy mode, successful full write and close produce `accepted`. Failure before opening or
 writing that confirms no record was appended produces `failed`; write or close
 failure after a write may have begun produces `unknown` and a diagnostic. Do
 not retry, repair a partial record or truncate output. Operators preserve and
@@ -380,6 +404,17 @@ inspect a damaged file before deliberate recovery. No fsync, crash durability,
 exactly-once across failures or external-writer safety is promised. The file
 is user-visible output rather than persisted hub registration/queue state.
 Its retention and removal are operator responsibilities.
+
+With `--notification-delivery`, advertise `notification_delivery_v1` and apply
+the same record format and serial-write rules. The first write invocation is
+the submission boundary. A recognized temporary resource error opening the
+file before any write is retryable `unsubmitted`; path, permission and
+unclassified pre-write errors are permanent `unsubmitted`. Any write/close
+failure after invoking write is `unknown`; full write and close is `accepted`.
+The action never retries, repairs or deduplicates file records. The core alone
+owns eligible retries under the [notification design](notification-delivery.md).
+The flag changes readiness and message profile only; omitted flag retains the
+existing contract, and an old strict host may reject opted-in readiness.
 
 ## Decisions and alternatives
 
@@ -593,7 +628,8 @@ and file observation without a latency target. Repeat the registration to show
 same ID/one watch; remove client argument files, stop and restart with the same
 configuration/state, then publish a new event using the saved ID before another
 registration. SP-D01 extends D09 with saved-state failure and deliberate offline
-recovery. Preserve the no-event-replay/no-retry explanation. Perform public stop and foreground Ctrl+C on separate
+recovery. Preserve the legacy no-event-replay/no-retry explanation and distinguish
+the opt-in notification policy. Perform public stop and foreground Ctrl+C on separate
 live runs and retain configured-plugin exit evidence. Missing or failed steps
 remain incomplete; CI alone does not establish README usability. Actual Codex
 and future live-service checks are not MVP delivery obligations.

@@ -13,6 +13,10 @@ sources:
     resource: design/plugin-v1.md
   - id: cancellation-design
     resource: design/subscription-cancellation.md
+  - id: notification-requirements
+    resource: requirements/notification-delivery.md
+  - id: notification-design
+    resource: design/notification-delivery.md
 ---
 
 # Codex Queue action and current-conversation registration
@@ -28,8 +32,12 @@ NFR-001–004 and AC-002–008, plus the applicable
 [bundled artifact requirements](../requirements/bundled-plugins.md).
 
 Use [plugin protocol v2](plugin-v1.md), including its existing deadlines,
-message bounds, output role and daemon-managed lifecycle. No protocol change,
-new conversation, plugin-owned persistence, retry, automatic plugin restart,
+message bounds, output role and daemon-managed lifecycle. The optional
+[notification-delivery profile](notification-delivery.md) governs stable
+notification identity, core-owned safe retry, retained evidence and inspection.
+This document owns the derived Codex CLI boundary and ACK interpretation; the
+public specification owns its wire schema. Legacy mode remains the default.
+No new conversation, plugin-owned persistence or retry, automatic plugin restart,
 external-service trigger, or replacement of the service-free model walkthrough
 is introduced. Common saved-route restoration belongs to
 [local persistence](state-persistence.md), including Codex destinations. Queue
@@ -73,7 +81,16 @@ this repository's authoring skills.
 
 ## Compatibility and executable selection
 
-Plugin mode accepts exactly `--codex-executable <absolute-file-path>`.
+Plugin mode requires exactly one `--codex-executable <absolute-file-path>` and
+accepts the optional no-value flag `--notification-delivery` exactly once.
+Reject duplicate flags, extra positional arguments and other options. The flag
+changes only readiness and delivery-result profile selection: advertise
+`notification_delivery_v1` and accept `notification_deliver` using the
+[public profile](plugin-v1.md#optional-notification-delivery). Without it, use
+legacy `ready`, `deliver` and `delivery_result`. Mixed-profile requests are
+invalid; there is no fallback after opt-in. An old strict host may reject this
+readiness, so enabling the flag requires a supporting host deployed while
+stopped. The flag does not change registration helper behavior.
 There is no shell, PATH fallback, command-string parsing, automatic installation,
 or extra user-configured Codex argument list. Use the current OS process APIs
 and an argument array. The operator selects a trusted native executable with
@@ -120,7 +137,8 @@ missing/null/non-string values, whitespace, names, aliases and alternate UUID
 spellings. The schema does not restrict UUID version. Shared strict JSON
 validation remains applicable. Destination validation performs no queue call
 and claims only argument validity, not conversation existence or availability.
-Revalidate before delivery; an invalid destination is `failed` without launch.
+Revalidate before delivery; an invalid destination is `failed` in legacy mode,
+or permanent `unsubmitted` in notification mode, without launch.
 
 The registered destination is the sole routing authority. Neither environment
 variables in the daemon nor context, source, subscription or delivery IDs may
@@ -143,11 +161,13 @@ the launcher. Keep the public 8,192-byte context and 65,536-byte frame limits.
 Encode literal NUL and control characters as JSON escapes. The prefix and
 notice make the authority boundary visible but do not promise model-level
 prompt-injection isolation. Argument limits of the selected OS/CLI may still
-prevent launch; report that as failed without truncating or retrying content.
+prevent launch; report the appropriate pre-launch failure without truncating
+content. An argument-size error is permanent and never retryable.
 
-### One attempt and queue acceptance
+### One attempt per request and queue acceptance
 
-Start one process per valid `deliver`, using the configured executable and
+Start at most one queue process per valid `deliver` or `notification_deliver`,
+using the configured executable and
 exact argument vector above. Bound the operation from handler admission to
 20 seconds, including any local scheduling wait. Do not queue behind an
 unbounded action-local worker. Cancel on Session shutdown. Use `exec.CommandContext`
@@ -160,7 +180,9 @@ The 20-second inner bound leaves time to return within the host's existing
 30-second deadline. It cannot extend that outer deadline or guarantee a result
 if the host's transport is stalled. Public unknown/unavailable behavior still
 applies when the host loses confirmation. Concurrent deliveries retain their
-own request correlation; no hidden durable queue or retry is added.
+own request correlation; the action adds no hidden durable queue or retry.
+In notification mode the core alone can issue a later eligible request under
+the governing notification design.
 
 Success requires exit zero, no timeout/cancellation/output overflow, valid
 UTF-8 stdout, and exactly one complete stdout line of this form:
@@ -177,7 +199,7 @@ UUID byte for byte. The token rule is the plugin's conservative acceptance
 profile, not a claim about every Codex version. Bounded stderr diagnostics do
 not invalidate an otherwise confirmed result. Never search stderr for an ACK.
 
-| Observation | Public result |
+| Observation | Legacy public result |
 | --- | --- |
 | Invalid destination or process cannot start | `failed`; acceptance did not occur. |
 | Normal exit and the exact matching ACK above | `accepted`; queued, not processed. |
@@ -190,8 +212,50 @@ The daemon supplies plugin/subscription/delivery attribution. Do not log raw
 context, full argv, full environment or unfiltered CLI output by default.
 Useful reasons include `codex_start_failed`, `codex_timeout`,
 `codex_exit_unconfirmed`, `codex_ack_invalid` and `codex_ack_target_mismatch`.
-No outcome causes a second attempt. Repeated events are distinct requests,
+No legacy outcome causes a second attempt. Repeated events are distinct requests,
 as in the shared routing contract; the action adds no deduplication promise.
+
+### Notification-mode submission evidence
+
+The optional profile uses the same destination, envelope, CLI arguments,
+20-second operation bound and exact ACK rules. `delivery_id` now identifies
+the stable notification and `request_id` its attempt. Bind the requested
+thread, notification and attempt before launch. Interpret a matching ACK only
+through this original request; Codex does not echo a hub notification ID or
+provide a caller idempotency key. Return its nonempty queue ID as the opaque
+`receipt` on `accepted`. Do not request experimental App Server operations,
+probe acceptance asynchronously, or depend on an acceptance lookup API.
+
+| Observation | Notification result |
+| --- | --- |
+| Invalid destination, missing executable, permission denial, invalid executable format, argument-size failure or an unclassified launcher error before process start | `unsubmitted`, `retryable:false`; permanent or insufficiently classified pre-submission failure. |
+| Process start fails with the known transient process-resource conditions `EAGAIN`, `EMFILE`, `ENFILE` or `ENOMEM`, or the OS adapter's documented equivalent | `unsubmitted`, `retryable:true`; proof that the queue process did not start. |
+| Context cancelled before launch, including stop/cancellation | `unsubmitted`, `retryable:false`; do not launch or retry. |
+| Normal exit and exact matching ACK | `accepted` with the queue ID as `receipt`; queued, not processed. |
+| Process started but matching successful completion is absent, including nonzero exit, timeout, interruption, capture failure/overflow, missing/malformed/duplicate/wrong-target ACK | `unknown`; never retry. |
+
+The process adapter must distinguish a failed `Start` from failure after a
+successful `Start`. Every successfully started queue process crosses the
+possible-submission boundary, even if cancellation follows immediately.
+An unknown launcher error is a permanent unsubmitted outcome only when the
+adapter proves `Start` did not succeed; absent that proof the result is
+`unknown`. OS-specific codes may implement these portable categories but may
+not classify all launch failures as transient. Unit verification mocks this
+boundary; do not require exhausting actual host resources.
+
+Use the public profile's bounded `reason` and sanitized `message`, preserving
+both IDs; useful tokens include `codex_start_resource`, `codex_start_failed`,
+`codex_cancelled`, `codex_timeout` and the ACK reasons above. The action supplies
+no `retry_after_ms`; the core applies its finite retry policy. This CLI profile
+never derives `rejected` from exit code or stderr, because a started process
+with no exact success ACK provides no confirmed post-submission rejection.
+No action-local retry or receiver idempotency is assumed.
+
+The public bounded `notification_evidence` supplement can resolve an earlier
+unknown only within the original Session/deadline when valid acceptance
+evidence actually exists. It creates no required Codex recovery operation;
+response loss can remain unknown. The core owns evidence precedence, stopping
+conditions and persistence, including cancellation and normal restart.
 
 ## Current-conversation registration
 
@@ -313,6 +377,10 @@ The cancellation delivery check SC-D01 verifies this workflow with actual Codex.
 It documents the direct-client schema; skill users let the helper generate it.
 Use the manual trigger's `examples/watch.json`. Replace whole JSON string
 values through serialization; no placeholder expansion is performed.
+The example above uses legacy mode. For notification mode, append the literal
+`"--notification-delivery"` argument to the action's `args` array after
+upgrading the host. The same registration helper and destination file apply;
+the flag creates no manual retry command or helper registration retry.
 
 Build with the repository's Go version from the repository root:
 
@@ -331,18 +399,25 @@ a unique UTF-8 context using the manual trigger's closed-file rename procedure.
 Observe the action result separately from the target conversation's response.
 Stop with the existing hub `stop --address` command and await configured plugin
 exits. Daemon shutdown retains committed registrations in the selected local
-state, but loses queued/in-flight hub events and incomplete registrations; it
+state, but legacy mode loses queued/in-flight hub events and incomplete registrations; it
 cannot retract a message already accepted by Codex. Reuse the same
 configuration/state and wait for `daemon_ready` with its restored count before
 publishing. Restoration revalidates the saved destination with the current
 action and re-establishes the trigger watch; failure aborts startup under
 [local persistence](state-persistence.md). The original temporary destination
 argument file need not survive, and no Codex conversation work is replayed by
-the hub.
+the hub for legacy routes. For opted-in routes, the notification design owns
+normal-stop retention, conservative interrupted-attempt recovery, automatic
+resumption of proven-unsubmitted work and finite bounds. The action stores no
+notification state. Old unrecorded notifications are never reconstructed as
+retryable work.
 
 If compatibility checks fail, choose a compatible executable/shared server and
-restart deliberately. If acceptance is unknown, inspect the target before
-publishing another event; do not retry automatically. A busy target must queue
+restart deliberately. If acceptance is unknown, inspect notification status
+and the target as needed; unknown may remain unresolved and stops retry.
+Publishing the same context as a new event is not a safe recovery procedure.
+Only the core retries eligible proven-unsubmitted notifications in opt-in
+mode, retaining the same notification identity. A busy target must queue
 without interruption or produce non-acceptance/unknown evidence. Local process
 arguments and the recipient conversation can expose context; operators own
 machine access, Codex storage and evidence retention. No new persistence is
@@ -356,7 +431,10 @@ maintainers. Keep the action CLI, destination, ACK, helper, skill and artifact
 contracts here; no separate specification is needed. The public
 [plugin specification](plugin-v1.md) remains authoritative for v2 framing,
 schema, lifecycle and deadlines. [MVP design](mvp.md) owns registration/control
-and routing. The [model operation guide](windows-operations.md) remains an
+and legacy routing. The [notification-delivery design](notification-delivery.md)
+owns its extension's policy, state, inspection commands, evidence retention,
+retry timing and ND verification inventory; this document derives the Codex
+submission boundary from it. The [model operation guide](windows-operations.md) remains an
 independent service-free procedure. Plugin README/examples/skill derive from
 this design; they cannot change its contracts. Internal parser organization,
 port names and helper functions remain routine implementation choices.
@@ -368,6 +446,7 @@ port names and helper functions remain routine implementation choices.
 | Keep Codex in the action using v2 | A daemon adapter couples every deployment to Codex; a new wire version adds no required behavior. |
 | Explicit executable and strict target-specific ACK | PATH discovery or substring matching is convenient but can select the wrong CLI or report false success. Conservative rejection can yield unknown for a future valid format. |
 | Treat every unconfirmed started process as unknown | Parsing arbitrary stderr into failed risks claiming that a submitted message was not queued. |
+| Explicit notification-profile opt-in with core-owned retries | Automatically changing existing action readiness breaks strict older hosts and changes route behavior; action-local retry would divide policy and retained evidence ownership. |
 | Helper mode in the same action binary | Skill-only validation is difficult to test and can be bypassed accidentally; a hub-specific command would put identity logic in the wrong component. |
 | Require both matching environment UUIDs | Falling back to one ID risks registering a child or another session. Some Codex environments remain unsupported until a revised profile is verified. |
 | Fixed 20-second inner delivery bound | Reusing 30 seconds races the host deadline; configurable timing adds unnecessary configuration and verification combinations. |
@@ -392,6 +471,13 @@ All IDs in this table refer to `requirements/codex-queue.md` unless qualified.
 
 Common MVP behavior remains covered by its existing eleven cases. This design
 does not weaken their expected results or add Codex dependencies to that suite.
+The [notification-delivery design](notification-delivery.md) governs the added
+requirements and their ND case mappings. In particular, `ND-V04-ACTION` extends
+the existing `cmd/codex-queue-verification/` command-level suite through a
+standalone public caller for the opt-in action. It checks readiness, the
+pre-launch/started boundary, queue-ID receipt and target correlation without
+real Codex. Existing CQ cases continue to select legacy mode and retain their
+expected results; separate real-Codex ND delivery evidence remains required.
 
 ## Verification strategy
 
@@ -513,7 +599,7 @@ conversations are needed to compile this design or measure fixture feasibility.
 
 Add the action/skill/artifacts and their implementation tests. Link this
 profile from MVP, public plugin and model operations documents without changing
-their wire or service-free contracts. Deploy matching action/helper artifacts;
+their legacy wire or service-free contracts. Deploy matching action/helper artifacts;
 stop the daemon before changing executable configuration. Existing saved routes
 restore only when the configured names/roles and current plugin acceptance
 remain valid; follow [offline recovery](state-persistence.md#quality-and-operations)
@@ -523,7 +609,11 @@ the prior configuration; preserve affected saved routes and repair or remove
 them deliberately while stopped before restarting without that action. It
 cannot retract queued messages. The common persistence contract governs saved
 state compatibility; this action adds no separate storage migration or new
-distribution mechanism.
+distribution mechanism. Notification-profile adoption requires a supporting
+host and the explicit action flag; retain the legacy default for other routes.
+The common notification design governs saved evidence compatibility and
+rollback; removing the flag or notification records must not authorize a new
+attempt for old unknown, accepted, rejected or exhausted work.
 
 ## Open questions and risks
 
@@ -531,6 +621,6 @@ There are no intentionally deferred implementation contract decisions. Human
 design review evaluates the conservative ACK/environment compatibility profile,
 helper CLI and verification cost. Real-service compatibility remains a delivery
 check for each selected environment, not a promise inferred from help output.
-CLI changes can yield unknown after a real enqueue; investigate before another
-attempt. A lost registration result may leave an active route. Local control
+CLI changes can yield unknown after a real enqueue; inspection may remain
+unknown and must never authorize another attempt. A lost registration result may leave an active route. Local control
 and inherited environment remain trusted local inputs under the MVP boundary.
