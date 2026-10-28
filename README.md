@@ -257,6 +257,17 @@ separately. Inspect the target after an `unknown` result before deliberately
 submitting another event. A restart restores saved routes and revalidates the
 destination; it does not replay Codex work.
 
+### Watch a GitHub pull request
+
+The [GitHub PR watch guide](plugins/triggers/github-pr-watch/readme.md) shows
+how authors and reviewers can monitor one selected PR, receive its review and
+discussion changes, and explicitly wait again on the same subscription.
+It includes source builds, selected-host authentication, a local output example,
+and the optional Codex destination. The first complete observation is silent.
+Large backlogs arrive in bounded parts; assess each part and return its position
+to request the next one. Normal restart also opens a notification wait from
+saved delivery progress. Output acceptance alone does not prove agent assessment.
+
 ## Writing plugins
 
 Implement an input or output role using [plugin protocol v2](docs/design/plugin-v1.md),
