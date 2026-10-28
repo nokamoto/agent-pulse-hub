@@ -33,11 +33,15 @@ files and logs. Use separate plugin processes and host-specific environment
 assignments for different hosts; do not implicitly reuse one environment token
 across hosts.
 
-In the first terminal, obtain and build matching programs. Stop on failure:
+This walkthrough builds the validated source revision of implementation #96.
+The checkout below selects that snapshot so later default-profile changes do
+not alter these steps. In the first terminal, obtain and build matching
+programs. Stop on failure:
 
 ```sh
 git clone https://github.com/nokamoto/agent-pulse-hub.git
 cd agent-pulse-hub
+git checkout --detach a384a0b6f6577a28a01d64a9927e4c5eb097306a
 mkdir ./pr-watch-demo
 run="$(python3 -c 'from pathlib import Path; print((Path.cwd() / "pr-watch-demo").as_posix())')"
 suffix="$(go env GOEXE)"
@@ -275,7 +279,13 @@ A fresh observed change can also notify without a new client request. This is
 delivery progress, not a claim that an agent assessed the previous message.
 
 Before replacing binaries, changing budgets or backing up, stop all owners and
-preserve the entire state tree. Upgrade hub and plugin together. Compatible
+preserve the entire state tree. Upgrade hub and plugin together. These migration
+steps apply to discussion-profile binaries compatible with `github-pr-watch-v2`.
+For later versions of the `github-pr-watch` input offering `--state-profile`,
+add `--state-profile=discussion-v2` to that input's configured `args` before
+starting with existing discussion state; see
+[profile compatibility](../../../docs/design/github-pr-watch-signals.md).
+A switch to another profile is separate from the v1-to-v2 migration here. Compatible
 legacy v1 state migrates in memory without resetting nonce, positions or history;
 the next successful checkpoint writes streamed v2 state. Older programs cannot
 read v2 generations. Preserve matching old binaries and the stopped tree for
