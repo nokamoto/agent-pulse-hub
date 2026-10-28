@@ -127,6 +127,15 @@ func (s *Server) handle(connection net.Conn) {
 		s.writeError(connection, requestErr)
 		return
 	}
+	if request.operation == "notification" || request.operation == "notifications" {
+		wire, inspectionErr := notificationResponse(s.service, request)
+		if inspectionErr != nil {
+			s.writeError(connection, inspectionErr)
+			return
+		}
+		_, _ = writeRequest(connection, wire)
+		return
+	}
 	if request.operation == "unsubscribe" {
 		completed := make(chan *hub.Error, 1)
 		go func() { completed <- s.service.Unsubscribe(request.subscriptionID) }()

@@ -20,6 +20,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+//go:generate go run go.uber.org/mock/mockgen -source=plugin.go -destination=plugin_mock_test.go -package=modeloutput
+
 type outputFile interface {
 	Write([]byte) (int, error)
 	Close() error
@@ -41,8 +43,9 @@ func (localFiles) OpenAppend(path string) (outputFile, error) {
 
 // Plugin implements the local JSONL output profile through the public Session.
 type Plugin struct {
-	logger *slog.Logger
-	files  outputFiles
+	notifications bool
+	logger        *slog.Logger
+	files         outputFiles
 
 	mu         sync.Mutex
 	deliveryMu sync.Mutex
@@ -60,6 +63,8 @@ func newWithFiles(logger *slog.Logger, files outputFiles) *Plugin {
 	return &Plugin{logger: logger, files: files}
 }
 
+func (p *Plugin) WithNotifications(enabled bool) *Plugin { p.notifications = enabled; return p }
+
 func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 	p.mu.Lock()
 	if p.active {
@@ -74,7 +79,11 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 		p.mu.Unlock()
 	}()
 
-	if err := p.send(stream, pluginprotocol.Frame{Type: "ready", Role: "output"}); err != nil {
+	ready := pluginprotocol.Frame{Type: "ready", Role: "output"}
+	if p.notifications {
+		ready.Capabilities = []string{pluginprotocol.NotificationCapability}
+	}
+	if err := p.send(stream, ready); err != nil {
 		return fmt.Errorf("send readiness: %w", err)
 	}
 	for {
@@ -107,7 +116,19 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 			}); err != nil {
 				return err
 			}
+		case "notification_deliver":
+			if !p.notifications {
+				return errors.New("notification profile was not selected")
+			}
+			result := p.deliverNotification(frame)
+			if err := p.send(stream, result); err != nil {
+				return err
+			}
 		case "deliver":
+			if p.notifications {
+				return errors.New("legacy delivery is unavailable in notification mode")
+			}
+
 			outcome, detail := p.deliver(frame)
 			result := pluginprotocol.Frame{Type: "delivery_result", RequestID: frame.RequestID, Status: outcome}
 			if outcome != "accepted" {

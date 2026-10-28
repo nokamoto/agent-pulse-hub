@@ -5,6 +5,7 @@ import "context"
 const MaxCapturedBytes = 64 * 1024
 
 type ProcessResult struct {
+	StartRetryable bool
 	Started        bool
 	Exited         bool
 	ExitCode       int

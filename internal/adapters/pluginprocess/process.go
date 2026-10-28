@@ -83,8 +83,9 @@ type requestResult struct {
 // Process owns one configured go-plugin child and its role-specific stream.
 // It cannot be restarted.
 type Process struct {
-	config Config
-	logger *slog.Logger
+	notificationCorrelations map[string]*notificationCorrelation
+	config                   Config
+	logger                   *slog.Logger
 
 	mu                  sync.Mutex
 	callbackMu          sync.Mutex
@@ -568,6 +569,9 @@ func (p *Process) requestExtended(parent context.Context, frame pluginprotocol.F
 		p.mu.Unlock()
 		return pluginprotocol.Frame{}, &requestError{message: "request identifier is empty or already pending"}
 	}
+	if correlation := p.notificationCorrelations[frame.RequestID]; correlation != nil {
+		correlation.deadline = deadline
+	}
 	p.pending[frame.RequestID] = pending
 	p.mu.Unlock()
 
@@ -613,6 +617,10 @@ func (p *Process) requestExtended(parent context.Context, frame pluginprotocol.F
 		}
 		issued = true
 		pending.sent = true
+		if correlation := p.notificationCorrelations[frame.RequestID]; correlation != nil {
+			stamp := time.Now().UTC()
+			correlation.issuedAt = &stamp
+		}
 		go func() { sendResult <- stream.Send(payload) }()
 		p.mu.Unlock()
 	}
@@ -1055,6 +1063,14 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 		p.callbackMu.Unlock()
 		return
 	}
+	if handled, callback := p.handleNotificationFrameLocked(frame); handled {
+		p.mu.Unlock()
+		p.callbackMu.Unlock()
+		if callback != nil {
+			callback()
+		}
+		return
+	}
 	if frame.Type != "watch_result" && frame.Type != "destination_result" && frame.Type != "delivery_result" && frame.Type != "checkpoint_result" && frame.Type != "resume_result" && frame.Type != "cancel_result" {
 		p.mu.Unlock()
 		p.callbackMu.Unlock()
@@ -1161,6 +1177,7 @@ func (p *Process) fail(cause error) {
 		pending.result <- requestResult{err: &requestError{message: "plugin became unavailable", cause: cause, sent: pending.sent, unavailable: true}}
 	}
 	p.pending = make(map[string]*pendingRequest)
+	p.notificationCorrelations = nil
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -1188,6 +1205,7 @@ func (p *Process) Stop(_ context.Context) error {
 		pending.result <- requestResult{err: &requestError{message: "plugin instance stopped", cause: p.failure, sent: pending.sent, unavailable: true}}
 	}
 	p.pending = make(map[string]*pendingRequest)
+	p.notificationCorrelations = nil
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()

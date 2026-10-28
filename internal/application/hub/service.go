@@ -140,7 +140,8 @@ type RegistrationStore interface {
 }
 
 type Hub struct {
-	mu sync.Mutex
+	notifications *notificationState
+	mu            sync.Mutex
 
 	runtimeSources       map[domain.SubscriptionID]RuntimeSource
 	runtimeFS            *runtimeFSPool
@@ -404,6 +405,7 @@ func (h *Hub) Restore(ctx context.Context) error {
 		}
 	}
 	h.admissionOpen = true
+	h.signalQueueLocked()
 	h.logger.Info("daemon_ready", "restored_registrations", len(registrations))
 	for _, registration := range registrations {
 		if input := h.plugins[registration.InputPlugin]; input.capabilities["runtime_state_v2"] {
@@ -854,8 +856,18 @@ func (h *Hub) acceptGenerationEvent(pluginName string, port PluginPort, subscrip
 		DestinationArgs: registration.DestinationArgs,
 		Context:         eventContext,
 	}
-	if !deliveryFits(event) {
+	fits := deliveryFits(event)
+	if outputState.capabilities["notification_delivery_v1"] {
+		fits = deliveryProfileFits(event, "notification_deliver")
+	}
+	if !fits {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "reason", "delivery payload exceeds protocol limit")
+		return discard("discarded")
+	}
+	if outputState.capabilities["notification_delivery_v1"] {
+		if h.admitNotificationLocked(queuedEvent{event: event, outputPort: outputState.port, inputPort: port, eventID: eventID}) {
+			return ""
+		}
 		return discard("discarded")
 	}
 	h.pendingEvents++
@@ -917,10 +929,12 @@ func (h *Hub) newUniqueSubscriptionIDLocked() (string, error) {
 	return "", errors.New("unique subscription ID unavailable")
 }
 
-func deliveryFits(event domain.Event) bool {
+func deliveryFits(event domain.Event) bool { return deliveryProfileFits(event, "deliver") }
+
+func deliveryProfileFits(event domain.Event, kind string) bool {
 	value := jsonvalue.NewObject(map[string]*jsonvalue.Value{
 		"version":           jsonvalue.NewNumber(pluginProtocolV2),
-		"type":              jsonvalue.NewString("deliver"),
+		"type":              jsonvalue.NewString(kind),
 		"request_id":        jsonvalue.NewString("00000000-0000-4000-8000-000000000000"),
 		"delivery_id":       jsonvalue.NewString(string(event.ID)),
 		"input_plugin":      jsonvalue.NewString(event.InputPlugin),
@@ -965,11 +979,24 @@ func runtimeStateWatchFits(watchArgs *jsonvalue.Value, subscriptionID, requestID
 func (h *Hub) deliveryWorker() {
 	defer close(h.workerDone)
 	for {
+		h.mu.Lock()
+		candidate, delay := h.nextNotificationLocked()
+		h.mu.Unlock()
+		if candidate != nil {
+			h.deliver(*candidate)
+			continue
+		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-h.stopCh:
+			timer.Stop()
+			h.stopNotificationWork()
 			h.discardQueued()
 			return
+		case <-timer.C:
+			continue
 		case <-h.queueReady:
+			timer.Stop()
 			h.mu.Lock()
 			var item queuedEvent
 			select {
@@ -1001,6 +1028,16 @@ func (h *Hub) signalQueueLocked() {
 }
 
 func (h *Hub) deliver(item queuedEvent) {
+	h.mu.Lock()
+	participating := h.notifications != nil
+	if participating {
+		_, participating = h.notifications.records[string(item.event.ID)]
+	}
+	h.mu.Unlock()
+	if participating {
+		h.deliverNotification(item)
+		return
+	}
 	event := item.event
 	started := time.Now().UTC()
 	h.mu.Lock()
@@ -1077,6 +1114,7 @@ func (h *Hub) Shutdown() {
 	h.shutdownStarted = true
 	h.stopping = true
 	h.admissionOpen = false
+	h.notificationCutoffLocked()
 	close(h.stopCh)
 	h.cancel()
 	runtimeDone := h.runtimeDone
@@ -1087,6 +1125,9 @@ func (h *Hub) Shutdown() {
 	}
 	h.mu.Unlock()
 	<-h.workerDone
+	if h.notifications != nil {
+		h.notifications.noticeWait.Wait()
+	}
 	h.activationWait.Wait()
 	h.rewaitWait.Wait()
 	h.cancellationWait.Wait()

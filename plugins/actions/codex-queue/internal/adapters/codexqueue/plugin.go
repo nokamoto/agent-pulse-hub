@@ -17,9 +17,10 @@ import (
 )
 
 type Plugin struct {
-	executable string
-	service    *application.DeliveryService
-	logger     *slog.Logger
+	notifications bool
+	executable    string
+	service       *application.DeliveryService
+	logger        *slog.Logger
 
 	mu     sync.Mutex
 	active bool
@@ -33,6 +34,8 @@ func New(executable string, service *application.DeliveryService, logger *slog.L
 	}
 	return &Plugin{executable: executable, service: service, logger: logger}
 }
+
+func (p *Plugin) WithNotifications(enabled bool) *Plugin { p.notifications = enabled; return p }
 
 func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 	p.mu.Lock()
@@ -48,7 +51,11 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 		p.mu.Unlock()
 	}()
 
-	if err := p.send(stream, pluginprotocol.Frame{Type: "ready", Role: "output"}); err != nil {
+	ready := pluginprotocol.Frame{Type: "ready", Role: "output"}
+	if p.notifications {
+		ready.Capabilities = []string{pluginprotocol.NotificationCapability}
+	}
+	if err := p.send(stream, ready); err != nil {
 		return err
 	}
 
@@ -86,7 +93,33 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 			if err != nil {
 				return err
 			}
+		case "notification_deliver":
+			if !p.notifications {
+				return errors.New("notification profile was not selected")
+			}
+			inFlight.Add(1)
+			go func(request pluginprotocol.Frame) {
+				defer inFlight.Done()
+				e := p.service.DeliverNotification(sessionContext, p.executable, domain.Event{InputPlugin: request.InputPlugin, SubscriptionID: request.SubscriptionID, DeliveryID: request.DeliveryID, Context: request.Context}, request.DestinationArgs)
+				response := pluginprotocol.Frame{Type: "notification_result", RequestID: request.RequestID, DeliveryID: request.DeliveryID, Status: e.Status, Receipt: e.Receipt, Retryable: e.Retryable, RetryAfterMS: e.RetryAfterMS}
+				if e.Reason != nil {
+					response.Reason = *e.Reason
+				}
+				if e.Message != nil {
+					response.Message = *e.Message
+				}
+				sendMu.Lock()
+				err := p.send(stream, response)
+				sendMu.Unlock()
+				if err != nil {
+					p.logger.Warn("codex_queue_result_send_failed")
+				}
+			}(frame)
 		case "deliver":
+			if p.notifications {
+				return errors.New("legacy delivery is unavailable in notification mode")
+			}
+
 			requestContext, cancelRequest := context.WithTimeout(sessionContext, application.DeliveryTimeout)
 			inFlight.Add(1)
 			go func(request pluginprotocol.Frame) {
