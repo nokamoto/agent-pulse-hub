@@ -47,7 +47,9 @@ Excluded from the MVP:
 
 - Actual Codex integration, a Codex-specific registration skill, and other live external-service input or output integrations, including GitHub monitoring.
 - Persistence beyond the separate [local registration persistence](state-persistence.md) and [trigger runtime state](trigger-runtime-state.md) extensions; automatic delivery retries; automatic plugin restarts; general duplicate-event suppression; and guaranteed delivery across failures. The trigger runtime state extension separately governs preventing repeated completed notifications solely due to normal restart.
-- Individual subscription cancellation; stopping the daemon ends all watches.
+- Individual subscription cancellation, except when adopting the separate
+  [subscription cancellation extension](subscription-cancellation.md); stopping
+  the daemon ends all watches.
 - Remote or multi-user hosting, a GUI, OS service installation, and plugin installation management.
 - Configuration changes while running and performance or high-availability targets.
 - Isolation between local OS users, guaranteed termination of descendant processes, and OS-specific file identity guarantees.
