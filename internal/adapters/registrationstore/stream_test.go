@@ -165,6 +165,31 @@ func memoryStreamStore(t *testing.T) (*Store, *streamMemoryFS, domain.Subscripti
 	return store, files, testSubscription(t, testID)
 }
 func publishStream(action func() error) error { return action() }
+
+func TestLegacySourceFailureRetainsOwnerDiagnosticWithoutPayload(t *testing.T) {
+	store, files, owner := memoryStreamStore(t)
+	legacy := runtimeTestState(t, `{"schema":"legacy","payload":{}}`)
+	if _, err := store.CommitRuntime(owner, legacy); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.runtime, string(owner.ID), generationName(1))
+	for _, invalid := range []string{`{`, `{"PRIVATE-PAYLOAD":1,"PRIVATE-PAYLOAD":2}`} {
+		files.nodes[path].data = []byte(invalid)
+		_, err := store.LoadRuntimeSources([]domain.Subscription{owner}, 65536)
+		if err == nil {
+			t.Fatal("corrupt legacy source accepted")
+		}
+		for _, expected := range []string{owner.InputPlugin, string(owner.ID), path} {
+			if !strings.Contains(err.Error(), expected) {
+				t.Fatalf("missing owner context %q: %v", expected, err)
+			}
+		}
+		if strings.Contains(err.Error(), "PRIVATE-PAYLOAD") {
+			t.Fatalf("opaque state leaked: %v", err)
+		}
+	}
+}
+
 func saveMockStream(t *testing.T, store *Store, owner domain.Subscription, body string) uint64 {
 	t.Helper()
 	tx, err := store.BeginRuntimeStream(owner, "schema", 65536)

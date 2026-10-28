@@ -124,11 +124,11 @@ func (s *Store) LoadRuntimeSources(registrations []domain.Subscription, budget u
 		} else {
 			raw, err := s.readRuntimeRecord(selected)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("load runtime state for input plugin %q registration %s: %w", registration.InputPlugin, registration.ID, err)
 			}
 			envelope, err := decodeRuntimeRecord(raw, registration, latest.number)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("parse runtime state for input plugin %q registration %s from %s: %w", registration.InputPlugin, registration.ID, selected, err)
 			}
 			schema, _ := protocol.StringField(envelope, "schema")
 			payload, _ := envelope.Get("payload")
