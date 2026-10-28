@@ -150,12 +150,15 @@ behavior. Do not substitute a later decoder or add new mandatory nested fields
 to legacy state during migration. The following constraints retain the v1
 validation boundary.
 
-The payload requires `scope` (six immutable watch arguments), `nonce` (16 bytes
+The normal saved representation contains required keys `scope` (six immutable watch arguments), `nonce` (16 bytes
 encoded as hexadecimal), `sequence`, `confirmed`, `attempted` (uint64 JSON
 numbers), `baseline` (boolean), `fingerprints`, `journal`, `positions`, `metadata`
 (nonnull arrays), `aggregate` (object), and `started_at`/`ended_at` (strings).
-`comparison` is an optional uint64 number or null. Reject unknown fields under
-the legacy strict decoder. Scope must match the retained registration.
+`comparison` is an optional uint64 number or null. This type summary describes
+normally emitted state, not additional migration rejection rules. Preserve all
+forms accepted by the fixed decoder, including its null-to-zero-value handling
+for non-array fields in uninitialized state; do not add stricter type checks.
+Reject unknown fields under the legacy strict decoder. Scope must match the retained registration.
 Confirmed/attempted/comparison cannot exceed sequence; confirmed greater than
 one cannot exceed attempted. A completed baseline has positive sequence and
 confirmed progress, valid aggregate identity/head/lifecycle and ordered
