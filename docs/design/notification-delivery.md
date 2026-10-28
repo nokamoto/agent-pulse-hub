@@ -286,8 +286,9 @@ limit, not proof that old work never reached its destination.
 
 ## Source outcomes, shutdown and cancellation
 
-For a usable input Session send one terminal outcome per notification, not per
-attempt. Intermediate retryable unsubmitted results keep the event and rewait
+For a usable input Session with the watch correlation still present and no
+cancellation fence, send one terminal outcome per notification, not per attempt.
+Intermediate retryable unsubmitted results keep the event and rewait
 outstanding flag pending. Accepted sends accepted; unknown sends unknown;
 permanent/exhausted/rejected/expired unaccepted work sends failed; pre-admission
 rejection sends discarded. While issuance remains available, the finite policy
@@ -316,6 +317,11 @@ registration/runtime deletion or successful cancellation, durably set all retain
 target retry states to cancelled, preserving acceptance and evidence. Notification
 save failure is `storage_error`, never success; leave the target fenced. The
 cancellation intent continues to protect a partially completed removal.
+Setting `cancelled` does not itself create a terminal notice. Serialize only
+notices already owed before the cancellation fence ahead of the cancel request,
+as required by cancellation ordering. After positive cancellation remove the
+watch correlation; later action evidence updates the ledger only. This exception
+does not change normal-stop outcome mapping or create a new wire status.
 
 At startup collect cancellation intents, validate the notification store, save
 their target notifications as cancelled, then complete existing deletion/intent

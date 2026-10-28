@@ -406,12 +406,15 @@ For notification-profile routes, intermediate proven-unsubmitted attempts produc
 no terminal notice: the host sends one notice for the notification when it is
 accepted, becomes unknown, or stops. Final unsubmitted/rejected work maps to
 `failed`; unknown maps to `unknown`; confirmed acceptance maps to `accepted`.
-Stopping queued work before issuance maps to `failed`, while an interrupted
+At normal stop, queued work not yet issued maps to `failed`, while an interrupted
 issued attempt maps to `unknown` unless acceptance is confirmed. Later evidence
 does not send a second terminal notice. Retained retries restored after restart
 have no old-Session notice or trigger-cursor update; source deduplication and
 distinct-event rules remain unchanged. The governing notification design owns
-these terminal transitions. An input must not wait indefinitely for its acceptance
+these terminal transitions. The existing cancellation fence and ordered-notice
+rules take precedence: setting a notification to cancelled creates no new notice;
+only notices already owed before that fence precede the cancel request, and
+positive cancellation ends the watch correlation. An input must not wait indefinitely for its acceptance
 or treat a discarded startup event as completed progress. At uint64 exhaustion
 report a visible watch failure; never wrap the event counter.
 

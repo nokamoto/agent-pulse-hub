@@ -240,9 +240,10 @@ and control-deadline limits. Keep plugin requests bounded by the existing
 storage can exceed the client deadline and yields an uncertain client result.
 
 The [streamed-state contract](runtime-state-stream.md) owns checkpoint capacity,
-transfer and storage. Cancellation drains the current per-target save and deletes
-the entire owned runtime directory, including stream generations and staging,
-regardless of payload size. It does not change the stream's bounds or add capacity
+transfer and storage. Cancellation drains the current per-target save, removes
+that target's uncommitted stream staging under root `staging/` according to the
+stream contract, and deletes its entire owned runtime directory, including
+stream generations, regardless of payload size. It does not change the stream's bounds or add capacity
 implementation to cancellation scope.
 
 The separate [notification-delivery design](notification-delivery.md)
