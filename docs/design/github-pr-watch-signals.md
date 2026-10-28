@@ -42,11 +42,10 @@ checkpoint capacity are separate concerns. The
 [capacity specification](github-pr-watch-capacity.md) defines FR-012 and
 AC-011/AC-012 acquisition budgets, v2 progress, retained positions and prefix
 continuation; [streamed runtime state](runtime-state-stream.md) defines its
-common checkpoint profile. The signal records below still need an explicit
-binding to those contracts before implementation. Their existing mechanisms
-must not discard signals or silently advance signal coverage. This document
-does not redefine those common mechanisms; see
-[Integration prerequisites](#compatibility-and-integration-prerequisites).
+common checkpoint profile. This document binds signal records to that profile
+in [Saved state and positions](#saved-state-and-positions) and
+[Bounded notification selection](#bounded-notification-selection). The common
+wire protocol, resource controls and rewait operation remain unchanged.
 
 ## Requirement coverage
 
@@ -63,9 +62,8 @@ All local IDs below refer to
 | FR-011, NFR-001, NFR-003, NFR-004 | AC-013, AC-014 with AC-010 documentation/evidence constraints | External data, unchanged public interfaces, delivery instructions, separate evidence; S-U05, GPWS-I02, GPWS-D01/D02 |
 
 The earlier design and suites retain other category coverage. This document
-does not replace their acceptance IDs. It depends on signal-specific integration
-with the FR-012 contracts for
-full continuation and persistent-position coverage; it does not claim that
+does not replace their acceptance IDs. It applies the FR-012 contracts to
+signal continuation and persistent-position coverage; it does not claim that
 the two cases below complete AC-011/AC-012.
 
 ## Required acquisition
@@ -73,7 +71,17 @@ the two cases below complete AC-011/AC-012.
 ### Hosts, credentials, and permissions
 
 Keep github.com and GHES 3.19.x, the selected-host process, and credential
-precedence from the governing design. Use only these HTTPS endpoints, with
+precedence from the governing design. The process option `--state-profile`
+accepts `signals-v3` (default) or `discussion-v2`; reject other values at
+startup. The former implements this specification. The latter retains the
+capacity specification's discussion-only behavior and v1-to-v2 migration,
+without acquiring or claiming signal coverage. It exists for explicit upgrade
+compatibility and regression verification, not as a fallback after a failed
+signal acquisition or restore. A process uses one profile for all its watches;
+changing profile never implicitly converts saved state. Immutable watch
+arguments and registration identity rules are unchanged.
+
+Use only these HTTPS endpoints, with
 system certificate verification and redirects disabled:
 
 | Service | GraphQL POST endpoint | REST GET prefix |
@@ -173,9 +181,9 @@ GraphQL rollup alone are not the record inventory. See
 
 The existing round/request deadlines and decoded response limits apply to
 the combined GraphQL and REST acquisition. Exceeding them is incomplete
-coverage, with no snapshot or confirmation advancement. Their compatibility
-with the separate capacity design must be resolved before implementation;
-they cannot justify a silent partial observation or fixed lifetime item cap.
+coverage, with no snapshot or confirmation advancement. Use the capacity
+specification's combined byte accounting and 300-second round deadline;
+these limits cannot justify silent partial observation or a lifetime item cap.
 
 Read PR identity/head/base again after enumerating categories. If identity,
 head, base repository/ref/revision, or base availability changed, reject the
@@ -240,8 +248,9 @@ does not wake. A new status record uses `(host, repository ID, H, Status,
 status ID)` and its exact state; an impossible conflicting duplicate record
 within a round fails acquisition.
 
-Maintain a monotonically numbered observed failure episode per source
-identity. An identical failure repeats no episode. An observed non-failure
+Use the registration's global change sequence as each observed failure
+episode's identifier and retain its source identity. An identical failure
+repeats no episode. An observed non-failure
 followed by the same failure tuple creates another episode, so a recovery
 does not permanently suppress recurrence. A failed result version with new
 start/completion provenance is a visible new failed result even without an
@@ -278,20 +287,29 @@ Read this pair every round even when head and discussion are unchanged.
 
 | API state | Current interpretation | Episode effect |
 | --- | --- | --- |
-| `CONFLICTING`, existing stable base pair | Confirmed conflict reported by GitHub | Create an episode if this pair has not previously been confirmed in the current unresolved episode, or after an observed `MERGEABLE` resolution |
+| `CONFLICTING`, existing stable base pair | Confirmed conflict reported by GitHub | Create an episode on the first confirmation in the current pair period, or after an observed `MERGEABLE` resolution in that period |
 | `MERGEABLE`, existing stable base pair | No conflict reported by GitHub | Record resolution and permit a later recurrence; no independent wake |
 | `UNKNOWN` | Calculation pending | Keep a valid snapshot with explicit unknown state; no conflict wake, no inferred resolution |
 | Missing base ref | Current base unavailable | Preserve available identity/provenance and prior confirmation separately; no new conflict claim |
 | Retrieval error or unsupported value | Acquisition failed | Reject the round; retain prior complete progress |
 
+A pair period is the interval of complete observations with the same comparable
+head/base pair. The first comparable pair starts period 1; each observed change
+from the last comparable pair increments the period, even when the pair was
+seen in an earlier period. UNKNOWN retains the period and its confirmation
+flag; a missing base retains the last comparable pair without confirming or
+resolving it. A failed round changes neither. MERGEABLE clears the confirmation
+flag; CONFLICTING sets it. A new period starts with the flag clear.
+
 Unknown is a valid baseline value. UNKNOWN-to-CONFLICTING after that baseline
 is eligible. CONFLICTING-to-UNKNOWN-to-CONFLICTING for the same pair creates
-no duplicate because unknown did not prove resolution. A new stable pair,
-including one changed only by a base push or retarget, requires its own
-confirmation: never copy the old pair's value. Once GitHub reports
-CONFLICTING for that new pair, create a distinct conflict episode even when
-the previous pair also conflicted. The previous and current compared
-revisions remain distinguishable.
+no duplicate. A complete initial CONFLICTING baseline sets the flag silently.
+A later confirmed A-to-B-to-A sequence creates an episode for B and another
+for the returning A, even without MERGEABLE between them: these are different
+pair periods, not unchanged observations. A base-only push or retarget can
+start a period. Never copy a confirmation across periods. Store the period,
+pair and confirmation flag together; no unbounded set of all past pairs is
+needed for suppression. Journal episodes retain their own pairs and periods.
 
 Only `mergeable=CONFLICTING` establishes conflict. Do not infer it from
 `mergeStateStatus=BLOCKED/BEHIND/UNSTABLE`, failed CI, or an unknown value.
@@ -353,24 +371,109 @@ target URLs are external data, never instructions or automatic fetch targets.
 No missing information is fabricated. Represent each changed identity and
 provenance before advancing past it. Where full current inventories or other
 content do not fit, explicit omissions and continuation must identify affected
-categories/items; a summary must not claim complete CI success. Signal-specific
-integration must specify how these records and current-state coverage use the
-capacity specification's represented-prefix continuation. Do not introduce a private signal cap,
+categories/items; a summary must not claim complete CI success. Apply the
+represented-prefix selection below. Do not introduce a private signal cap,
 silently drop episodes, acknowledge unseen records, or use the earlier
 all-or-nothing capacity errors as the FR-012 continuation design.
 
-The plugin's restorable logical state must contain the signal schema version,
-last complete head/base/readiness, known result identities/versions, current
-selected results, unresolved/resolved conflict episode identity, observed
-episode sequence and retained changes, issued-position coverage, and attempted
-and confirmed delivery progress. Use only core-managed runtime persistence.
-The capacity specification supplies v2 header/item/change records, retention
-and position rules. The prerequisite below must bind signal encoding and
-coverage to that representation. These logical obligations do not allocate
-another checkpoint or exempt the plugin from the stream's per-object payload
-limit and total-generation byte budget.
+### Saved state and positions
 
-## Compatibility and integration prerequisites
+Require `runtime_state_v2`, `rewait_v1` and `runtime_state_stream_v1`. Write
+schema `github-pr-watch-v3`; its header has `kind: "header"`, `version: 3`
+and `signal_version: 1`. This plugin-specific schema changes no wire message.
+Use the capacity specification's ordered header, items and changes objects,
+32,768-byte compact object bound and complete-generation validation. The
+header retains scope, nonce, observation/change sequences, times, item/change
+counts, retained range, issued positions, comparison position, and attempted/
+confirmed progress. No second cursor or category-specific position is added.
+
+Discussion records retain their capacity semantics. Signal items use these
+category keys; IDs are stable strings and are unique within their category:
+
+| Category and ID | Required saved comparison data |
+| --- | --- |
+| `ci_check`, run ID | Selected repository ID and head; suite/app identity; name; exact status/conclusion; nullable execution times and links with reasons; ALL/LATEST membership; complete result version; last eligible episode sequence, or zero for baseline-only knowledge. |
+| `ci_status`, REST record ID as decimal string | Selected repository ID and head; context, state, times, nullable target and description; whether it is the current record for its context; last eligible episode sequence or zero. |
+| `signal_conflict`, PR ID | Latest observed availability/state; last comparable pair; uint64 pair period; confirmation flag; last eligible episode sequence or zero. Keep the last comparable pair through UNKNOWN or missing-base observations, as defined above. |
+| `signal_readiness`, PR ID | Last complete `isDraft` and last eligible episode sequence or zero. |
+
+Store nullable values explicitly. Before the first complete baseline, omit
+signal items and mark the header's baseline as false; after it, require the
+two scalar signal records and all acquired CI records, including non-failures.
+CI items describe only the latest complete head's inventory. On an observed
+head change replace that inventory atomically; results on a returning head
+are newly observed in that head period and can qualify again. An ID absent
+from one complete inventory and later reappearing is likewise newly observed.
+Historical journal entries preserve their original head and result; they do
+not masquerade as current items. This avoids a lifetime archive of CI IDs.
+
+Each qualifying signal appends one `changes` record with the global sequence,
+category/ID, observed time, episode sequence (equal to that global sequence),
+previous/new state and the required provenance from the context table. Assign
+sequences for all categories together, sorting simultaneous changes by category
+then stable ID. Only eligible signals enter this journal; recovery, resolution
+and Ready-to-Draft update comparison items without consuming a change sequence.
+Observation progress still advances on every complete round. A future recurrence
+receives a new global sequence even when its result tuple equals an older one.
+Do not encode signal data as an unbounded header field or split a semantic
+record between objects. Exact internal field names beyond those specified here
+remain implementation choices under these required semantics.
+
+The observation byte budget counts the complete combined response acquisition
+and, independently, the compact discussion-plus-signal snapshot. The history
+budget counts the combined journal. Preserve the capacity specification's
+64-MiB defaults, configurable byte controls, 300-second round and ten-second
+request deadlines, page limit and named resource errors. Core stream accounting
+covers all objects under the configured total-generation budget. An oversized
+mandatory item/header fails with `item_metadata_exhausted`; never truncate IDs,
+result versions or pair state to make it fit. Shorten only optional descriptions
+or body excerpts with digest and explicit omission information. Their complete
+values are hashed before shortening and are not failure-eligibility inputs.
+
+Use the existing `gpw1.` nonce/sequence representation. Retain the latest four
+issued positions and pin the comparison position; prune only a delivered prefix
+not required by any retained position or confirmed/comparison cursor. The same
+rules retain unreported discussion changes and signal episodes. A checkpoint
+is one immutable cut of comparison items, journal and progress after eligible
+delivery notices. Restore validates schema/version, scope, counts, category/ID
+uniqueness, ordering, contiguous journal sequences, period/episode bounds and
+all position references before applying any state. A false baseline cannot
+contain signal comparison records; a true one cannot lack them. Reject a
+selected CI item with the wrong head or conflicting current status membership.
+Failed save/restore uses the common warning or watch rejection without partial
+application. Counters never wrap.
+
+### Bounded notification selection
+
+Use the capacity specification's contiguous represented-prefix algorithm,
+at most eight changes and 8,192 decoded UTF-8 bytes per notification. Reserve
+identity/waiting context, times, position, continuation and a minimal current
+summary first. Select the oldest eligible entries in sequence order; never
+skip a large signal to send a later discussion entry. Required changed
+identities, exact failed results, heads/pairs and provenance are not shortened.
+If one entry and minimal context cannot fit, report
+`notification_metadata_exhausted` without consuming the wait or issuing a position.
+
+The minimal current summary contains head/lifecycle, Draft/Ready, the current
+conflict state and pair (or unavailable reason), plus CI totals grouped by source
+kind and exact current result/status. These finite result groups distinguish
+no results from success, pending and failure. Include the latest complete
+observation time and any failed refresh reason. Details for selected changes
+identify whether their source is still current, superseded, absent or on an
+older head; non-failure current values remain exact. Spend remaining space on
+current item details in category/ID order, with represented IDs, omitted counts
+and the PR link for each shortened list. Current-list omissions do not advance
+or create change positions and do not create an endless current-only backlog.
+
+Set `confirmation_position` and `continuation.through_sequence` to the last
+represented change; retain the exact suffix. The other continuation fields
+(`has_more`, `remaining_changes`, `observed_through_sequence`, and conditional
+`operation: "rewait"`) have the capacity semantics. Each explicit rewait sends
+the next prefix with no new source activity required, even after acquisition
+failure. A normal restart may send the outstanding suffix from confirmed
+delivery progress but never repeats its confirmed prefix solely due to restart.
+
+## Compatibility and rollout
 
 Signal-bearing saved data requires an explicit signal schema version and
 validation of the entire logical progress. A payload without that version,
@@ -389,21 +492,21 @@ explicitly follow the existing
 [offline reset/recreation procedure](trigger-runtime-state.md#offline-reset-deletion-and-recreation),
 accepting loss of continuity. New registrations use a new nonce and cannot
 inherit old positions. Rollback to a binary that cannot understand the new
-state must reject it visibly rather than overwrite it. Signal schema selection
-and how a complete signal payload uses the capacity specification's checkpoints
-and positions require one reviewed integration decision before rollout.
+state must reject it visibly rather than overwrite it. V3 restoration preserves
+its nonce, issued positions and all combined progress. V1-to-v2 migration remains
+available in the discussion-only profile; it cannot synthesize missing signal
+history for v3. This explicit incompatible upgrade is chosen over pretending
+that old positions cover previously unobserved categories.
 
-| Prerequisite | Required decision and coverage impact | Owner and resolution stage |
-| --- | --- | --- |
-| Signal binding to common progress/continuation | Specify the signal schema and record encoding within the existing v2 stream, combined history accounting, signal position coverage and migration, current-state omission/continuation, and checkpoint-size feasibility. Use the capacity specification's retention and represented-prefix rules; preserve FR-012 and these episodes without losing older discussion changes. | Design owner with responsible human approval; before design readiness and dependent implementation |
-| Governed verification reconciliation | Reconcile existing PR-watch/rewait case expectations with the integrated representation and pass both existing and new approved scopes. New signal cases do not weaken prior cases or establish capacity acceptance. | Design owner; before dependent implementation |
-
-These are signal-integration decisions, not permission for implementation to
-replace the common persistent or public contracts. Until this binding is
-resolved in approved and merged design, the combined change is not
-implementation-ready. Live-service and
-receiving-agent checks remain assigned to delivery rather than these design
-dependencies.
+The existing GPW-I01–I05 expectations remain required for discussion, capacity
+and common-state behavior. Run that scope with the same binary explicitly using
+`--state-profile=discussion-v2`; GPWS-I01/I02 use `signals-v3`. The former's
+legacy-migration branch verifies v1-to-v2 preservation; GPWS-I02 separately
+verifies v3 rejection of state without signal history. Fixtures must request
+the intended profile, not weaken either expectation. A v3 generation is also
+incompatible with `discussion-v2`; switching profiles preserves the stopped
+state and fails visibly rather than erasing the other profile's progress.
+No migration or live-service decision is delegated to implementation.
 
 ## Decisions and alternatives
 
@@ -412,8 +515,8 @@ dependencies.
 | GraphQL ALL runs plus separate LATEST membership; REST status records | GraphQL rollup alone reduces calls but does not document complete status-attempt history. REST-only acquisition still needs suite enumeration to avoid the direct-ref limit and cannot replace existing review-thread relationships. Mixed reads add pagination and consistency costs while preserving individual identities. |
 | Failure result versions include execution provenance | New-ID-only detection misses supported same-ID updates; timestamp-only recency is unreliable. This records a visible new failed result without claiming a rerun occurred. Indistinguishable overwritten attempts remain outside polling guarantees. |
 | Unknown conflict is valid current state | Rejecting all UNKNOWN rounds would unnecessarily block independent CI/readiness changes. Treating unknown as conflict or resolution would invent evidence. Keep current uncertainty and confirmed episode identity separately. |
-| Each new stable conflict pair can qualify | Watching only head misses base-only conflicts. Reusing old pair confirmation misattributes stale information. Re-reading the pair adds one PR query without promising an atomic service snapshot. |
-| Explicit incompatibility for absent signal history | Automatically adding a silent baseline would misrepresent existing positions. Rejection preserves old progress and makes a deliberate reset or compatible restoration visible. Full storage integration remains an upstream decision. |
+| Each observed pair period can qualify | Watching only head misses base-only conflicts. Remembering all prior pairs would suppress A-to-B-to-A changes and grow historical suppression state. Period-local confirmation detects each return while UNKNOWN within a period does not duplicate it. |
+| Explicit incompatibility for absent signal history | Automatically adding a silent baseline would misrepresent existing positions. A distinct v3 schema preserves old progress and makes a deliberate reset or compatible v2 restoration visible, at the cost of an explicit upgrade step. |
 
 ## Verification strategy
 
@@ -425,16 +528,26 @@ public Session launch, real hub/client/model-output, and temporary-state
 fixture mechanisms; do not add a runner, framework, dependency, CI job, public
 test-only API origin, or insecure TLS mode.
 
+The design-only `encoding_feasibility_integration_test.go` in the governed
+suite measures a fixed 128-CI-record, nine-change snapshot: multiple bounded
+JSON objects, real temporary-file readback, and predefined eight/one context
+prefixes. Its `TestSignalEncodingFeasibility` entry point is separate from
+acceptance registration. It establishes size/round-trip feasibility, not a
+product serializer, selection algorithm, core commit, or acceptance outcome.
+Combined with the existing TLS/Session fixture, this requires no dependency
+or shared-harness preparation. Actual plugin selection, stream validation and
+durable prefix/suffix behavior remain required in GPWS-I02.
+
 ### Unit matrix
 
 | ID | Inputs and decisive assertions |
 | --- | --- |
 | S-U01 | Every GraphQL suite/run cursor and REST status page, empty inventories, duplicate/reordered records, malformed/foreign Link, ALL/LATEST mismatch, head/base race, HTTP-200 errors, nulls, 401/403/404/410/429/5xx, deadline/byte limits and selected-host token markers. Failed acquisition never mutates complete progress/coverage, never means successful CI, and emits redacted distinct errors. |
 | S-U02 | Every result/status enum and unsupported value; same-name distinct IDs, same-ID unchanged result, changed failed execution provenance, link/name-only edits, new failed status records, current selections versus superseded failures, older-head inputs, observed recovery/recurrence and baseline failures. Assert exact eligibility and source/head labels. |
-| S-U03 | Existing/unavailable base, all mergeable enums, unknown baseline, unknown-only repetition, CONFLICTING/UNKNOWN/CONFLICTING, MERGEABLE recurrence, base-only SHA change, retarget and pair mismatch. Assert no invented conflict/resolution and new-pair confirmation. |
+| S-U03 | Existing/unavailable base, all mergeable enums, unknown baseline, unknown-only repetition, CONFLICTING/UNKNOWN/CONFLICTING, MERGEABLE recurrence, base-only SHA change, retarget, pair mismatch and confirmed A-to-B-to-A. Assert period-local suppression, a fresh returning-A episode, and no invented conflict/resolution. |
 | S-U04 | Draft and Ready baselines, both transition directions, repeated status, failed intermediate observation, and repeated true/false cycles with unchanged actor/discussion/head. Assert only observed Draft-to-Ready episodes qualify. |
 | S-U05 | Each category alone and combined; external marker strings; changed/historical/current distinctions; complete required identities and nullable links; consumed generation followed by rewait without activity; explicit position versus action acceptance. Assert no category depends on discussion or agent assessment and no position acknowledges omitted changes. |
-| S-U06 | Snapshot/episode atomicity, saved schema validation, absent/unknown signal version, old/foreign positions, successful restore with unchanged/fresh episodes, save failure and failed acquisition recovery. Assert no silent baseline/reset, lost inactive-wait episodes, or restart-only duplicate. Final common-format boundary fixtures depend on the integration prerequisite. |
+| S-U06 | V3 header/items/changes validation, stream/object budgets, duplicate IDs, inconsistent membership/counts, false/true baseline shape, signal version, profile selection, old/foreign positions, contiguous mixed-category sequences and retained-prefix boundaries. Restore before/after an accepted prefix and after state-only recovery; assert identical remaining suffix, comparison flags and next episode identity. Fail saving and acquisition independently. V1/v2 cannot restore in signals-v3; discussion-v2 retains its approved migration and rejects v3. No silent reset, lost inactive-wait episode or restart-only duplicate. |
 
 ### CI acceptance cases
 
@@ -449,7 +562,7 @@ does not verify product behavior.
 | ID and mapping | Concrete inputs and actions | Observable expected results and failure boundaries |
 | --- | --- | --- |
 | GPWS-I01; FR-003–FR-005, FR-007–FR-009, FR-013; AC-013/AC-014 | Launch actual plugin through public Session using test-owned verified TLS for GraphQL and REST on selected hostnames. Use acme/widget PR 17, H1/B1, Draft, one successful check/status and unchanged discussion. Fail an initial CI page, then complete and repeat the silent baseline. In independent branches with active generations, fail the H1 check and separately status, move only base to B2 with UNKNOWN then CONFLICTING, and change Draft to Ready. Repeat unchanged; supply an older-head run; independently fail a required status page and PR/conflict retrieval, then recover with the pending change. | No preactivation or baseline event, including after failed initial coverage. Each category alone emits a bounded changed record, current state, PR identity and position; unchanged, unknown-only, older-head-only and non-failure-only rounds do not emit. Failed pages/read reject complete advancement; recovery preserves and reports the outstanding eligible change. Requests use only selected origins/token; no secrets occur in context/logs. Use checkpoint inspection and Session notices to verify progress, not timing guesses. |
-| GPWS-I02; FR-004–FR-010, FR-013; AC-013/AC-014 | Start actual hub/client/plugin/model-output with existing failed CI, conflict, and Ready status for a silent baseline. Observe non-failure/resolution/Ready-to-Draft without notification; add conversation comment C1 and receive accepted P1. While generation is consumed, observe a new failed rerun/result version, a new conflict pair, and Draft-to-Ready, then recovery/resolution/Ready-to-Draft. Freeze the fixture, rewait the same registration from P1, and follow any governed continuation without further activity to accepted P2. Checkpoint/stop/restart unchanged, then observe non-failure/mergeable/Draft followed by failure/conflict/Ready again. Independently restore a payload without signal history. | Retained eligible episodes reach destination A once under existing generation rules, with their observed and current states distinguished; C1 is covered, destination B is untouched, and no additional GitHub stimulus is required. Successful normal restart suppresses unchanged accepted episodes and allows the recurrences. Registration/nonce remains the same, no plugin-private state files appear, and delivery acceptance does not establish agent assessment. An incompatible signal payload blocks the affected watch before activation, preserves saved data, and cannot confer signal coverage on an old position; unrelated registrations are not reset. |
+| GPWS-I02; FR-004–FR-010, FR-013; AC-013/AC-014 | Run the actual hub/client/plugin/model-output with signals-v3, 128 CI records carrying 256-byte metadata, and existing failed CI/conflict/Ready for a silent baseline. Recover silently, add conversation comment C1 and accept P1. While consumed, perform three failure/new-base-conflict/Draft-to-Ready cycles, each followed by recovery, retaining nine small signal entries. Freeze GitHub. Rewait P1; accept an eight-entry prefix, checkpoint >32 KiB, stop and restart before the suffix. Then rewait the fully covered P2 unchanged and introduce fresh episodes. Independently restore v1 and discussion-only v2 state. | First prefix ends at P1+8 with has_more=true, remaining_changes=1 and tail P1+9. Every context is <=8,192 bytes, current omitted lists have counts/links, and comparison state records the recovery. Restart delivers only the ninth entry, ending at P2=P1+9; no new source activity, lost suffix or repeated confirmed prefix. Stream objects are <=32,768 bytes and frames <=65,536. Rewaiting P2 unchanged is silent; fresh episodes remain eligible. Destination B is untouched, nonce/positions persist, old schemas block before activation without changing saved data or unrelated registrations, and acceptance is not agent assessment. |
 
 For I01 the real plugin HTTP adapter, JSON parsing, comparison, context, and
 public Session run; only GitHub is substituted. I02 adds real hub/client,
@@ -458,6 +571,18 @@ transport injection directs the canonical HTTPS authority to loopback while
 retaining hostname/CA verification, using the existing fixture mechanism.
 These cases test different assembled boundaries; broad enum/actor/attempt
 permutations stay in cheaper unit tests.
+
+Extend case-local launchers to pass the explicit process profile, negotiate
+`runtime_state_stream_v1`, send null stream/end for a fresh watch and collect
+begin/chunks/end for checkpoint inspection. Configure the local HTTPS fixture
+with GraphQL cursor responses and REST status `Link` pages on the same trusted
+origin. Reuse completion barriers to freeze the nine-change source. For I02,
+accept the first prefix before requesting a quiescent checkpoint; inspect its
+schema and retained journal, then restart the same core state directory. The
+core's restored confirmed cursor, rather than a fake notification ledger, must
+account for the eight/one split. Schema-rejection branches use stopped copies
+of that directory and replace only the opaque saved payload with a valid
+discussion-only fixture; retain the common ownership/manifest envelope.
 
 Build binaries once per suite. The scoped budget is 60 seconds setup,
 15 seconds I01, 25 seconds I02, and 10 seconds cleanup: 110 seconds total,
@@ -498,16 +623,18 @@ are not design or implementation live-service execution requirements.
 
 ## Change and rollout impact
 
-The plugin adds REST read acquisition and additional GraphQL fields; its
+The plugin adds REST read acquisition, additional GraphQL fields and explicit
+state-profile selection; its
 selected arguments, executable/example paths, public Session and action
 destination stay governed by the earlier design. Update plugin developer
-contracts through this specification and the common integration decision
-before implementation. Delivery updates the lowercase plugin README and
+contracts to follow this specification and the unchanged common stream/rewait
+contracts. Delivery updates the lowercase plugin README and
 examples where necessary. No service-neutral hub schema is allowed to learn
 GitHub result enums or actor policy.
 
-The combined state/position integration is an implementation blocker until
-approved. Capability documentation is evidence for the proposed API surface,
+No implementation-blocking design decision remains open. This design still
+requires human approval and merge before implementation. Capability
+documentation is evidence for the proposed API surface,
 not live host acceptance. Maintainer-owned GHES access and receiving-agent
 credentials are delivery prerequisites. No supported-host reduction,
 unlimited-history promise, automatic state reset, or additional OS constraint

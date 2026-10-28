@@ -1,0 +1,18 @@
+{
+  "suites": [
+    {
+      "package": "./cmd/agent-pulse-hub",
+      "cases": [
+        "ND-V01-STATUS-RETRY",
+        "ND-V02-RESTART",
+        "ND-V03-CANCEL"
+      ]
+    },
+    {
+      "package": "./cmd/codex-queue-verification",
+      "cases": [
+        "ND-V04-ACTION"
+      ]
+    }
+  ]
+}

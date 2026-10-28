@@ -14,6 +14,8 @@ sources:
     resource: design/trigger-runtime-state.md
   - id: cancellation-design
     resource: design/subscription-cancellation.md
+  - id: notification-design
+    resource: design/notification-delivery.md
 ---
 
 # Model-plugin operations
@@ -48,6 +50,11 @@ the procedures do not select an operating system or support matrix.
 The maintainer runs the clean-build README walkthrough during delivery and
 records actual results. These instructions define the expected procedure;
 they are not a report that any check has passed.
+
+Steps 1–8 use the default legacy one-attempt output profile. The optional
+[notification inspection procedure](#inspect-notifications-and-conservative-retry)
+adds durable evidence and pre-submission retry in a separate run. It does not
+change the default walkthrough's acceptance evidence.
 
 ## 1. Prepare a clean build and evidence directory
 
@@ -756,6 +763,80 @@ preserve the entire tree before repairing the reported obstruction. Keep
 Do not run the offline RESET example on a target with a pending intent, and do
 not delete intents to bypass recovery. The cancellation design defines rollback
 of the new reserved directory. Outputs already delivered cannot be recalled.
+
+## Inspect notifications and conservative retry
+
+The [notification design](notification-delivery.md) and
+[public output profile](plugin-v1.md#optional-notification-delivery) govern this
+procedure. Complete the build/configuration steps above and stop the daemon
+normally before changing plugin arguments. Preserve the entire stopped state
+tree. Use matching host/model-output artifacts that support the profile; older
+strict hosts can reject its capability. Add the explicit option to the model
+output entry, keeping the manual trigger unchanged:
+
+```python
+config["plugins"][1]["args"] = ["--notification-delivery"]
+config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+daemon, daemon_sink, daemon_log = start_daemon()
+```
+
+Wait for `daemon_ready` and the same restored subscription ID as in step 7.
+For a fresh state directory, register using step 4 first. Publish one unique
+marker through step 5's ordinary closed-file rename procedure; no historical
+event is reconstructed when enabling tracking. List using the retained ID:
+
+```python
+listed = subprocess.run([str(hub), "notifications", "--subscription-id",
+    subscription, "--limit", "20", "--address", address],
+    cwd=repo, text=True, encoding="utf-8", capture_output=True, check=True)
+page = json.loads(listed.stdout)
+print(page)
+assert page["notifications"], "No retained record yet; inspect again after event admission"
+notification_id = page["notifications"][0]["notification_id"]
+shown = subprocess.run([str(hub), "notification", "--notification-id",
+    notification_id, "--address", address], cwd=repo, text=True,
+    encoding="utf-8", capture_output=True, check=True)
+print(json.loads(shown.stdout))
+```
+
+Select the intended record using its ID/time; the list is UUID-ordered rather
+than newest-first. If the list is empty, no retained notification matches; that
+does not prove an old event was never submitted. When `next_after` is non-null,
+pass it as `--after` to read another page. Pagination is live: restart listing
+to discover notifications whose IDs sort before an earlier cursor. Show assembles
+bounded read-only chunks internally; an unstable snapshot fails visibly rather
+than printing mixed evidence. Neither command submits work.
+
+Read `acceptance` separately from `retry_state`. Temporary proven-unsubmitted
+failures can produce up to three attempts under one notification ID, with minimum
+two/ten-second retry delays and any longer destination guidance. The daemon
+schedules them without a retry command or an agent polling turn. A successful
+write is accepted; unknown after a possible write stops immediately, even if the
+destination file appears empty. Permanent/rejected/exhausted outcomes also stop.
+Do not manufacture a failure by damaging live state; controlled verification
+owns failure injection. A normal successful run does not prove retry was exercised.
+
+Stop using step 7, await configured process exits, then restart the same state.
+Inspect the same ID: only retained eligible unsubmitted work may resume with its
+remaining budget. Unknown and accepted notifications are not resent. Evidence
+remains after successful unsubscribe, but scheduled work is cancelled and a late
+ACK cannot recreate the watch. Keep notification files separate from trigger
+progress cleanup.
+
+Evidence expires seven days after admission; missing/expired IDs return not-found,
+not unsent. At 1,024 retained records new admission fails visibly until expiry frees
+space. Corruption, missing guards, clock regression and storage errors block unsafe
+work with an actionable reason. Preserve the stopped tree and follow the design's
+recovery rules; deleting files, using an old backup, republishing context or
+re-registering is not safe recovery of an uncertain notification. Rollback with
+notification records is unsupported; older daemons reject the new state entries.
+
+For Codex, add this option alongside the configured `--codex-executable` and use
+the [Codex instructions](codex-queue.md#configuration-and-operating-instructions).
+Only the non-experimental queue interface is used. A queue token confirms target
+acceptance, not conversation receipt or work completion. Started-but-unconfirmed
+queue processes remain unknown; no receiver idempotency or acceptance lookup is
+assumed. Keep real-Codex delivery evidence separate from the model run.
 
 ## Source-layout migration
 

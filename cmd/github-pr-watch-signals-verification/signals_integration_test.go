@@ -12,6 +12,8 @@ var _ = Describe("Independent PR signals", Serial, func() {
 	// GPWS-I01: Launch the real github-pr-watch plugin through its public Session
 	// with selected PR acme/widget#17, head H1, base B1, draft=true, one successful
 	// check, one successful commit status, and unchanged review/comment data.
+	// Use the default signals-v3 profile and negotiate runtime_state_stream_v1;
+	// inspect a v3 header and signal_version=1 after a complete checkpoint.
 	// Authenticate against controlled HTTPS with hostname/certificate verification.
 	// Return a paginated CI acquisition error before completing the initial round:
 	// assert no baseline/event. Then complete and repeat the baseline: no event.
@@ -36,30 +38,34 @@ var _ = Describe("Independent PR signals", Serial, func() {
 	It("notifies each new category independently and preserves coverage on acquisition failure", Pending, Label("case:GPWS-I01"), func() {})
 
 	// GPWS-I02: Launch the real hub, client, plugin and model-output action with
-	// a temporary core state directory and controlled GitHub HTTPS. Start with
+	// a temporary core state directory and controlled GitHub HTTPS, signals-v3.
+	// Start with 128 CI records (256-byte names/descriptions and distinct links),
 	// failed CI/conflict/Ready already present: complete baseline is silent.
+	// Require a checkpoint >32768 bytes using multiple objects, each <=32768,
+	// and complete wire frames <=65536. No private signal store is substituted.
 	// Observe recovery, conflict resolution and Ready-to-Draft: no notification.
 	// Add comment C1 to obtain accepted position P1 at registered destination A.
-	// While its notification wait is consumed, observe a distinct failing rerun,
-	// a base-only confirmed conflict and Draft-to-Ready in complete rounds.
-	// Then observe recovery, resolution and Ready-to-Draft while still consumed;
-	// retained qualifying changes must remain distinct from latest current state.
+	// While consumed, repeat three cycles: new failed run, a new base-only
+	// confirmed conflict pair, Draft-to-Ready; then complete recovery/resolution/
+	// Ready-to-Draft. This retains exactly nine eligible signal records after P1.
+	// Use small required changed metadata so eight fit one 8192-byte context;
+	// current CI details are explicitly omitted with counts/PR link as necessary.
 	// No notification is admitted while consumed. Freeze external data, rewait
-	// from P1 with the real client, and assert all three retained qualifying
-	// changes with current state at A, once each under the governed continuation
-	// contract; covered C1 is absent and unrelated destination B remains untouched.
-	// Follow any returned continuation using the same registration without new
-	// GitHub activity. Record final covered position P2 and accepted checkpoint.
-	// Stop normally and restart the retained watch against identical data: no
-	// unchanged repeat. Observe nonfailure/mergeable/Draft, then failed/CONFLICTING/
-	// Ready again: recurrences are eligible and their current state is delivered.
+	// from P1 with the real client. Expect eight ordered records, through=P1+8,
+	// has_more=true, remaining_changes=1, observed_through=P1+9, operation=rewait.
+	// Covered C1 is absent and destination B untouched. Accept that prefix,
+	// checkpoint and stop normally. Restart with frozen source: exactly the
+	// ninth record reaches A, not the accepted eight; has_more=false and position
+	// P2=P1+9. Rewait P2 unchanged: no event. Then observe another failed result,
+	// conflict and Draft-to-Ready: fresh episodes are eligible.
 	// Assert same registration/nonce, no inferred agent assessment, and no plugin
 	// private state files. Independently restore an old payload without signal
-	// history: the affected watch fails before activation with incompatible-state
+	// history (both v1 and discussion-only v2): the affected watch fails before
+	// activation with incompatible-state
 	// diagnostics, keeps the saved payload, and cannot accept its old position as
 	// signal coverage. An unrelated retained registration is not reset.
+	// Scope the fixtures to signals-v3; the existing GPW-I01..I05 regression suite
+	// explicitly uses discussion-v2, including its unchanged v1 migration branch.
 	// Stop and await hub/plugin/action; remove temporary data.
-	// The approved capacity/state design must resolve continuation and migration
-	// integration before this case can become an implementation completion gate.
 	It("retains independent signals through rewait and normal restart without repeated unchanged work", Pending, Label("case:GPWS-I02"), func() {})
 })

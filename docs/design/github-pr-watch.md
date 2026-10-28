@@ -29,10 +29,9 @@ discover PRs, fetch diffs/source files, or write to GitHub.
 owns the additional FR-013/AC-013/AC-014 category contracts, their mixed
 GraphQL/REST acquisition, independent wake conditions, and verification.
 Its specified API origins extend the GraphQL-only endpoints below. The
-signal specification must define how its records use the FR-012 capacity
-contract before dependent implementation. The shared stream, retention and
-continuation mechanisms do not by themselves define signal-state encoding,
-position coverage or migration, or authorize silent signal-history reset.
+signal specification defines its v3 records, shared sequence/position coverage,
+bounded continuation and explicit profile compatibility using the FR-012
+capacity contract. It does not authorize silent signal-history reset.
 
 The [capacity specification](github-pr-watch-capacity.md) implements FR-012 and
 AC-011/AC-012 and governs the revised observation, state and continuation
@@ -205,6 +204,10 @@ journal retention and explicit continuation. It replaces v1's 32-item and
 32-record allocations and all-or-nothing eight-change notification failure.
 The 8,192-byte event context remains unchanged; a notification covers only a
 represented prefix and the next explicit rewait exposes its retained suffix.
+The signal specification defines `--state-profile=signals-v3` as the default
+and retains `discussion-v2` for explicit compatibility. Its v3 schema uses
+these stream/retention/continuation mechanisms with signal-aware records;
+discussion-only v1/v2 state does not claim signal coverage.
 
 
 ## Specification documents
@@ -213,16 +216,15 @@ represented prefix and the next explicit rewait exposes its retained suffix.
 authoritative companion specification for CI, base-branch conflict, and
 Draft/Ready state. It defines required acquisition, failure/episode identity,
 current-state content, incompatible-state handling, and category verification.
-Common position/checkpoint/continuation integration is a design prerequisite;
-neither document grants implementation authority to invent that contract.
+Its saved-state and bounded-notification sections bind signal records to the
+common stream/position/continuation contracts.
 
 This document and the [capacity specification](github-pr-watch-capacity.md)
 are the plugin contract for implementers and verification authors. The latter
 owns capacity, v2 state records, compatible positions and continuation and
 takes precedence over the original v1 allocations. The
 [stream specification](runtime-state-stream.md) owns its common wire/storage
-profile. Signal-specific integration must be resolved in design, not deferred
-to implementation. [Rewait control](pr-watch-rewait.md) owns the generic
+profile. [Rewait control](pr-watch-rewait.md) owns the generic
 control, its ordering, errors, and compatibility. The
 [public plugin specification](plugin-v1.md) owns wire encoding, handshake,
 deadlines, and the runtime-state extension; the
@@ -249,8 +251,11 @@ notification lifetime, or acceptance expectations as a routine refactor.
    unchanged notification; report a fresh change. An explicit older retained
    assessment position remains a separate caller choice.
 5. On save failure continue monitoring with the common continuity warning.
-   Invalid restored state rejects the affected watch. Failed/unknown delivery
-   receives no automatic retry and does not become agent assessment.
+   Invalid restored state rejects the affected watch. The trigger initiates
+   no delivery retry and does not infer agent assessment. Participating output
+   retries and terminal-outcome fencing follow the independent
+   [notification-delivery design](notification-delivery.md); they do not rearm
+   a source generation or advance its confirmation position by themselves.
 
 Poll at 60 seconds by default; `--poll-interval` accepts 5 through 3,600
 seconds. Schedule after completion to prevent overlapping rounds. Transient

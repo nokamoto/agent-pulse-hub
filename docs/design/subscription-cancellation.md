@@ -11,6 +11,8 @@ sources:
     resource: design/state-persistence.md
   - id: runtime
     resource: design/trigger-runtime-state.md
+  - id: notification-design
+    resource: design/notification-delivery.md
 ---
 
 # Individual subscription cancellation
@@ -114,6 +116,12 @@ not-found alone cannot prove which caller removed the subscription.
    and ignore late snapshots. This also applies to final shutdown snapshots.
 4. Commit the durable intent described below. Failure returns `storage_error`;
    keep the live fence but do not pretend the saved route was removed.
+   For notification-profile work, durably set every retained target retry state
+   to `cancelled`, preserving acceptance and evidence, before persistent
+   removals or successful unsubscribe. The
+   [notification design](notification-delivery.md#source-outcomes-shutdown-and-cancellation)
+   owns that save. Its failure returns `storage_error`, retains the fence and
+   intent, and cannot report success or allow a retry callback to issue work.
 5. Send selective cancellation and await positive completion, or establish the
    confirmed-input-termination condition from step 1. Negative/timeout results
    preserve the fence and intent for retry. Never kill a healthy shared input
@@ -171,8 +179,12 @@ it does not yet mean successful cancellation. Reuse a valid existing intent on
 explicit retry. No fsync, crash atomicity or new database is required.
 
 At startup, after acquiring exclusion and before plugin launch or restoration,
-validate all intent records and their referenced file types, then finish their
-runtime and registration deletion and intent cleanup. Fail startup visibly if
+collect and validate all intent records and their referenced file types. Load
+and validate any existing notification store and durably cancel their target
+notification retry states before finishing runtime/registration deletion and
+intent cleanup. Only then launch plugins or restore registrations. A missing
+registration also cancels retained work, including after intent housekeeping
+has completed. Fail startup visibly if notification saving or
 necessary deletion cannot complete; never restore a marked target with initial
 or old progress. This is completion of an explicit operator request, not
 automatic repair of an arbitrary corrupt registration. An intent without a
@@ -227,23 +239,24 @@ and control-deadline limits. Keep plugin requests bounded by the existing
 1,024 registrations and at most one cancellation request per target. Slow
 storage can exceed the client deadline and yields an uncertain client result.
 
-The [capacity requirements](../requirements/trigger-runtime-state.md)
-may change the checkpoint envelope or reservation. Cancellation does not select
-those changes: it drains the current per-target save and deletes the entire
-owned runtime directory regardless of payload size. Reconcile any approved
-replacement checkpoint contract before dependent implementation.
+The [streamed-state contract](runtime-state-stream.md) owns checkpoint capacity,
+transfer and storage. Cancellation drains the current per-target save, removes
+that target's uncommitted stream staging under root `staging/` according to the
+stream contract, and deletes its entire owned runtime directory, including
+stream generations, regardless of payload size. It does not change the stream's bounds or add capacity
+implementation to cancellation scope.
 
-The separate [notification-delivery requirements](../requirements/notification-delivery.md)
-own automatic retry, status and safety-record retention. Cancellation must close
-all future attempt-start paths, including a future automatic scheduler; an
+The separate [notification-delivery design](notification-delivery.md)
+owns automatic retry, status and evidence retention. Cancellation closes
+all future attempt-start paths, including its automatic scheduler; an
 already-issued attempt and its delayed matching ACK remain distinct from a new
 attempt. Never delete notification evidence or duplicate-prevention records as
 trigger-progress cleanup, and never let an ACK reactivate a cancelled watch.
-This design adds no retry schema, timing, status API or retention policy. When
-that design is approved, its durable scheduler must honor cancellation across
-normal restart before the two features are combined; review shared files and
-cross-feature cases in that design. Unapproved proposals are not dependencies
-or established interfaces here.
+This design adds no independent retry schema, timing, status API or retention
+policy. The notification design's durable cancellation save composes with this
+intent transaction across normal restart; its verification inventory owns the
+cross-feature cases. Notification records remain separate from deleted source
+progress and cannot recreate a cancelled registration.
 
 ## Verification strategy
 
@@ -310,8 +323,7 @@ This check runs during delivery, separately from service-free implementation CI.
 
 ## Open questions and risks
 
-The cancellation decisions above are proposed for human design approval.
-No retry or capacity design is assumed approved. Their eventual shared-contract
-integration must be reviewed before combined implementation; each design owner
-owns reconciliation of its changed contract. Slow storage and legacy input
+The cancellation decisions above define the selective-removal contract.
+The streamed-state contract above preserves the same per-target drain and removal
+boundary; no capacity-policy decision is deferred here. Slow storage and legacy input
 compatibility remain explicit operating limits, not weaker success conditions.
