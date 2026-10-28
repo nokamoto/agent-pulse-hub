@@ -153,14 +153,13 @@ def serve(directory, activation_v2=False):
                             continue
                     accept_watch(frame, watch)
                 elif kind == "activate_watch":
+                    record("activate_watch", subscription_id=subscription_id)
                     with state_lock:
                         watch = watches.get(subscription_id)
                     if watch is None:
-                        record("activate_watch", subscription_id=subscription_id)
                         record("activation_ignored", subscription_id=subscription_id)
                         continue
                     watch["accepted"].wait(1)
-                    record("activate_watch", subscription_id=subscription_id)
                     with state_lock:
                         if not watch["accepted"].is_set() or watch["active"] or watch["quiesced"] or stopped.is_set():
                             record("activation_ignored", subscription_id=subscription_id)
@@ -211,8 +210,10 @@ def serve(directory, activation_v2=False):
                     return
                 if isinstance(item, tuple):
                     response, watch = item
-                    yield response
+                    # Journal preparation before the peer can receive the result
+                    # and send activation on the independent request reader.
                     record("watch_prepared", subscription_id=watch["subscription_id"])
+                    yield response
                     watch["accepted"].set()
                 else:
                     yield item

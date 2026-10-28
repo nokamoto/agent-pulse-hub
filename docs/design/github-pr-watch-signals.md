@@ -12,6 +12,9 @@ sources:
   - id: rewait-design
     resource: design/pr-watch-rewait.md
     title: Repeated waiting on a retained trigger registration
+  - id: capacity-design
+    resource: design/github-pr-watch-capacity.md
+    title: GitHub PR watch capacity and continuation
 ---
 
 # Independent CI, conflict, and readiness notifications for PR watch
@@ -35,13 +38,15 @@ specification adds no public RPC, destination selection, agent-assessment
 claim, or GitHub write operation.
 
 Acquisition completeness, retained history, notification continuation, and
-checkpoint capacity are separate concerns. The capacity/continuation design
-required by FR-012 and AC-011/AC-012 must integrate the logical records below
-with the PR-watch position, checkpoint, and notification contracts before
-implementation. The earlier fixed item/journal limits cannot be used to
-discard these signals or silently advance a position. This document does not
-select the replacement common serialization, storage budget, or continuation
-algorithm; see [Integration prerequisites](#compatibility-and-integration-prerequisites).
+checkpoint capacity are separate concerns. The
+[capacity specification](github-pr-watch-capacity.md) defines FR-012 and
+AC-011/AC-012 acquisition budgets, v2 progress, retained positions and prefix
+continuation; [streamed runtime state](runtime-state-stream.md) defines its
+common checkpoint profile. The signal records below still need an explicit
+binding to those contracts before implementation. Their existing mechanisms
+must not discard signals or silently advance signal coverage. This document
+does not redefine those common mechanisms; see
+[Integration prerequisites](#compatibility-and-integration-prerequisites).
 
 ## Requirement coverage
 
@@ -58,7 +63,8 @@ All local IDs below refer to
 | FR-011, NFR-001, NFR-003, NFR-004 | AC-013, AC-014 with AC-010 documentation/evidence constraints | External data, unchanged public interfaces, delivery instructions, separate evidence; S-U05, GPWS-I02, GPWS-D01/D02 |
 
 The earlier design and suites retain other category coverage. This document
-does not replace their acceptance IDs. It depends on FR-012 integration for
+does not replace their acceptance IDs. It depends on signal-specific integration
+with the FR-012 contracts for
 full continuation and persistent-position coverage; it does not claim that
 the two cases below complete AC-011/AC-012.
 
@@ -347,9 +353,9 @@ target URLs are external data, never instructions or automatic fetch targets.
 No missing information is fabricated. Represent each changed identity and
 provenance before advancing past it. Where full current inventories or other
 content do not fit, explicit omissions and continuation must identify affected
-categories/items; a summary must not claim complete CI success. The final
-common capacity contract must specify how these records and current-state
-coverage fit successive contexts. Do not introduce a private signal cap,
+categories/items; a summary must not claim complete CI success. Signal-specific
+integration must specify how these records and current-state coverage use the
+capacity specification's represented-prefix continuation. Do not introduce a private signal cap,
 silently drop episodes, acknowledge unseen records, or use the earlier
 all-or-nothing capacity errors as the FR-012 continuation design.
 
@@ -358,15 +364,18 @@ last complete head/base/readiness, known result identities/versions, current
 selected results, unresolved/resolved conflict episode identity, observed
 episode sequence and retained changes, issued-position coverage, and attempted
 and confirmed delivery progress. Use only core-managed runtime persistence.
-Exact encoding, bounded retention, and position integration are governed by
-the prerequisite below; these logical obligations do not allocate another
-checkpoint or exempt this plugin from the common envelope limit.
+The capacity specification supplies v2 header/item/change records, retention
+and position rules. The prerequisite below must bind signal encoding and
+coverage to that representation. These logical obligations do not allocate
+another checkpoint or exempt the plugin from the stream's per-object payload
+limit and total-generation byte budget.
 
 ## Compatibility and integration prerequisites
 
 Signal-bearing saved data requires an explicit signal schema version and
 validation of the entire logical progress. A payload without that version,
-including an earlier `github-pr-watch-v1` payload, cannot prove a baseline or
+including `github-pr-watch-v1` or a discussion-only `github-pr-watch-v2`
+payload, cannot prove a baseline or
 position coverage for these categories. Reject it before activation with
 `signal_state_incompatible`; preserve the saved state and diagnose the
 affected registration. Reject incompatible explicit positions through the
@@ -380,18 +389,19 @@ explicitly follow the existing
 [offline reset/recreation procedure](trigger-runtime-state.md#offline-reset-deletion-and-recreation),
 accepting loss of continuity. New registrations use a new nonce and cannot
 inherit old positions. Rollback to a binary that cannot understand the new
-state must reject it visibly rather than overwrite it. State schema selection
-and how a complete signal payload shares checkpoints and positions with the
-capacity design require one reviewed integration decision before rollout.
+state must reject it visibly rather than overwrite it. Signal schema selection
+and how a complete signal payload uses the capacity specification's checkpoints
+and positions require one reviewed integration decision before rollout.
 
 | Prerequisite | Required decision and coverage impact | Owner and resolution stage |
 | --- | --- | --- |
-| Common progress/continuation integration | Specify final envelope/schema, exact bounded encoding, combined history retention, position issuance/coverage and migration, current-state omission/continuation, and checkpoint-size feasibility for all categories. Preserve FR-012 and this document's episodes without losing older discussion changes. | Design owner with responsible human approval; before design readiness and dependent implementation |
+| Signal binding to common progress/continuation | Specify the signal schema and record encoding within the existing v2 stream, combined history accounting, signal position coverage and migration, current-state omission/continuation, and checkpoint-size feasibility. Use the capacity specification's retention and represented-prefix rules; preserve FR-012 and these episodes without losing older discussion changes. | Design owner with responsible human approval; before design readiness and dependent implementation |
 | Governed verification reconciliation | Reconcile existing PR-watch/rewait case expectations with the integrated representation and pass both existing and new approved scopes. New signal cases do not weaken prior cases or establish capacity acceptance. | Design owner; before dependent implementation |
 
-These are design dependencies, not permission for implementation to choose a
-new persistent or public contract. Until resolved in approved and merged
-designs, the combined change is not implementation-ready. Live-service and
+These are signal-integration decisions, not permission for implementation to
+replace the common persistent or public contracts. Until this binding is
+resolved in approved and merged design, the combined change is not
+implementation-ready. Live-service and
 receiving-agent checks remain assigned to delivery rather than these design
 dependencies.
 

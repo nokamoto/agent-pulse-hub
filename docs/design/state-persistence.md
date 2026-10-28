@@ -11,6 +11,8 @@ sources:
     resource: design/mvp.md
   - id: runtime-state-design
     resource: design/trigger-runtime-state.md
+  - id: subscription-cancellation-requirements
+    resource: requirements/subscription-cancellation.md
 ---
 
 # Local registration persistence
@@ -24,7 +26,10 @@ hub stores accepted routes separately. A normal stop and restart restores the
 same subscription IDs and opaque argument values without the original client
 argument files. Trigger/action refer to the public input/output roles.
 
-Completed registrations survive. Participating triggers additionally preserve
+Completed registrations survive until explicit
+[subscription cancellation](subscription-cancellation.md), which governs
+selective live removal and its recovery transaction. Participating triggers
+additionally preserve
 opaque progress under [trigger runtime state](trigger-runtime-state.md).
 Event queues, in-flight deliveries, pending registrations, plugin sessions
 and process availability remain volatile.
@@ -63,8 +68,9 @@ The command selects configuration and storage, reserves the listener, owns
 storage exclusion and coordinates startup/shutdown. A local filesystem adapter
 loads and commits records; the hub owns validation, registration identity,
 plugin acceptance and activation. Persisted records are independent of the
-live registry: plugin exit, inactive tombstones and live-entry cleanup never
-delete an already committed registration. Plugins retain their existing
+live registry: plugin exit, inactive tombstones and ordinary live-entry cleanup
+never delete an already committed registration. Explicit unsubscribe instead
+uses the cancellation transaction described below. Plugins retain their existing
 service operations and argument validation.
 
 Use an application-facing store operation to commit one complete registration
@@ -99,20 +105,27 @@ local modification are outside the existing trust boundary.
 | --- | --- |
 | `.lock/` | Exclusive owner marker, created with a single `os.Mkdir` before reading state; existing marker fails startup even at a different control address. |
 | `registrations/` | Committed registration files only. |
-| `staging/` | Temporary, uncommitted record files; never loaded as registrations. |
+| `staging/` | Temporary, uncommitted record files and streamed-runtime staging directories; never loaded as registrations. |
 | `runtime/` | Trigger checkpoint generations governed by [runtime state](trigger-runtime-state.md#storage-and-compatibility), independent of registration records. |
+| `cancellations/` | Committed removal intents governed by [subscription cancellation](subscription-cancellation.md); processed before registration restoration. |
 
 Create missing subdirectories only for a fresh empty root. An existing initialized
 root must have `registrations/` and `staging/`; the runtime extension may create
-its missing `runtime/` directory in a valid older tree after exclusion.
+its missing `runtime/` directory in a valid older tree after exclusion. The
+cancellation extension similarly creates a missing `cancellations/` directory
+after exclusion; absence in an older valid tree means no pending cancellations.
 Unknown root entries, non-directory reserved
 entries, symlinks, non-regular registration entries and unexpected registration
-filenames fail startup. Staging files are uncommitted attempts, not successful
+filenames fail startup. Staging entries are uncommitted attempts, not successful
 registrations; cleanup may remove them only after acquiring the lock. A leftover
 lock requires deliberate operator recovery, never timeout/PID-based lock stealing.
 Keep exclusion until all registration writes and configured plugin cleanup finish.
 Remove only the marker this process acquired, on normal shutdown and failed-startup cleanup; a failed acquisition never removes another owner's marker. A cleanup
 failure is diagnosed with its path; do not claim the marker was released.
+
+Streamed runtime staging directories follow the exact naming, validation and
+cleanup rules in [streamed runtime state](runtime-state-stream.md#core-managed-generation-storage).
+They are never committed registration or runtime progress.
 
 ### Record format and compatibility
 
@@ -187,17 +200,60 @@ slot until that input stops; discard its events. Do not kill a healthy shared
 input solely because saving failed. In particular, the ordered watch-result
 callback must report protocol processing success separately from the hub's
 registration failure, rather than treating a storage error as transport failure.
-There is no cancellation/rollback RPC or active unsaved route.
+Registration failure itself does not issue a cancellation or rollback RPC,
+and creates no active unsaved route. The separate explicit unsubscribe operation
+can terminate a supported watch and remove its reservation.
 
 All successfully saved registrations remain retained even if their plugins
 later fail. Count retained records as well as live pending/inactive entries
 without double counting the same ID, so restart cannot exceed capacity.
-Administrative removal is offline deliberate recovery, not a new removal API.
+Administrative removal is either deliberate offline recovery or explicit
+unsubscribe under the [cancellation design](subscription-cancellation.md).
+
+### Cancellation transaction
+
+Registration records remain version 1 and immutable. The cancellation design
+owns a separate `cancellations/<subscription_id>.json` intent with exactly
+`version` (integer token `1`), `subscription_id` (the canonical lowercase UUID
+matching its filename), and `input_plugin` (the registered configured input
+name). It contains no checkpoint, arguments, delivery history or destination.
+Apply strict JSON, regular-file, symlink, ownership and bounded-read validation
+from the governing cancellation contract. Commit an intent by exclusive staging
+creation, complete write and close, then rename to its unique absent intent
+path on the same filesystem. Reuse an existing validated same-ID intent during
+explicit recovery rather than replacing it. No new fsync or crash guarantee
+is introduced.
+
+After capability/target validation and the registration's lifecycle/save fence,
+commit the intent before requesting selective watch termination. Once the watch
+is confirmed stopped or its input cleanup is confirmed complete, remove the
+complete target runtime directory, then its registration file. Keep the intent
+through these steps. On plugin or storage failure retain the fence and any
+committed intent,
+report the cause and actionable recovery, and never claim successful removal.
+Other registrations and their state remain untouched. An intent prevents the
+target from restoration even if its registration file still exists.
+
+Once live termination and both persistent removals complete, unsubscribe can
+succeed. Removing the remaining intent is housekeeping: failure produces a
+bounded cleanup diagnostic without weakening the completed removal. An ID
+with only an intent and no saved or live registration returns not-found; the
+intent is not a cancellation-history or status API. Startup validates and
+finishes pending removal before loading registrations or launching plugins;
+a required removal failure prevents readiness. An intent alone is then removed
+without restoring a watch or reading orphan progress as live state.
+
+Older daemons reject the new reserved directory. Stop all owners, complete all
+pending cancellation transactions with the new version and preserve the state
+tree before a deliberate downgrade. Remove the empty cancellation directory
+only from the stopped downgrade copy. Never remove a pending intent to make
+an older daemon start, because that could restore a cancelled registration.
 
 ## Startup and normal stop
 
 1. Parse the existing configuration and state flag, acquire state exclusion,
-   validate the entire committed set, then reserve the control listener before
+   validate and finish committed cancellation intents, then load and validate
+   the retained registration set. Reserve the control listener before
    launching any plugin. No registration/event admission is open yet.
 2. Launch configured plugins through the unchanged `hashicorp/go-plugin`
    lifecycle. Existing failure handling for an unused plugin is unchanged;
@@ -227,7 +283,9 @@ Any load, validation or restoration failure reports the affected storage path
 or registration ID and reason, exits one, closes the listener, stops every
 started plugin, and releases exclusion after cleanup. Do not expose successful
 partial startup, deliver from staged routes, switch destinations, or delete a
-failed record. Even a route accepted before another fails remains saved for
+failed record. Explicit committed cancellation intents are processed as removal
+transactions before this restoration policy. Even a route accepted before
+another fails remains saved for
 deliberate repair and a later full restart.
 
 Normal stop closes admission, prevents new commits, waits for any serialized
@@ -236,6 +294,8 @@ sent in-flight work unknown under the MVP policy. Cancel pending registrations,
 finish participating-input outcome notices and final checkpoint/save before
 stopping those plugins, then release state exclusion. A commit that won the
 serialization race remains saved; one cancelled before commit does not resume.
+Finish or preserve explicit cancellation transactions under their lifecycle
+ordering; final checkpoints and shutdown must not recreate fenced state.
 Nonparticipating inputs need no final snapshot. Restored routes use fresh
 sessions and current acceptance, not prior process state. Normal stop acknowledgement still precedes
 process exit; operators wait for exit before restarting.
@@ -249,7 +309,11 @@ contracts stay here; no additional specification is required.
 its persistence additions from this document. [Plugin v2](plugin-v1.md) retains
 wire-schema authority and documents the activation gate and optional runtime
 messages without changing version 2. [Runtime state](trigger-runtime-state.md)
-owns mutable progress storage and coordination. [Operations](windows-operations.md) supplies the complete
+owns mutable progress storage and coordination. The
+[cancellation design](subscription-cancellation.md) owns live removal, intent
+schemas, recovery ordering, capability migration and its verification; this
+document incorporates its exception to retained-registration restoration.
+[Operations](windows-operations.md) supplies the complete
 reusable procedure, including deliberate recovery. [Bundled design](bundled-plugins.md)
 and [Codex Queue](codex-queue.md) derive restart instructions; service checks
 remain owned by their respective designs. Package layout, internal errors and
