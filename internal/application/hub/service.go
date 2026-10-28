@@ -39,6 +39,7 @@ type WatchRequest struct {
 	Arguments      *jsonvalue.Value
 	RuntimeState   bool
 	State          *jsonvalue.Value
+	Source         RuntimeSource
 }
 
 type DestinationRequest struct {
@@ -124,6 +125,7 @@ type queuedEvent struct {
 
 type runtimeWatch struct {
 	mu           sync.Mutex
+	stream       *runtimeStreamSink // protected by Hub.mu
 	state        *jsonvalue.Value
 	outcomes     []RuntimeNotice
 	inputPort    PluginPort
@@ -140,38 +142,41 @@ type RegistrationStore interface {
 type Hub struct {
 	mu sync.Mutex
 
-	plugins            map[string]*pluginState
-	registrations      map[domain.SubscriptionID]domain.Subscription
-	savedRegistrations map[domain.SubscriptionID]domain.Subscription
-	retained           map[domain.SubscriptionID]struct{}
-	activeByKey        map[string]domain.SubscriptionID
-	pendingByKey       map[string]*pendingRegistration
-	store              RegistrationStore
-	runtimeStore       RuntimeStateStore
-	restore            []domain.Subscription
-	runtimeStates      map[domain.SubscriptionID]*jsonvalue.Value
-	runtimeWatches     map[domain.SubscriptionID]*runtimeWatch
-	admissionOpen      bool
-	queue              chan queuedEvent
-	queueReady         chan struct{}
-	pendingEvents      int
-	stopping           bool
-	shutdownStarted    bool
-	shutdownDone       chan struct{}
-	runtimeStarted     bool
-	runtimeDone        chan struct{}
-	runtimeLoops       map[string]chan struct{}
-	runtimeSaveGate    chan struct{}
-	activationBatches  map[string]*activationBatch
-	activationWait     sync.WaitGroup
-	notificationWaits  map[domain.SubscriptionID]*notificationWait
-	rewaitReceipts     map[string]*rewaitReceipt
-	sessionStartMillis int64
-	rewaitNow          func() time.Time
-	rewaitWait         sync.WaitGroup
-	cancellations      map[domain.SubscriptionID]*cancellationState
-	lifecycles         map[domain.SubscriptionID]*subscriptionLifecycle
-	cancellationWait   sync.WaitGroup
+	runtimeSources       map[domain.SubscriptionID]RuntimeSource
+	runtimeFS            *runtimeFSPool
+	runtimeStateMaxBytes uint64
+	plugins              map[string]*pluginState
+	registrations        map[domain.SubscriptionID]domain.Subscription
+	savedRegistrations   map[domain.SubscriptionID]domain.Subscription
+	retained             map[domain.SubscriptionID]struct{}
+	activeByKey          map[string]domain.SubscriptionID
+	pendingByKey         map[string]*pendingRegistration
+	store                RegistrationStore
+	runtimeStore         RuntimeStateStore
+	restore              []domain.Subscription
+	runtimeStates        map[domain.SubscriptionID]*jsonvalue.Value
+	runtimeWatches       map[domain.SubscriptionID]*runtimeWatch
+	admissionOpen        bool
+	queue                chan queuedEvent
+	queueReady           chan struct{}
+	pendingEvents        int
+	stopping             bool
+	shutdownStarted      bool
+	shutdownDone         chan struct{}
+	runtimeStarted       bool
+	runtimeDone          chan struct{}
+	runtimeLoops         map[string]chan struct{}
+	runtimeSaveGate      chan struct{}
+	activationBatches    map[string]*activationBatch
+	activationWait       sync.WaitGroup
+	notificationWaits    map[domain.SubscriptionID]*notificationWait
+	rewaitReceipts       map[string]*rewaitReceipt
+	sessionStartMillis   int64
+	rewaitNow            func() time.Time
+	rewaitWait           sync.WaitGroup
+	cancellations        map[domain.SubscriptionID]*cancellationState
+	lifecycles           map[domain.SubscriptionID]*subscriptionLifecycle
+	cancellationWait     sync.WaitGroup
 
 	stopCh     chan struct{}
 	workerDone chan struct{}
@@ -186,32 +191,35 @@ func New(logger *slog.Logger) *Hub {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := &Hub{
-		plugins:            make(map[string]*pluginState),
-		registrations:      make(map[domain.SubscriptionID]domain.Subscription),
-		savedRegistrations: make(map[domain.SubscriptionID]domain.Subscription),
-		retained:           make(map[domain.SubscriptionID]struct{}),
-		activeByKey:        make(map[string]domain.SubscriptionID),
-		pendingByKey:       make(map[string]*pendingRegistration),
-		runtimeStates:      make(map[domain.SubscriptionID]*jsonvalue.Value),
-		runtimeWatches:     make(map[domain.SubscriptionID]*runtimeWatch),
-		queue:              make(chan queuedEvent, MaxDeliveries),
-		queueReady:         make(chan struct{}, 1),
-		stopCh:             make(chan struct{}),
-		workerDone:         make(chan struct{}),
-		shutdownDone:       make(chan struct{}),
-		runtimeLoops:       make(map[string]chan struct{}),
-		runtimeSaveGate:    make(chan struct{}, runtimeSaveWorkers),
-		activationBatches:  make(map[string]*activationBatch),
-		notificationWaits:  make(map[domain.SubscriptionID]*notificationWait),
-		rewaitReceipts:     make(map[string]*rewaitReceipt),
-		cancellations:      make(map[domain.SubscriptionID]*cancellationState),
-		lifecycles:         make(map[domain.SubscriptionID]*subscriptionLifecycle),
-		sessionStartMillis: time.Now().UnixMilli(),
-		rewaitNow:          time.Now,
-		ctx:                ctx,
-		cancel:             cancel,
-		logger:             logger,
-		admissionOpen:      true,
+		runtimeSources:       make(map[domain.SubscriptionID]RuntimeSource),
+		runtimeFS:            newRuntimeFSPool(),
+		runtimeStateMaxBytes: DefaultRuntimeStateMaxBytes,
+		plugins:              make(map[string]*pluginState),
+		registrations:        make(map[domain.SubscriptionID]domain.Subscription),
+		savedRegistrations:   make(map[domain.SubscriptionID]domain.Subscription),
+		retained:             make(map[domain.SubscriptionID]struct{}),
+		activeByKey:          make(map[string]domain.SubscriptionID),
+		pendingByKey:         make(map[string]*pendingRegistration),
+		runtimeStates:        make(map[domain.SubscriptionID]*jsonvalue.Value),
+		runtimeWatches:       make(map[domain.SubscriptionID]*runtimeWatch),
+		queue:                make(chan queuedEvent, MaxDeliveries),
+		queueReady:           make(chan struct{}, 1),
+		stopCh:               make(chan struct{}),
+		workerDone:           make(chan struct{}),
+		shutdownDone:         make(chan struct{}),
+		runtimeLoops:         make(map[string]chan struct{}),
+		runtimeSaveGate:      make(chan struct{}, runtimeSaveWorkers),
+		activationBatches:    make(map[string]*activationBatch),
+		notificationWaits:    make(map[domain.SubscriptionID]*notificationWait),
+		rewaitReceipts:       make(map[string]*rewaitReceipt),
+		cancellations:        make(map[domain.SubscriptionID]*cancellationState),
+		lifecycles:           make(map[domain.SubscriptionID]*subscriptionLifecycle),
+		sessionStartMillis:   time.Now().UnixMilli(),
+		rewaitNow:            time.Now,
+		ctx:                  ctx,
+		cancel:               cancel,
+		logger:               logger,
+		admissionOpen:        true,
 	}
 	go hub.deliveryWorker()
 	return hub
@@ -266,7 +274,22 @@ func (h *Hub) PrepareRestorations(registrations []domain.Subscription) error {
 		retained[registration.ID] = struct{}{}
 	}
 	runtimeStates := make(map[domain.SubscriptionID]*jsonvalue.Value)
-	if h.runtimeStore != nil {
+	if streamStore, ok := h.runtimeStore.(StreamRuntimeStore); ok {
+		var err error
+		h.runtimeSources, err = streamStore.LoadRuntimeSources(registrations, h.runtimeStateMaxBytes)
+		if err != nil {
+			return fmt.Errorf("load trigger runtime state: %w", err)
+		}
+		for id, source := range h.runtimeSources {
+			if !source.Streamed() {
+				chunk, err := source.Chunk(0)
+				if err != nil {
+					return err
+				}
+				runtimeStates[id] = jsonvalue.NewObject(map[string]*jsonvalue.Value{"schema": jsonvalue.NewString(source.Schema()), "payload": chunk})
+			}
+		}
+	} else if h.runtimeStore != nil {
 		var err error
 		runtimeStates, err = h.runtimeStore.LoadRuntime(registrations)
 		if err != nil {
@@ -308,14 +331,19 @@ func (h *Hub) Restore(ctx context.Context) error {
 		inputPort, outputPort := input.port, output.port
 		stateful := input.participates()
 		runtimeState := h.runtimeStates[registration.ID]
+		source := h.runtimeSources[registration.ID]
+		stream := input.capabilities["runtime_state_stream_v1"]
 		h.mu.Unlock()
+		if err := validateRuntimeSource(source, stream); err != nil {
+			return fmt.Errorf("restore registration %s: %w", registration.ID, err)
+		}
 		if runtimeState != nil && !stateful {
 			return fmt.Errorf("restore registration %s: runtime state requires input plugin %q to advertise a runtime-state capability", registration.ID, registration.InputPlugin)
 		}
 		if stateful && h.runtimeStore == nil {
 			return fmt.Errorf("restore registration %s input plugin %q: runtime state storage is unavailable", registration.ID, registration.InputPlugin)
 		}
-		if stateful && !runtimeStateWatchFits(registration.WatchArgs, string(registration.ID), "00000000-0000-4000-8000-000000000000") {
+		if stateful && ((!stream && !runtimeStateWatchFits(registration.WatchArgs, string(registration.ID), "00000000-0000-4000-8000-000000000000")) || (stream && !streamWatchFits(registration.WatchArgs, string(registration.ID), "00000000-0000-4000-8000-000000000000"))) {
 			return fmt.Errorf("restore registration %s input plugin %q: participating watch exceeds the reserved runtime state payload limit", registration.ID, registration.InputPlugin)
 		}
 
@@ -334,7 +362,7 @@ func (h *Hub) Restore(ctx context.Context) error {
 			}
 			return fmt.Errorf("restore registration %s: destination validation failed: %s", registration.ID, safeError(err))
 		}
-		if err := inputPort.Watch(ctx, WatchRequest{RequestID: watchRequestID, SubscriptionID: registration.ID, Arguments: registration.WatchArgs, RuntimeState: stateful, State: runtimeState}, func() error { return nil }); err != nil {
+		if err := inputPort.Watch(ctx, WatchRequest{RequestID: watchRequestID, SubscriptionID: registration.ID, Arguments: registration.WatchArgs, RuntimeState: stateful, State: runtimeState, Source: source}, func() error { return nil }); err != nil {
 			var watchErr *WatchError
 			if errors.As(err, &watchErr) && watchErr.Unavailable {
 				h.pluginUnavailable(registration.InputPlugin, inputPort, err)
@@ -597,7 +625,8 @@ func (h *Hub) Register(inputName string, watchArgs *jsonvalue.Value, outputName 
 		h.mu.Unlock()
 		return "", &Error{Code: "storage_error", Message: "Trigger runtime state storage is unavailable."}
 	}
-	if runtimeState && !runtimeStateWatchFits(watchArgs, id, watchRequestID) {
+	stream := inputState.capabilities["runtime_state_stream_v1"]
+	if runtimeState && ((!stream && !runtimeStateWatchFits(watchArgs, id, watchRequestID)) || (stream && !streamWatchFits(watchArgs, id, watchRequestID))) {
 		h.mu.Unlock()
 		return "", &Error{Code: "resource_exhausted", Message: "Participating watch arguments exceed the reserved runtime state payload limit."}
 	}
@@ -1065,6 +1094,7 @@ func (h *Hub) Shutdown() {
 		<-runtimeDone
 	}
 	h.finalRuntimeCheckpoints()
+	h.runtimeFS.close()
 	close(h.shutdownDone)
 }
 

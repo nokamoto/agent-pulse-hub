@@ -2,6 +2,7 @@ package pluginprocess
 
 import (
 	"context"
+	"errors"
 
 	"github.com/nokamoto/agent-pulse-hub/internal/adapters/pluginprotocol"
 	"github.com/nokamoto/agent-pulse-hub/internal/application/hub"
@@ -25,7 +26,17 @@ func (p *Process) FenceWatch(id domain.SubscriptionID) error {
 		if pending.cancel != nil {
 			pending.cancel()
 		}
+		if pending.stream != nil {
+			pending.stream.sink.Abort(errors.New("watch cancellation expired the checkpoint stream"))
+		}
 		pending.result <- requestResult{err: &requestError{message: "watch cancellation expired the request", sent: pending.sent}}
+	}
+	if requestID := p.streamFinishedWatch[string(id)]; requestID != "" {
+		if transfer := p.streamFinished[requestID]; transfer != nil {
+			transfer.sink.Abort(errors.New("watch cancellation removed the completed stream correlation"))
+		}
+		delete(p.streamFinished, requestID)
+		delete(p.streamFinishedWatch, string(id))
 	}
 	return nil
 }

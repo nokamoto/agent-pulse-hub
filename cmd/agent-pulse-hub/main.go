@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -67,6 +68,10 @@ func (localOperations) Daemon(path, stateDirectory, address string, stderr io.Wr
 	return runDaemon(path, stateDirectory, address, stderr)
 }
 
+func (localOperations) DaemonWithRuntimeBudget(path, stateDirectory, address string, budget uint64, stderr io.Writer) error {
+	return runDaemonWithRuntimeBudget(path, stateDirectory, address, budget, stderr)
+}
+
 func (localOperations) Arguments(path string) (*jsonvalue.Value, error) { return loadArguments(path) }
 
 func (localOperations) Register(ctx context.Context, address, inputName string, watchArgs *jsonvalue.Value, outputName string, destinationArgs *jsonvalue.Value) (control.RegistrationResponse, []byte, error) {
@@ -116,11 +121,29 @@ func runWith(args []string, stdout, stderr io.Writer, operations commandOperatio
 		}
 		return 0
 	case "daemon":
-		flags, err := parseFlags(args[1:], []string{"--config"}, []string{"--state-dir", "--address"})
+		flags, err := parseFlags(args[1:], []string{"--config"}, []string{"--state-dir", "--address", "--runtime-state-max-bytes"})
 		if err != nil {
 			return report(stderr, "daemon: "+err.Error())
 		}
-		if err := operations.Daemon(flags["--config"], flags["--state-dir"], addressOrDefault(flags["--address"]), stderr); err != nil {
+		budget := hub.DefaultRuntimeStateMaxBytes
+		if value, exists := flags["--runtime-state-max-bytes"]; exists {
+			var err error
+			budget, err = parseRuntimeByteBudget(value)
+			if err != nil {
+				return report(stderr, "daemon: "+err.Error())
+			}
+		}
+		var runErr error
+		if op, ok := operations.(interface {
+			DaemonWithRuntimeBudget(string, string, string, uint64, io.Writer) error
+		}); ok {
+			runErr = op.DaemonWithRuntimeBudget(flags["--config"], flags["--state-dir"], addressOrDefault(flags["--address"]), budget, stderr)
+		} else if budget != hub.DefaultRuntimeStateMaxBytes {
+			return report(stderr, "daemon: runtime-state byte configuration unavailable")
+		} else {
+			runErr = operations.Daemon(flags["--config"], flags["--state-dir"], addressOrDefault(flags["--address"]), stderr)
+		}
+		if err := runErr; err != nil {
 			return report(stderr, "daemon: "+err.Error())
 		}
 		return 0
@@ -219,6 +242,26 @@ func addressOrDefault(address string) string {
 }
 
 func runDaemon(configPath, selectedStateDirectory, address string, stderr io.Writer) (returnErr error) {
+	return runDaemonWithRuntimeBudget(configPath, selectedStateDirectory, address, hub.DefaultRuntimeStateMaxBytes, stderr)
+}
+
+func parseRuntimeByteBudget(value string) (uint64, error) {
+	if value == "" {
+		return 0, errors.New("runtime-state-max-bytes must be positive decimal bytes")
+	}
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return 0, errors.New("runtime-state-max-bytes must be positive decimal bytes")
+		}
+	}
+	n, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || n == 0 {
+		return 0, errors.New("runtime-state-max-bytes must be positive decimal bytes through uint64 maximum")
+	}
+	return n, nil
+}
+
+func runDaemonWithRuntimeBudget(configPath, selectedStateDirectory, address string, budget uint64, stderr io.Writer) (returnErr error) {
 	settings, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -250,6 +293,9 @@ func runDaemon(configPath, selectedStateDirectory, address string, stderr io.Wri
 	}
 	logger := daemonLogger(stderr)
 	service := hub.NewWithRegistrationStore(logger, store)
+	if err := service.SetRuntimeStateMaxBytes(budget); err != nil {
+		return errors.Join(err, store.Close())
+	}
 	var server *control.Server
 	defer func() {
 		if server != nil {
@@ -266,7 +312,8 @@ func runDaemon(configPath, selectedStateDirectory, address string, stderr io.Wri
 
 	for _, configured := range settings.Plugins {
 		process := pluginprocess.New(pluginprocess.Config{
-			Name: configured.Name, Role: configured.Role, Executable: configured.Executable, Args: configured.Args,
+			RuntimeStateMaxBytes: budget,
+			Name:                 configured.Name, Role: configured.Role, Executable: configured.Executable, Args: configured.Args,
 		}, logger)
 		if err := service.AddPlugin(configured.Name, configured.Role, process); err != nil {
 			return err

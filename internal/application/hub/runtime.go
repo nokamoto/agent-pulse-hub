@@ -173,6 +173,20 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 			if !quiesce {
 				stopCancel = context.AfterFunc(life.ctx, checkpointCancel)
 			}
+			if port, ok := watch.inputPort.(StreamPluginPort); ok {
+				h.mu.Lock()
+				stream := h.plugins[watch.inputName] != nil && h.plugins[watch.inputName].capabilities["runtime_state_stream_v1"]
+				h.mu.Unlock()
+				if store, ok := h.runtimeStore.(StreamRuntimeStore); ok && stream {
+					result := h.runStreamCheckpoint(checkpointCtx, quiesce, watch, port, store)
+					stopCancel()
+					checkpointCancel()
+					watch.mu.Unlock()
+					h.releasePendingEvents(flushed)
+					results <- result
+					return
+				}
+			}
 			state, err := watch.inputPort.Checkpoint(checkpointCtx, RuntimeCheckpointRequest{
 				SubscriptionID: watch.registration.ID, Quiesce: quiesce,
 			})
@@ -198,6 +212,11 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 		go func() {
 			defer saves.Done()
 			for result := range jobs {
+				if result.stream != nil {
+					h.saveStreamResult(result)
+					h.finishRewaitCheckpoint(result.watch)
+					continue
+				}
 				if result.err != nil {
 					h.reportCheckpointError(ctx, quiesce, result)
 					h.finishRewaitCheckpoint(result.watch)
@@ -216,6 +235,7 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 }
 
 type runtimeCheckpointResult struct {
+	stream    *runtimeStreamSink
 	watch     *runtimeWatch
 	state     *jsonvalue.Value
 	err       error
@@ -410,7 +430,13 @@ func (h *Hub) saveRuntimeState(watch *runtimeWatch, state *jsonvalue.Value) {
 		h.reportRuntimeStateError(watch, "save", errors.New("checkpoint returned no state"))
 		return
 	}
-	generation, err := h.runtimeStore.CommitRuntime(watch.registration, state)
+	done := make(chan streamSaveResult, 1)
+	_ = h.runtimeFS.submit(context.Background(), watch.registration.ID, func() {
+		generation, err := h.runtimeStore.CommitRuntime(watch.registration, state)
+		done <- streamSaveResult{generation: generation, err: err}
+	})
+	saved := <-done
+	generation, err := saved.generation, saved.err
 	if generation == 0 {
 		if err == nil {
 			err = errors.New("runtime state store returned no committed generation")

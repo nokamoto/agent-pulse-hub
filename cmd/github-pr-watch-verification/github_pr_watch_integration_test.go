@@ -104,7 +104,7 @@ var _ = Describe("GitHub PR watch acceptance", Serial, func() {
 	// to the cheaper unit matrix; 1,000 mixed items retain the assembled boundary.
 	// Budget 10 seconds excluding shared builds; one local TLS server and at most
 	// one live input process. Close Session, await exit, and remove temporary data.
-	It("preserves a thousand-item paginated observation and streamed plugin progress through recovery and restore", Label("case:GPW-I04"), Pending, func() {})
+	It("preserves a thousand-item paginated observation and streamed plugin progress through recovery and restore", Label("case:GPW-I04"), gpwLargeCase)
 
 	// GPW-I05: Reuse gpwNewDaemon, the real register/rewait/stop commands, actual
 	// PR-watch plugin and model-output action, and a temporary core state tree.
@@ -151,5 +151,5 @@ var _ = Describe("GitHub PR watch acceptance", Serial, func() {
 	// unit cases; this case retains actual command/process/file/restart wiring.
 	// Budget 20 seconds excluding shared builds; one hub/input/output/TLS server
 	// at a time, no fixed sleeps, and cleanup only after all children exit.
-	It("continues beyond forty outstanding changes through bounded rewait contexts and core-owned streamed restart", Label("case:GPW-I05"), Pending, func() {})
+	It("continues beyond forty outstanding changes through bounded rewait contexts and core-owned streamed restart", Label("case:GPW-I05"), gpwContinuationCase)
 })

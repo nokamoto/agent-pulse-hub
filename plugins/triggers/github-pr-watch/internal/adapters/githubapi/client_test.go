@@ -40,7 +40,7 @@ func TestRequestOriginBoundAndFailureClassification(t *testing.T) {
 				return &http.Response{StatusCode: test.status, Header: test.headers, Body: io.NopCloser(strings.NewReader(test.body)), Request: req}, nil
 			})
 			client := NewWithHTTPClient(&http.Client{Transport: transport})
-			total := 0
+			total := uint64(0)
 			_, err := client.request(context.Background(), domain.WatchConfig{Host: test.host}, "secret", "query Safe {}", nil, &total)
 			if test.code == "" {
 				if err != nil {
@@ -77,7 +77,7 @@ func TestGraphQLRateLimitPreservesRetryGuidance(t *testing.T) {
 	transport.EXPECT().RoundTrip(gomock.Any()).Return(&http.Response{StatusCode: 200, Header: http.Header{"Retry-After": []string{"120"}, "X-Ratelimit-Remaining": []string{"0"}, "X-Ratelimit-Reset": []string{"1793059380"}}, Body: io.NopCloser(strings.NewReader(`{"errors":[{"type":"RATE_LIMITED","message":"rate limited"}]}`))}, nil)
 	client := NewWithHTTPClient(&http.Client{Transport: transport})
 	client.now = func() time.Time { return now }
-	total := 0
+	total := uint64(0)
 	_, err := client.request(context.Background(), domain.WatchConfig{Host: "github.com"}, "secret", "query Safe {}", nil, &total)
 	failure, ok := err.(*application.Failure)
 	if !ok || failure.Code != "rate_limit" || failure.RetryAt.Before(now.Add(120*time.Second)) {

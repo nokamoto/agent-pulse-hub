@@ -24,15 +24,15 @@ func gpwState(t mvpReporter, checkpoint map[string]any) map[string]any {
 	if checkpoint["accepted"] != true {
 		t.Fatalf("checkpoint rejected: %+v", checkpoint)
 	}
-	state, ok := checkpoint["state"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing envelope: %+v", checkpoint)
+	chunks, ok := checkpoint["chunks"].([]any)
+	if !ok || len(chunks) == 0 {
+		t.Fatalf("missing streamed snapshot: %v", checkpoint)
 	}
-	payload, ok := state["payload"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing payload: %+v", state)
+	header, ok := chunks[0].(map[string]any)
+	if !ok || header["kind"] != "header" || checkpoint["schema"] != "github-pr-watch-v2" {
+		t.Fatalf("bad snapshot header %v", checkpoint)
 	}
-	return payload
+	return header
 }
 
 func gpwContext(t mvpReporter, text any) map[string]any {
@@ -407,6 +407,11 @@ func gpwRewaitCase() {
 func gpwSavedFiles(t mvpReporter, state, id string) []string {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(state, "runtime", id, "*.json"))
+	streams, streamErr := filepath.Glob(filepath.Join(state, "runtime", id, "*.stream", "manifest.json"))
+	if streamErr != nil {
+		t.Fatal(streamErr)
+	}
+	files = append(files, streams...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,22 +453,14 @@ func gpwRestartCase() {
 	if len(files) != 1 {
 		t.Fatalf("normal stop did not save one checkpoint: %v log=%s", files, readMVPFile(daemon.logPath))
 	}
-	preserved, err := os.ReadFile(files[0])
+	_, err := os.ReadFile(files[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(preserved), "confirmed") {
-		t.Fatalf("saved progress missing: %s", preserved)
-	}
-	var savedFirst struct {
-		State struct {
-			Payload struct {
-				Confirmed float64 `json:"confirmed"`
-			} `json:"payload"`
-		} `json:"state"`
-	}
-	if json.Unmarshal(preserved, &savedFirst) != nil || savedFirst.State.Payload.Confirmed <= 1 {
-		t.Fatalf("accepted notification missing from checkpoint: %s", preserved)
+
+	header := gpwSavedHeader(t, files[0])
+	if confirmed, _ := header["confirmed"].(float64); confirmed <= 1 {
+		t.Fatalf("accepted notification missing from checkpoint: %v", header)
 	}
 	daemon = gpwSuite.startDaemonWithState(t, directory, daemon.config, freeMVPAddress(t), state)
 	DeferCleanup(daemon.cleanup)
@@ -521,7 +518,11 @@ func gpwRestartCase() {
 	if json.Unmarshal(valid, &saved) != nil {
 		t.Fatal("bad saved JSON")
 	}
-	saved["state"].(map[string]any)["schema"] = "unsupported-plugin-schema"
+	if _, stream := saved["chunk_count"]; stream {
+		saved["schema"] = "unsupported-plugin-schema"
+	} else {
+		saved["state"].(map[string]any)["schema"] = "unsupported-plugin-schema"
+	}
 	invalid, _ := json.Marshal(saved)
 	if err := os.WriteFile(files[len(files)-1], invalid, 0o600); err != nil {
 		t.Fatal(err)
