@@ -32,6 +32,9 @@ Its specified API origins extend the GraphQL-only endpoints below. The
 signal specification defines its v3 records, shared sequence/position coverage,
 bounded continuation and explicit profile compatibility using the FR-012
 capacity contract. It does not authorize silent signal-history reset.
+Its base-revision contract distinguishes the PR-associated OID from the current
+base target and preserves acquisition and lifecycle reporting for closed and
+merged PRs; a stable difference between those OIDs is not an acquisition race.
 
 The [capacity specification](github-pr-watch-capacity.md) implements FR-012 and
 AC-011/AC-012 and governs the revised observation, state and continuation

@@ -2,7 +2,7 @@
   "suites": [
     {
       "package": "./cmd/github-pr-watch-signals-verification",
-      "cases": ["GPWS-I01", "GPWS-I02"]
+      "cases": ["GPWS-I01", "GPWS-I02", "GPWS-I03"]
     }
   ]
 }
