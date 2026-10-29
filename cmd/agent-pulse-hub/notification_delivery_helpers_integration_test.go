@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,17 @@ func ndOutput(t mvpReporter, root string) (mvpPluginConfig, string) {
 		t.Fatal(err)
 	}
 	return mvpPluginConfig{Name: "action", Role: "output", Executable: mvpEnv.python, Args: []string{"-B", filepath.Join(mvpEnv.root, "cmd", "agent-pulse-hub", "testdata", "notification-delivery-plugin.py"), dir, "--role", "output"}}, dir
+}
+
+func ndWriteCommand(t mvpReporter, directory string, number int, command any) {
+	t.Helper()
+	writeFixtureCommand(t, directory, number, command)
+	// Publish completion separately: the command name can become visible to
+	// the peer before rename returns and releases its file handle.
+	ready := filepath.Join(directory, fmt.Sprintf("command-%d.ready", number))
+	if err := os.WriteFile(ready, nil, 0o600); err != nil {
+		t.Fatalf("release ND fixture command %d: %v", number, err)
+	}
 }
 
 func ndShow(t mvpReporter, d *mvpDaemon, id string) map[string]any {
@@ -133,7 +145,7 @@ func runNDStatus() {
 	frame := ndFrames(journal)[0]
 	wrong := ndResult(frame, "accepted")
 	wrong["delivery_id"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-	writeFixtureCommand(t, outDir, 1, wrong)
+	ndWriteCommand(t, outDir, 1, wrong)
 	awaitMVPJournal(t, journal, "command", 1, 3*time.Second)
 	show := ndShow(t, d, nid)
 	if show["acceptance"] != "in_progress" || len(show) != 13 || strings.Contains(string(mustNDJSON(t, show)), "forged") {
@@ -262,7 +274,7 @@ func runNDRestart() {
 	// by cancelling a second held issued attempt below.
 	frames := ndFrames(journal)
 	held := frames[len(frames)-1]
-	writeFixtureCommand(t, outDir, 1, ndResult(held, "unknown"))
+	ndWriteCommand(t, outDir, 1, ndResult(held, "unknown"))
 	ndAwait(t, d, ids["interrupted"], 1, "unknown")
 	ndAwait(t, d, ids["eligible"], 1, "scheduled")
 	for mode, id := range ids {
@@ -302,14 +314,14 @@ func runNDRestart() {
 	}) {
 		t.Fatal("stop reservation not issued")
 	}
-	// Remove source files before restart: this peer deliberately does not claim
-	// general source replay suppression. Resume must originate in the ledger.
+	scStop(t, d, 2)
+	// Wait for source readers to exit before deleting their files. Remove them
+	// before restart so resume must originate in the ledger, not source replay.
 	for mode := range ids {
 		if err := os.Remove(filepath.Join(root, mode+".jsonl")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	scStop(t, d, 2)
 	before := len(ndFrames(journal))
 	second := mvpEnv.startDaemonWithState(t, root, config, freeMVPAddress(t), state)
 	DeferCleanup(second.cleanup)
@@ -397,8 +409,8 @@ func runNDCancel() {
 	held := ndFrames(journal)[2]
 	scSuccess(t, scCancel(t, d, c), c)
 	scAbsent(t, state, c)
-	writeFixtureCommand(t, outDir, 1, ndResult(held, "unknown"))
-	writeFixtureCommand(t, outDir, 2, map[string]any{"version": 2, "type": "notification_evidence", "request_id": held["request_id"], "delivery_id": held["delivery_id"], "receipt": "late-queue"})
+	ndWriteCommand(t, outDir, 1, ndResult(held, "unknown"))
+	ndWriteCommand(t, outDir, 2, map[string]any{"version": 2, "type": "notification_evidence", "request_id": held["request_id"], "delivery_id": held["delivery_id"], "receipt": "late-queue"})
 	if !waitMVP(t, 3*time.Second, func() bool { return ndShow(t, d, held["delivery_id"].(string))["acceptance"] == "queue_accepted" }) {
 		t.Fatal("late acceptance not retained")
 	}

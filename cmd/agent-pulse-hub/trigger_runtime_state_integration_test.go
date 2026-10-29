@@ -151,8 +151,12 @@ var _ = Describe("Trigger runtime state command acceptance", Serial, func() {
 		stateDirectory := filepath.Join(root, "valid-state")
 		address := freeMVPAddress(t)
 		source := filepath.Join(root, "source.jsonl")
+		sourceRelease := filepath.Join(root, "source-release")
+		if err := os.WriteFile(sourceRelease, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		destination := filepath.Join(root, "action.jsonl")
-		watchArgs := map[string]any{"source_file": source}
+		watchArgs := map[string]any{"source_file": source, "source_release_file": sourceRelease}
 		destinationArgs := map[string]any{"output_file": destination}
 		journal := filepath.Join(inputDirectory, "journal.jsonl")
 		initial := mvpEnv.startDaemonWithState(t, root, config, address, stateDirectory)
@@ -241,11 +245,19 @@ var _ = Describe("Trigger runtime state command acceptance", Serial, func() {
 			if err := os.RemoveAll(filepath.Join(variantState, runtimeOwnerDirectory)); err != nil {
 				t.Fatalf("explicit offline reset of %s: %v", variant.name, err)
 			}
+			// A v1 watch may consume early input before admission opens. Hold
+			// source reading until readiness without assuming v2 activation.
+			if err := os.Remove(sourceRelease); err != nil {
+				t.Fatalf("hold reset source while stopped: %v", err)
+			}
 			reset := mvpEnv.startDaemonWithState(t, root, config, freeMVPAddress(t), variantState)
 			DeferCleanup(reset.cleanup)
 			ready := mvpRowsOfMessage(reset.logPath, "daemon_ready")
 			if len(ready) != 1 || ready[0]["restored_registrations"] != float64(1) {
 				t.Fatalf("explicit reset readiness = %v; log=%s", ready, readMVPFile(reset.logPath))
+			}
+			if err := os.WriteFile(sourceRelease, nil, 0o600); err != nil {
+				t.Fatalf("release original source after readiness: %v", err)
 			}
 			if !waitMVP(t, 3*time.Second, func() bool { return len(modelRecords(t, destination)) == outputBeforeVariant+1 }) {
 				t.Fatalf("reset did not permit initial source behavior: %s", readMVPFile(reset.logPath))
