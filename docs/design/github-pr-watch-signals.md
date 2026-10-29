@@ -54,7 +54,7 @@ All local IDs below refer to
 
 | Requirements | Acceptance | Contract and verification |
 | --- | --- | --- |
-| FR-003, FR-004, FR-013 | AC-013, AC-014 | Required acquisition, silent baseline, and independent wake rules; S-U01–S-U04, GPWS-I01 |
+| FR-003, FR-004, FR-013 | AC-002, AC-013, AC-014 | Required acquisition, lifecycle continuity, silent baseline, and independent wake rules; S-U01–S-U04, GPWS-I01/I03 |
 | FR-005, FR-007, FR-013 | AC-013 | Result/episode identity, current state, and grouped context; S-U02–S-U05, GPWS-I01 |
 | FR-006, FR-007, FR-010, FR-013 | AC-014 | Inactive waits, retained episodes, restoration, and explicit positions; S-U05–S-U06, GPWS-I02 |
 | FR-008, FR-009, FR-013 | AC-014 | Complete pagination, acquisition errors, unknown conflict state; S-U01, S-U03, S-U06, GPWS-I01/I02 |
@@ -64,7 +64,7 @@ All local IDs below refer to
 The earlier design and suites retain other category coverage. This document
 does not replace their acceptance IDs. It applies the FR-012 contracts to
 signal continuation and persistent-position coverage; it does not claim that
-the two cases below complete AC-011/AC-012.
+the signal acceptance cases below complete AC-011/AC-012.
 
 ## Required acquisition
 
@@ -185,11 +185,17 @@ coverage, with no snapshot or confirmation advancement. Use the capacity
 specification's combined byte accounting and 300-second round deadline;
 these limits cannot justify silent partial observation or a lifetime item cap.
 
-Read PR identity/head/base again after enumerating categories. If identity,
-head, base repository/ref/revision, or base availability changed, reject the
-candidate round as `observation_changed_during_acquisition` and retry on the
-normal schedule. Use the final PR readiness and mergeability only when that
-pair is unchanged. A PR read or required CI/status acquisition failure fails
+Read PR identity/head/base and lifecycle again after enumerating categories.
+The acquisition fence compares the first and final selected repository ID,
+PR ID, head SHA, lifecycle (`state`, `mergedAt`), base repository ID, base ref
+name, PR-associated `baseRefOid`, and base availability. When the base ref
+exists, also compare its ID and target OID. Compare each field with its own
+earlier value, not `baseRefOid` with the target OID. Any change rejects the
+candidate round as `observation_changed_during_acquisition`; retry on the
+normal schedule. Apply the same fence to the PR metadata used for discussion
+acquisition so lifecycle and signal data cannot come from different reads.
+Use final PR readiness and mergeability only after this fence succeeds.
+A PR read or required CI/status acquisition failure fails
 the whole round, even when another category has a qualifying change.
 
 GraphQL errors (including HTTP 200 with partial data), unexpected null
@@ -281,15 +287,39 @@ with their head and `current_head: false`.
 ### Conflict state and compared revisions
 
 The conflict pair is `(PR ID, H, base repository ID, base ref name, base SHA)`.
-The base SHA is the current `baseRef.target.oid`; require agreement with
-`baseRefOid` when the ref exists. Treat mismatch as an inconsistent round.
-Read this pair every round even when head and discussion are unchanged.
+The base SHA is the current `baseRef.target.oid`. `baseRefOid` identifies the
+base revision associated with the PR and remains available after ref deletion;
+it is not a guaranteed alias of the current ref target. Validate both OIDs,
+but do not require equality in OPEN, CLOSED, or MERGED state. A stable difference
+does not fail watch acceptance or observation. Read both every round even when
+head and discussion are unchanged; use the acquisition fence above to detect
+changes during acquisition.
+
+This distinction follows the separate field definitions in the
+[github.com PR schema](https://docs.github.com/en/graphql/reference/pulls#pullrequest),
+[GHES PR schema](https://docs.github.com/en/enterprise-server@3.19/graphql/reference/pulls#pullrequest),
+and [Ref schema](https://docs.github.com/en/graphql/reference/git#ref).
+The schemas do not specify when a PR-associated OID stops tracking a branch,
+or promise a common freeze rule for every closed or merged PR. Do not label it
+as a merge base, merge commit, or exact closing-time revision. A null `baseRef`
+means no current pair; its retained `baseRefOid` is provenance, not a substitute
+current target. A non-null ref with a missing ID, null target, or malformed OID
+still fails required acquisition rather than fabricating a pair.
+
+Continue complete acquisition for CLOSED and MERGED PRs. Closing, reopening,
+and merging retain their governing lifecycle changes and silent-baseline rules;
+neither a stable OID difference nor UNKNOWN blocks independent CI, readiness,
+or discussion changes. Lifecycle does not itself establish conflict or resolution.
+The table below applies to the returned mergeability report in every lifecycle;
+it does not claim that a closed PR can currently be merged or that a merged PR
+will be merged again. Present raw lifecycle and mergeability together. UNKNOWN
+on a closed/merged PR remains unknown, without a promised future calculation.
 
 | API state | Current interpretation | Episode effect |
 | --- | --- | --- |
 | `CONFLICTING`, existing stable base pair | Confirmed conflict reported by GitHub | Create an episode on the first confirmation in the current pair period, or after an observed `MERGEABLE` resolution in that period |
 | `MERGEABLE`, existing stable base pair | No conflict reported by GitHub | Record resolution and permit a later recurrence; no independent wake |
-| `UNKNOWN` | Calculation pending | Keep a valid snapshot with explicit unknown state; no conflict wake, no inferred resolution |
+| `UNKNOWN` | Provider reports unknown mergeability; calculation may be pending | Keep a valid snapshot with explicit unknown state; no conflict wake, no inferred resolution |
 | Missing base ref | Current base unavailable | Preserve available identity/provenance and prior confirmation separately; no new conflict claim |
 | Retrieval error or unsupported value | Acquisition failed | Reject the round; retain prior complete progress |
 
@@ -500,7 +530,7 @@ that old positions cover previously unobserved categories.
 
 The existing GPW-I01–I05 expectations remain required for discussion, capacity
 and common-state behavior. Run that scope with the same binary explicitly using
-`--state-profile=discussion-v2`; GPWS-I01/I02 use `signals-v3`. The former's
+`--state-profile=discussion-v2`; GPWS-I01/I02/I03 use `signals-v3`. The former's
 legacy-migration branch verifies v1-to-v2 preservation; GPWS-I02 separately
 verifies v3 rejection of state without signal history. Fixtures must request
 the intended profile, not weaken either expectation. A v3 generation is also
@@ -508,10 +538,23 @@ incompatible with `discussion-v2`; switching profiles preserves the stopped
 state and fails visibly rather than erasing the other profile's progress.
 No migration or live-service decision is delegated to implementation.
 
+The base-revision correction keeps schema version 3 / signal version 1 and
+existing positions. Previously accepted existing-base observations required
+equal OIDs, so their saved pair already identifies the current target observed
+then. Restore those pairs, periods, confirmation flags and journal entries
+unchanged. A later complete observation uses the current target; a changed
+target starts a new pair period under the existing rules, without relabelling
+historical entries or resetting a baseline. `baseRefOid` and ref ID used only
+for the within-round fence need no persistent fields. Missing-base provenance
+retains its existing representation and never becomes a comparable pair.
+The corrected contract requires an implementation revision before delivery
+can use it; this specification does not change runtime behavior by itself.
+
 ## Decisions and alternatives
 
 | Decision | Alternatives and tradeoffs |
 | --- | --- |
+| Separate PR-associated base OID from current target; fence each across reads | Cross-field equality rejects legitimate stable observations. Using only `baseRefOid` can label a historical revision as current. Ignoring all base changes loses acquisition consistency. Separate comparisons preserve current-base episodes and lifecycle coverage without another API or state schema. |
 | GraphQL ALL runs plus separate LATEST membership; REST status records | GraphQL rollup alone reduces calls but does not document complete status-attempt history. REST-only acquisition still needs suite enumeration to avoid the direct-ref limit and cannot replace existing review-thread relationships. Mixed reads add pagination and consistency costs while preserving individual identities. |
 | Failure result versions include execution provenance | New-ID-only detection misses supported same-ID updates; timestamp-only recency is unreliable. This records a visible new failed result without claiming a rerun occurred. Indistinguishable overwritten attempts remain outside polling guarantees. |
 | Unknown conflict is valid current state | Rejecting all UNKNOWN rounds would unnecessarily block independent CI/readiness changes. Treating unknown as conflict or resolution would invent evidence. Keep current uncertainty and confirmed episode identity separately. |
@@ -544,7 +587,7 @@ durable prefix/suffix behavior remain required in GPWS-I02.
 | --- | --- |
 | S-U01 | Every GraphQL suite/run cursor and REST status page, empty inventories, duplicate/reordered records, malformed/foreign Link, ALL/LATEST mismatch, head/base race, HTTP-200 errors, nulls, 401/403/404/410/429/5xx, deadline/byte limits and selected-host token markers. Failed acquisition never mutates complete progress/coverage, never means successful CI, and emits redacted distinct errors. |
 | S-U02 | Every result/status enum and unsupported value; same-name distinct IDs, same-ID unchanged result, changed failed execution provenance, link/name-only edits, new failed status records, current selections versus superseded failures, older-head inputs, observed recovery/recurrence and baseline failures. Assert exact eligibility and source/head labels. |
-| S-U03 | Existing/unavailable base, all mergeable enums, unknown baseline, unknown-only repetition, CONFLICTING/UNKNOWN/CONFLICTING, MERGEABLE recurrence, base-only SHA change, retarget, pair mismatch and confirmed A-to-B-to-A. Assert period-local suppression, a fresh returning-A episode, and no invented conflict/resolution. |
+| S-U03 | Existing/unavailable base, all mergeable enums, unknown baseline, unknown-only repetition, CONFLICTING/UNKNOWN/CONFLICTING, MERGEABLE recurrence, base-only SHA change, retarget, pair mismatch and confirmed A-to-B-to-A. Cross OPEN/CLOSED/MERGED with equal and stably unequal base OIDs; current pair uses the target. Change each fence field independently between metadata/first/final reads, including lifecycle, associated OID, ref ID, deletion and recreation; reject without advancement. Null/malformed required fields remain failures. Reopening or closing alone does not resolve a conflict; a missing base retains prior confirmation. Assert period-local suppression, a fresh returning-A episode, and no invented conflict/resolution. |
 | S-U04 | Draft and Ready baselines, both transition directions, repeated status, failed intermediate observation, and repeated true/false cycles with unchanged actor/discussion/head. Assert only observed Draft-to-Ready episodes qualify. |
 | S-U05 | Each category alone and combined; external marker strings; changed/historical/current distinctions; complete required identities and nullable links; consumed generation followed by rewait without activity; explicit position versus action acceptance. Assert no category depends on discussion or agent assessment and no position acknowledges omitted changes. |
 | S-U06 | V3 header/items/changes validation, stream/object budgets, duplicate IDs, inconsistent membership/counts, false/true baseline shape, signal version, profile selection, old/foreign positions, contiguous mixed-category sequences and retained-prefix boundaries. Restore before/after an accepted prefix and after state-only recovery; assert identical remaining suffix, comparison flags and next episode identity. Fail saving and acquisition independently. V1/v2 cannot restore in signals-v3; discussion-v2 retains its approved migration and rejects v3. No silent reset, lost inactive-wait episode or restart-only duplicate. |
@@ -554,13 +597,15 @@ durable prefix/suffix behavior remain required in GPWS-I02.
 The governed suite is `cmd/github-pr-watch-signals-verification/`; its suite
 and case files are directly there with `//go:build integration`. Its inventory
 is `cmd/github-pr-watch-signals-verification/testdata/cases.json` and contains
-exactly GPWS-I01 and GPWS-I02 for this extension. Design supplies static
+exactly GPWS-I01, GPWS-I02 and GPWS-I03 for this extension. The base-revision
+case is in `base_revision_integration_test.go`. Design supplies static
 Pending cases without nonexistent production-symbol references. Product
 wiring and full assertions follow in implementation; Pending registration
 does not verify product behavior.
 
 | ID and mapping | Concrete inputs and actions | Observable expected results and failure boundaries |
 | --- | --- | --- |
+| GPWS-I03; FR-003–FR-010, FR-013; AC-002/AC-013/AC-014 | Use the actual plugin/public Session and existing verified TLS fixture. First register a MERGED PR with H1, associated B1, existing target B2, UNKNOWN and unchanged discussion/CI; activate, repeat and checkpoint the silent baseline. Separately baseline OPEN H1/B1, then return MERGED with associated B1 and target B2. Make the first/final target differ during one candidate round; recover to stable B2. Accept the lifecycle event, rewait, change only a current-head CI result to failure, and repeat. Checkpoint, stop, restore through public Session, activate and repeat unchanged. | Both registrations succeed. Fresh merged baseline is silent. The racing round emits a diagnostic and leaves complete comparison/journal/positions unchanged. Recovery reports the merge lifecycle with current target B2 and raw UNKNOWN, not a conflict or inferred resolution. CI failure independently notifies despite stable unequal OIDs and merged lifecycle. Context is bounded and positions advance only for represented changes. Accepted events do not repeat after restore; prior pairs/periods and retained positions are preserved. |
 | GPWS-I01; FR-003–FR-005, FR-007–FR-009, FR-013; AC-013/AC-014 | Launch actual plugin through public Session using test-owned verified TLS for GraphQL and REST on selected hostnames. Use acme/widget PR 17, H1/B1, Draft, one successful check/status and unchanged discussion. Fail an initial CI page, then complete and repeat the silent baseline. In independent branches with active generations, fail the H1 check and separately status, move only base to B2 with UNKNOWN then CONFLICTING, and change Draft to Ready. Repeat unchanged; supply an older-head run; independently fail a required status page and PR/conflict retrieval, then recover with the pending change. | No preactivation or baseline event, including after failed initial coverage. Each category alone emits a bounded changed record, current state, PR identity and position; unchanged, unknown-only, older-head-only and non-failure-only rounds do not emit. Failed pages/read reject complete advancement; recovery preserves and reports the outstanding eligible change. Requests use only selected origins/token; no secrets occur in context/logs. Use checkpoint inspection and Session notices to verify progress, not timing guesses. |
 | GPWS-I02; FR-004–FR-010, FR-013; AC-013/AC-014 | Run the actual hub/client/plugin/model-output with signals-v3, 128 CI records carrying 256-byte metadata, and existing failed CI/conflict/Ready for a silent baseline. Recover silently, add conversation comment C1 and accept P1. While consumed, perform three failure/new-base-conflict/Draft-to-Ready cycles, each followed by recovery, retaining nine small signal entries. Freeze GitHub. Rewait P1; accept an eight-entry prefix, checkpoint >32 KiB, stop and restart before the suffix. Then rewait the fully covered P2 unchanged and introduce fresh episodes. Independently restore v1 and discussion-only v2 state. | First prefix ends at P1+8 with has_more=true, remaining_changes=1 and tail P1+9. Every context is <=8,192 bytes, current omitted lists have counts/links, and comparison state records the recovery. Restart delivers only the ninth entry, ending at P2=P1+9; no new source activity, lost suffix or repeated confirmed prefix. Stream objects are <=32,768 bytes and frames <=65,536. Rewaiting P2 unchanged is silent; fresh episodes remain eligible. Destination B is untouched, nonce/positions persist, old schemas block before activation without changing saved data or unrelated registrations, and acceptance is not agent assessment. |
 
@@ -569,6 +614,14 @@ public Session run; only GitHub is substituted. I02 adds real hub/client,
 model-output routing, core state files, and normal process restart. Test-only
 transport injection directs the canonical HTTPS authority to loopback while
 retaining hostname/CA verification, using the existing fixture mechanism.
+I03 reuses I01's Session/TLS mechanism and checkpoint/restore helpers. In
+implementation, extend only its case-local source state to separate associated
+OID from target OID and to select lifecycle/mergedAt; serve a scripted final-read
+target change using the existing query dispatch and round counters. Inspect
+checkpoints before and after the failed round, and use delivery notices/rewait
+and restored streamed objects for continuity. No hub restart duplication is
+needed here: I02 retains the real core persistence coverage. Broad closed/reopen,
+ref-deletion and field-race permutations stay in S-U03, reducing process cost.
 These cases test different assembled boundaries; broad enum/actor/attempt
 permutations stay in cheaper unit tests.
 
@@ -585,8 +638,8 @@ of that directory and replace only the opaque saved payload with a valid
 discussion-only fixture; retain the common ownership/manifest envelope.
 
 Build binaries once per suite. The scoped budget is 60 seconds setup,
-15 seconds I01, 25 seconds I02, and 10 seconds cleanup: 110 seconds total,
-within 120 seconds. Run serially with temporary directories, at most one
+15 seconds I01, 25 seconds I02, 10 seconds I03, and 10 seconds cleanup:
+120 seconds total within the existing 120-second budget. Run serially with temporary directories, at most one
 hub, input, model output and TLS service; kill and await children and close
 servers on failure. Use fixture round barriers and observable output/state
 deadlines, not production polling sleeps. Existing transport/Session fixture
@@ -606,7 +659,7 @@ The implementation's separate scoped completion command is:
 go run build/mage.go -d build -w . integration cmd/github-pr-watch-signals-verification/testdata/cases.json <new-report-directory>
 ```
 
-Both approved IDs must pass; Pending, skipped, missing, filtered or deleted
+All three approved IDs must pass; Pending, skipped, missing, filtered or deleted
 cases do not satisfy completion. Existing approved PR-watch/rewait scopes
 must also pass on the integrated implementation. Design checks compile and
 register tagged cases and run guardrails, without claiming acceptance.
@@ -620,6 +673,19 @@ register tagged cases and run guardrails, without claiming acceptance.
 
 Execute these checks in delivery after approved implementation merge. They
 are not design or implementation live-service execution requirements.
+
+GPWS-D01 also covers base-revision/lifecycle continuity (AC-002): on each
+supported host, record both base OIDs and lifecycle for accessible OPEN, CLOSED
+and MERGED PRs, including an existing base that has advanced since closing or
+merging. Register an already merged PR with stable unequal OIDs and verify a
+silent complete baseline; observe an open-to-merged transition on a separately
+authorized fixture and verify lifecycle notification with the actual current
+base and exact mergeability report. Verify an independently changed current-head
+CI result remains eligible on that retained watch. Preserve PR URLs, raw field
+responses, observation times, context and position evidence. Do not mutate or
+merge a fixture without authorization, infer all merged PRs have unequal OIDs,
+or count API reads alone as product acceptance. Unavailable stimuli or hosts
+remain explicit delivery gaps; the original D01/D02 checks remain required.
 
 ## Change and rollout impact
 
