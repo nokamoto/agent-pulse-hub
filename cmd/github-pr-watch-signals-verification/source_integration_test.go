@@ -13,17 +13,20 @@ import (
 )
 
 type signalFixtureState struct {
-	CI           int
-	NameBytes    int
-	Failed       bool
-	StatusFailed bool
-	Conflict     string
-	Base         int
-	Draft        bool
-	Comment      int
-	Attempt      int
-	Failure      string
-	OldHead      bool
+	CI             int
+	NameBytes      int
+	Failed         bool
+	StatusFailed   bool
+	Conflict       string
+	Base           int
+	Draft          bool
+	Comment        int
+	Attempt        int
+	Failure        string
+	OldHead        bool
+	AssociatedBase int
+	Lifecycle      string
+	FinalBase      int
 }
 
 func (f *gpwFixture) changeSignals(change func(*signalFixtureState)) {
@@ -98,7 +101,19 @@ func (f *gpwFixture) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": id, "context": "status", "state": state, "created_at": "2026-10-28T00:00:00Z", "updated_at": "2026-10-28T00:00:00Z", "target_url": nil, "description": nil}})
 		return
 	}
-	pr := map[string]any{"id": "PR17", "url": "https://github.com/acme/widget/pull/17", "headRefOid": signalHead(), "state": "OPEN", "mergedAt": nil, "baseRepository": map[string]any{"id": "repo"}, "baseRefName": "main", "baseRefOid": signalBase(s.Base), "baseRef": map[string]any{"id": "main-ref", "target": map[string]any{"oid": signalBase(s.Base)}}, "mergeable": s.Conflict, "isDraft": s.Draft}
+	associated := s.AssociatedBase
+	if associated == 0 {
+		associated = s.Base
+	}
+	lifecycle := s.Lifecycle
+	if lifecycle == "" {
+		lifecycle = "OPEN"
+	}
+	var mergedAt any
+	if lifecycle == "MERGED" {
+		mergedAt = "2026-10-29T12:50:38Z"
+	}
+	pr := map[string]any{"id": "PR17", "url": "https://github.com/acme/widget/pull/17", "headRefOid": signalHead(), "state": lifecycle, "mergedAt": mergedAt, "baseRepository": map[string]any{"id": "repo"}, "baseRefName": "main", "baseRefOid": signalBase(associated), "baseRef": map[string]any{"id": "main-ref", "target": map[string]any{"oid": signalBase(s.Base)}}, "mergeable": s.Conflict, "isDraft": s.Draft}
 	data := map[string]any{}
 	switch {
 	case strings.Contains(query, "PullRequestSignals"):
@@ -108,6 +123,9 @@ func (f *gpwFixture) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if f.signalReads == 2 {
+			if s.FinalBase != 0 {
+				pr["baseRef"] = map[string]any{"id": "main-ref", "target": map[string]any{"oid": signalBase(s.FinalBase)}}
+			}
 			f.rounds++
 		}
 		data["repository"] = map[string]any{"id": "repo", "pullRequest": pr}
@@ -158,7 +176,7 @@ func (f *gpwFixture) serve(w http.ResponseWriter, r *http.Request) {
 		pr["reviewThreads"] = gpwConnection([]any{}, false, "")
 		data["repository"] = map[string]any{"pullRequest": pr}
 	default:
-		data["repository"] = map[string]any{"pullRequest": pr}
+		data["repository"] = map[string]any{"id": "repo", "pullRequest": pr}
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 }

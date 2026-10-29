@@ -48,13 +48,16 @@ func parseSignalPR(data map[string]json.RawMessage) (domain.Aggregate, domain.Si
 		IsDraft   *bool
 	}
 	encoded, _ := json.Marshal(pr)
-	if json.Unmarshal(encoded, &value) != nil || !requiredFields(pr, "baseRepository", "baseRefName", "baseRefOid", "baseRef", "mergeable", "isDraft") || value.BaseRepository == nil || value.BaseRepository.ID == "" || value.BaseRefName == "" || !validCommitOID(aggregate.Head) || !validCommitOID(value.BaseRefOid) || value.IsDraft == nil {
+	if json.Unmarshal(encoded, &value) != nil || !requiredFields(pr, "id", "url", "state", "headRefOid", "mergedAt", "baseRepository", "baseRefName", "baseRefOid", "baseRef", "mergeable", "isDraft") || value.BaseRepository == nil || value.BaseRepository.ID == "" || value.BaseRefName == "" || !validCommitOID(aggregate.Head) || !validCommitOID(value.BaseRefOid) || value.IsDraft == nil {
 		return aggregate, domain.SignalObservation{}, failure("incomplete_retrieval")
 	}
-	if value.BaseRef != nil && (value.BaseRef.ID == "" || value.BaseRef.Target == nil || value.BaseRef.Target.OID != value.BaseRefOid) {
-		return aggregate, domain.SignalObservation{}, failure("observation_changed_during_acquisition")
+	if value.BaseRef != nil && (value.BaseRef.ID == "" || value.BaseRef.Target == nil || !validCommitOID(value.BaseRef.Target.OID)) {
+		return aggregate, domain.SignalObservation{}, failure("incomplete_retrieval")
 	}
 	observation := domain.SignalObservation{RepositoryID: repository.ID, Pair: domain.ConflictPair{PRID: aggregate.ID, Head: aggregate.Head, BaseRepositoryID: value.BaseRepository.ID, BaseRef: value.BaseRefName, BaseSHA: value.BaseRefOid}, BaseExists: value.BaseRef != nil, Mergeable: value.Mergeable, Draft: *value.IsDraft, CI: []domain.CIResult{}}
+	if value.BaseRef != nil {
+		observation.Pair.BaseSHA = value.BaseRef.Target.OID
+	}
 	if err := observation.Validate(); err != nil {
 		return aggregate, observation, err
 	}

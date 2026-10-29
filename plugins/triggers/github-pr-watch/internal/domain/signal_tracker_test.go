@@ -3,9 +3,60 @@ package domain
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestSignalConflictSurvivesLifecycleChanges(t *testing.T) {
+	tr := tracker(t)
+	tr.SignalProfile = true
+	o := testObservation()
+	s := signalFixture()
+	s.Pair.PRID, s.Pair.Head = o.PR.ID, o.PR.Head
+	s.CI[0].Head = o.PR.Head
+	s.Mergeable = "CONFLICTING"
+	o.Signals = &s
+	if err := tr.Reconcile(o); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := signalStateFromItems(tr.Saved.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, lifecycle := range []string{"CLOSED", "OPEN", "MERGED", "OPEN"} {
+		o.PR.State = lifecycle
+		o.PR.MergedAt = nil
+		if lifecycle == "MERGED" {
+			o.PR.MergedAt = signalText("2026-10-29T12:50:38Z")
+		}
+		// Neither an UNKNOWN report nor a missing base resolves prior confirmation.
+		s.Mergeable = "UNKNOWN"
+		s.BaseExists = lifecycle != "MERGED"
+		if err := tr.Reconcile(o); err != nil {
+			t.Fatal(err)
+		}
+		state, err := signalStateFromItems(tr.Saved.Metadata)
+		if err != nil || !state.Conflict.Confirmed || state.Conflict.Period != initial.Conflict.Period || !reflect.DeepEqual(state.Conflict.Pair, initial.Conflict.Pair) {
+			t.Fatal("lifecycle reset conflict comparison", lifecycle, state, err)
+		}
+		for _, change := range tr.Saved.Journal {
+			if change.Signal != nil {
+				t.Fatal("lifecycle invented signal change", lifecycle, change)
+			}
+		}
+	}
+	// Reappearance with the same confirmed pair must stay suppressed.
+	s.BaseExists, s.Mergeable = true, "CONFLICTING"
+	if err := tr.Reconcile(o); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range tr.Saved.Journal {
+		if change.Signal != nil {
+			t.Fatal("prior conflict notified again", change)
+		}
+	}
+}
 
 func TestSignalTrackerPrefixAndRestoredSuffix(t *testing.T) {
 	tr := tracker(t)

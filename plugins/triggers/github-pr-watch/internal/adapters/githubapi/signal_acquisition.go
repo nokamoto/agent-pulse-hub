@@ -15,10 +15,40 @@ import (
 	"github.com/nokamoto/agent-pulse-hub/plugins/triggers/github-pr-watch/internal/domain"
 )
 
-func (c *Client) beginSignals(ctx context.Context, config domain.WatchConfig, token string, used *uint64) (domain.Aggregate, *domain.SignalObservation, error) {
-	aggregate, observed, err := c.readSignalPR(ctx, config, token, used)
+// signalFence is acquisition-only provenance, never part of retained state.
+type signalFence struct {
+	Aggregate     domain.Aggregate
+	RepositoryID  string
+	Pair          domain.ConflictPair
+	BaseExists    bool
+	AssociatedOID string
+	RefID         string
+}
+
+func parseSignalFence(data map[string]json.RawMessage) (domain.Aggregate, domain.SignalObservation, signalFence, error) {
+	aggregate, observed, err := parseSignalPR(data)
+	if err != nil {
+		return aggregate, observed, signalFence{}, err
+	}
+	pr, _ := pull(data)
+	var associated string
+	var ref *struct{ ID string }
+	_ = json.Unmarshal(pr["baseRefOid"], &associated)
+	_ = json.Unmarshal(pr["baseRef"], &ref)
+	fence := signalFence{Aggregate: aggregate, RepositoryID: observed.RepositoryID, Pair: observed.Pair, BaseExists: observed.BaseExists, AssociatedOID: associated}
+	if ref != nil {
+		fence.RefID = ref.ID
+	}
+	return aggregate, observed, fence, nil
+}
+
+func (c *Client) beginSignals(ctx context.Context, config domain.WatchConfig, token string, used *uint64, metadata signalFence) (domain.Aggregate, *domain.SignalObservation, error) {
+	aggregate, observed, first, err := c.readSignalPR(ctx, config, token, used)
 	if err != nil {
 		return aggregate, nil, err
+	}
+	if !reflect.DeepEqual(metadata, first) {
+		return aggregate, nil, failure("observation_changed_during_acquisition")
 	}
 	checks, err := c.acquireChecks(ctx, config, token, observed, used)
 	if err != nil {
@@ -35,12 +65,12 @@ func (c *Client) beginSignals(ctx context.Context, config domain.WatchConfig, to
 	return aggregate, &observed, nil
 }
 
-func (c *Client) finishSignals(ctx context.Context, config domain.WatchConfig, token string, initial *domain.SignalObservation, used *uint64) (domain.Aggregate, error) {
-	aggregate, final, err := c.readSignalPR(ctx, config, token, used)
+func (c *Client) finishSignals(ctx context.Context, config domain.WatchConfig, token string, initial *domain.SignalObservation, used *uint64, metadata signalFence) (domain.Aggregate, error) {
+	aggregate, final, fence, err := c.readSignalPR(ctx, config, token, used)
 	if err != nil {
 		return aggregate, err
 	}
-	if final.RepositoryID != initial.RepositoryID || final.Pair != initial.Pair || final.BaseExists != initial.BaseExists {
+	if !reflect.DeepEqual(metadata, fence) {
 		return aggregate, failure("observation_changed_during_acquisition")
 	}
 	initial.Mergeable = final.Mergeable
@@ -48,13 +78,13 @@ func (c *Client) finishSignals(ctx context.Context, config domain.WatchConfig, t
 	return aggregate, nil
 }
 
-func (c *Client) readSignalPR(ctx context.Context, config domain.WatchConfig, token string, total *uint64) (domain.Aggregate, domain.SignalObservation, error) {
+func (c *Client) readSignalPR(ctx context.Context, config domain.WatchConfig, token string, total *uint64) (domain.Aggregate, domain.SignalObservation, signalFence, error) {
 	query := `query PullRequestSignals($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name,followRenames:false){id pullRequest(number:$number){` + signalPRFields + `}}}`
 	data, err := c.request(ctx, config, token, query, variables(config), total)
 	if err != nil {
-		return domain.Aggregate{}, domain.SignalObservation{}, err
+		return domain.Aggregate{}, domain.SignalObservation{}, signalFence{}, err
 	}
-	return parseSignalPR(data)
+	return parseSignalFence(data)
 }
 
 // acquireChecks pins the repository commit and every suite to the acquired head.

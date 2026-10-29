@@ -111,7 +111,11 @@ func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token s
 	result := domain.Observation{StartedAt: c.now(), Items: []domain.Item{}}
 	total := uint64(0)
 	candidateBytes := uint64(256)
-	query := `query PullRequestMetadata($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name,followRenames:false){pullRequest(number:$number){` + aggregateFields + `}}}`
+	fields, repositoryFields := aggregateFields, ""
+	if c.signals {
+		fields, repositoryFields = signalPRFields, "id "
+	}
+	query := `query PullRequestMetadata($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name,followRenames:false){` + repositoryFields + `pullRequest(number:$number){` + fields + `}}}`
 	data, err := c.request(roundCtx, config, token, query, variables(config), &total)
 	if err != nil {
 		return result, err
@@ -124,8 +128,13 @@ func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token s
 	if err != nil {
 		return result, err
 	}
+	var fence signalFence
 	if c.signals {
-		result.PR, result.Signals, err = c.beginSignals(roundCtx, config, token, &total)
+		_, _, fence, err = parseSignalFence(data)
+		if err != nil {
+			return result, err
+		}
+		result.PR, result.Signals, err = c.beginSignals(roundCtx, config, token, &total, fence)
 		if err != nil {
 			return result, err
 		}
@@ -198,7 +207,7 @@ func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token s
 		}
 	}
 	if c.signals {
-		result.PR, err = c.finishSignals(roundCtx, config, token, result.Signals, &total)
+		result.PR, err = c.finishSignals(roundCtx, config, token, result.Signals, &total, fence)
 		if err != nil {
 			return result, err
 		}
