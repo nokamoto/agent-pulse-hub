@@ -1,1 +1,1 @@
-GPWS-D01 controlled base: initial
+GPWS-D01 controlled base: conflicting base-only update
