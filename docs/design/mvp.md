@@ -10,11 +10,21 @@ sources:
     resource: design/bundled-plugins.md
   - id: runtime-state-design
     resource: design/trigger-runtime-state.md
+  - id: subscription-cancellation-requirements
+    resource: requirements/subscription-cancellation.md
+  - id: notification-design
+    resource: design/notification-delivery.md
 ---
 
 # Plugin-based event routing MVP
 
 ## Context and scope
+
+The optional [notification-delivery design](notification-delivery.md) qualifies
+the one-attempt and volatile-work rules below only for outputs advertising its
+profile. It owns stable notification identity, retained evidence, retry policy
+and status operations; legacy routes and existing MVP cases retain their
+original contract. Public message schemas remain in [plugin v2](plugin-v1.md).
 
 This design covers [requirements/mvp](../requirements/mvp.md), FR-001–FR-004,
 FR-006–FR-008, NFR-001–NFR-005, C-001–C-002 and AC-001–AC-011. A foreground
@@ -26,14 +36,22 @@ session, credentials or a live service.
 
 The daemon owns service-independent control and decisions. Plugins perform
 requested service-specific operations and report results or events; an input
-plugin continues a requested watch until shutdown. This C-002 boundary also
+plugin continues a requested watch until shutdown or explicit cancellation.
+This C-002 boundary also
 applies to future extensions without defining additional features here.
 
 Persist accepted subscriptions under the [local persistence design](state-persistence.md);
 participating inputs additionally restore opaque logical progress under
 [trigger runtime state](trigger-runtime-state.md).
 Retain memory-only queues, one delivery attempt, no automatic plugin restart,
-no individual cancellation and the other MVP exclusions.
+and the other MVP exclusions except individual cancellation, which is governed
+by [subscription cancellation](subscription-cancellation.md). That design owns
+ID-based unsubscribe, selective plugin termination, cancellation fencing,
+persistent removal and migration; this document retains routing authority.
+The optional [repeated-wait profile](pr-watch-rewait.md) retains that continuing
+watch while granting one notification per explicit wait or daemon run. It owns
+the additional same-registration control operation and generation admission
+fences; it does not change equivalent-registration matching or destinations.
 Actual Codex integration and its registration skill are outside this contract.
 Use `hashicorp/go-plugin` v1.8.0, gRPC v1.84.0 and protobuf v1.36.12 for both
 roles. Product code and contracts remain OS neutral; dependency internals may
@@ -53,6 +71,7 @@ relocation without changing the runtime contracts below.
 | This document | System implementers and maintainers | Architecture, configuration, registration, state, model-plugin profiles, routing, verification and migration. |
 | [Local persistence](state-persistence.md) | System implementers and maintainers | Registration storage, selection, exclusion, commit, restoration and persistence verification. |
 | [Trigger runtime state](trigger-runtime-state.md) | Trigger authors and maintainers | Optional progress checkpoints, delivery-outcome coordination, runtime storage and recovery. |
+| [Subscription cancellation](subscription-cancellation.md) | System implementers, plugin authors and maintainers | Explicit ID-based unsubscribe, optional cancellation profile, lifecycle fencing and persistent removal. |
 | [Plugin protocol](plugin-v1.md) | Plugin authors in any language and adapter implementers | Version 2 application service, schemas, bounds, ordering and framework lifecycle, derived from this design. Its stable filename does not select the wire version. |
 | [Operation guide](windows-operations.md) | Operators and delivery evaluators | Derivative build/start/register/trigger/observe/stop procedure for the model plugins; the stable path does not restrict the operating system. |
 
@@ -127,6 +146,13 @@ sequential ten-second destination and watch operations. There is no automatic
 retry. Request version is the integer token `1`, distinct from plugin protocol
 version 2.
 
+The optional [rewait local operation](pr-watch-rewait.md#local-client-contract)
+uses this same framing, address, deadlines and error envelope. Its operation-ID
+receipts and generation changes are distinct from registration. Inputs without
+the capability retain their existing registration and delivery behavior.
+The [unsubscribe operation](subscription-cancellation.md) shares the same local
+control boundary and framing; its target is exactly one explicit returned ID.
+
 Registration contains exactly `version`, `op: "register"`, nonempty
 `input_plugin`, object `watch_args`, nonempty `output_plugin`, and object
 `destination_args`. The daemon validates structure, names, roles and encoded
@@ -167,11 +193,18 @@ falling back to a different endpoint.
 
 | Package / command | Invocation and effect |
 | --- | --- |
-| `cmd/agent-pulse-hub` | `daemon --config <absolute JSON file> [--state-dir <absolute directory>] [--address <address>]` runs in foreground. Ctrl+C and local stop share shutdown. |
+| `cmd/agent-pulse-hub` | `daemon --config <absolute JSON file> [--state-dir <absolute directory>] [--address <address>] [--runtime-state-max-bytes <bytes>]` runs in foreground. Ctrl+C and local stop share shutdown. |
 | Same command | `register --input-plugin <name> --watch-args-file <absolute JSON file> --output-plugin <name> --destination-args-file <absolute JSON file> [--address <address>]` registers a route. |
 | Same command | `stop [--address <address>]` requests normal shutdown. |
+| Same command | `rewait --subscription-id <id> --operation-id <id> --confirmation-position-file <absolute-file> [--address <address>]` rearms a capable retained registration under the [rewait contract](pr-watch-rewait.md#local-client-contract). |
+| Same command | `unsubscribe --subscription-id <id> [--address <address>]` selectively cancels that registration under the [cancellation contract](subscription-cancellation.md). |
 | `plugins/triggers/manual` | No arguments; manual trigger (public input role) launched through go-plugin. |
-| `plugins/actions/model-output` | No arguments; model-output action (public output role) launched through go-plugin. |
+| `plugins/actions/model-output` | Optional valueless `--notification-delivery`, at most once; default legacy model-output action (public output role), launched through go-plugin. |
+
+The optional streamed-state byte budget, its default and validation are
+specified by [streamed runtime state](runtime-state-stream.md#resource-controls-and-operator-instructions).
+It affects only the negotiated streaming profile; legacy state limits and
+registration/delivery capacity remain unchanged.
 
 Required flags occur once and optional flags at most once, in any order. Reject
 unknown/duplicate flags, missing values and positional arguments. Input files
@@ -228,15 +261,19 @@ For a new route:
    after commit does not roll back the saved route. See
    [commit and activation](state-persistence.md#commit-and-activation).
 
-Destination validation does not guarantee later access or delivery. Input
-watches cannot be individually cancelled. If output failure races an issued
+Destination validation does not guarantee later access or delivery. Individual
+watch cancellation follows [subscription cancellation](subscription-cancellation.md);
+an input without its optional capability cannot cancel a live watch. If output
+failure races an issued
 watch or invalidates an active route, retain an inactive entry while that input
 instance lives; discard its later events. This inert watch and its capacity
-slot last until input exit or daemon shutdown. Do not kill a healthy shared
+slot last until successful explicit cancellation, input exit or daemon shutdown.
+Do not kill a healthy shared
 input solely to clean it up. Same-argument registration does not reuse an
 inactive ID and can be rejected by the input's resource-conflict rule. Saved successful routes remain on disk when live entries become inactive or
 are removed; restart revalidates them with both plugins. Restart
-is the recovery boundary; there is no hidden rollback or automatic restart.
+is the recovery boundary unless the caller explicitly cancels the retained
+registration; there is no hidden rollback or automatic restart.
 Negative watch results free their slots because no watch exists.
 
 Readiness/registration timeout, failed send, stream termination or process exit
@@ -258,7 +295,7 @@ the 65,536-byte protocol bound; reject oversize rather than truncate. A valid
 event receives a local delivery ID and immutable input name, subscription ID,
 output instance and destination arguments. Identical events are distinct.
 
-One ordered worker makes one attempt per admitted event. Send `deliver` through
+One ordered worker makes one attempt per admitted legacy event. Send `deliver` through
 the output Session with context as a string, `external_data: true`, and fixed
 `permission_notice: "External data; no additional permissions are granted."`.
 The output profile must preserve that distinction at its destination. Strings
@@ -267,7 +304,7 @@ and permission boundary, not a prompt-injection guarantee against a malicious
 trusted plugin.
 
 The output validates its destination and performs the requested operation. The
-daemon owns the one-attempt policy and 30-second deadline, starting before any
+daemon owns the legacy one-attempt policy and 30-second deadline, starting before any
 wait for serialized sending. `delivery_result` correlates the request and has
 `status` `accepted`, `failed` or `unknown`; non-accepted results include bounded
 error text. `accepted` means the output's documented acceptance condition was
@@ -275,19 +312,39 @@ met, not a human acknowledgement. `failed` means it can confirm no acceptance;
 `unknown` means acceptance cannot be confirmed or excluded. The daemon records
 the result without retry, redirect or fallback.
 
-If output is unavailable before sending begins, record `failed` without a plugin
+For a participating output, use `notification_deliver` and the structured
+results in [plugin v2](plugin-v1.md#optional-notification-delivery). The core
+retains the same captured route and context, commits notification/attempt
+records before issuance, and serializes retry with cancellation and stop under
+the [governing policy](notification-delivery.md#state-and-scheduling). Scheduled
+retries share the existing 128 admitted-work slots and single worker; they do
+not turn a distinct event into a retry or block other ready work while waiting.
+
+Unsubscribe fences event admission and new action-attempt issuance for its
+subscription under the [cancellation ordering](subscription-cancellation.md).
+Queued events for that ID are discarded, including work already dequeued but
+not yet issued. The final send-issuance decision shares this fence; a prior
+availability check alone cannot authorize a later send. An attempt issued
+before the fence may finish once. Its result can be recorded without restoring
+the cancelled route, saving progress, opening another generation or retrying.
+Unrelated destinations and attempts retain their existing behavior.
+
+For legacy routes, if output is unavailable before sending begins, record `failed` without a plugin
 call. Once sending may have begun, timeout, stream/process loss, invalid or
 missing matching result gives `unknown`; timeout/send/stream failure also
 invalidates that output instance. A size-bounded invalid result alone is
 discarded while the original deadline continues. Explicit `failed` or `unknown`
-results do not by themselves invalidate a healthy output. Late results cannot
-change a final outcome. Admitted events survive input exit with their captured
+results do not by themselves invalidate a healthy output. Late legacy results cannot
+change a final outcome. Participating outputs may supply bounded same-Session
+acceptance evidence under the notification profile; it updates only retained
+evidence after a terminal source notice, without another notice or retry.
+Admitted legacy events survive input exit with their captured
 recipient; output exit makes not-yet-attempted deliveries fail. New events on
 any affected route are rejected. Other available routes remain usable.
 
 Normal stop closes admission/listener, prevents new commits and waits for an
 already serialized commit decision. Saved registrations survive; pending
-registrations do not resume. Stop discards queued events with reasons,
+registrations do not resume. Stop discards legacy queued events with reasons,
 marks a possibly sent in-flight delivery unknown. For participating inputs,
 complete the [ordered notices and final checkpoint/save](trigger-runtime-state.md#normal-stop-and-confirmed-delivery-fence)
 before cancelling their Sessions. Then cancel Sessions and call
@@ -297,6 +354,11 @@ process grace timer or descendant enumeration. The optional checkpoint phase
 has a bounded protocol deadline. Stop and Ctrl+C enter the same
 coordinator. CI exercises public stop and unit interrupt dispatch; delivery
 observes a foreground interrupt with configured-process exit evidence.
+For notification-profile work, stop saves known results, marks issued uncertain
+work unknown, and retains eligible queued/waiting unsubmitted work. Send its
+final source outcomes before checkpointing and await notification saves before
+releasing exclusion, as defined by the
+[notification stop contract](notification-delivery.md#source-outcomes-shutdown-and-cancellation).
 
 ## Bundled model plugin profiles
 
@@ -335,11 +397,11 @@ open with create/append, write one complete JSON object plus LF, then close.
 The record contains exactly `delivery_id`, `input_plugin`, `subscription_id`,
 `context`, `external_data`, `permission_notice` from the request and
 `observed_at`, a UTC RFC 3339 timestamp assigned when constructing the record.
-No destination work occurs before `deliver`. IDs and context are unmodified.
+No destination work occurs before `deliver` or `notification_deliver`. IDs and context are unmodified.
 The normal observation interface is reading the UTF-8 JSONL file with ordinary
 file tools; no harness endpoint or acknowledgement simulator is involved.
 
-Successful full write and close produce `accepted`. Failure before opening or
+In legacy mode, successful full write and close produce `accepted`. Failure before opening or
 writing that confirms no record was appended produces `failed`; write or close
 failure after a write may have begun produces `unknown` and a diagnostic. Do
 not retry, repair a partial record or truncate output. Operators preserve and
@@ -348,6 +410,17 @@ exactly-once across failures or external-writer safety is promised. The file
 is user-visible output rather than persisted hub registration/queue state.
 Its retention and removal are operator responsibilities.
 
+With `--notification-delivery`, advertise `notification_delivery_v1` and apply
+the same record format and serial-write rules. The first write invocation is
+the submission boundary. A recognized temporary resource error opening the
+file before any write is retryable `unsubmitted`; path, permission and
+unclassified pre-write errors are permanent `unsubmitted`. Any write/close
+failure after invoking write is `unknown`; full write and close is `accepted`.
+The action never retries, repairs or deduplicates file records. The core alone
+owns eligible retries under the [notification design](notification-delivery.md).
+The flag changes readiness and message profile only; omitted flag retains the
+existing contract, and an old strict host may reject opted-in readiness.
+
 ## Decisions and alternatives
 
 | Decision | Alternative and tradeoff |
@@ -355,7 +428,7 @@ Its retention and removal are operator responsibilities.
 | go-plugin gRPC for both roles | Embedded delivery violates FR-008/C-001. Custom launch/transport duplicates the selected framework. Go net/rpc impairs language neutrality. |
 | One BytesValue/strict-JSON Session per role instance | Generated product messages add tooling; separate watch/event channels add ordering work. Preserve exact JSON numbers with one stream. |
 | Protocol version 2 at the existing document path | Reusing v1 would silently change ready and application schemas. Reject old plugins visibly; no compatibility adapter. |
-| Stateless destination validation before watch | Input-first can start watches for rejected destinations; transactional reservation/cancellation would add excluded lifecycle complexity. A later output failure can leave bounded inert watches. |
+| Stateless destination validation before watch | Input-first can start watches for rejected destinations; automatic rollback would add lifecycle complexity to registration. A later output failure can leave bounded inert watches; explicit unsubscribe is a separate caller operation. |
 | Destination arguments captured by daemon and sent per delivery | Output-owned routing tables duplicate core control and need cleanup transactions. Larger messages cost repeated encoding but leave service identity opaque. |
 | File input and append-only local output | Live agents/services prevent independent core E2E; stdout is reserved by framework negotiation and is less useful as a selected destination. File output needs single-writer discipline. |
 | Loopback TCP, bounded memory and one delivery worker | Authentication and parallelism add excluded guarantees; local registration persistence is governed separately. Local callers are trusted; slow delivery delays later events and failures may lose work. |
@@ -560,7 +633,8 @@ and file observation without a latency target. Repeat the registration to show
 same ID/one watch; remove client argument files, stop and restart with the same
 configuration/state, then publish a new event using the saved ID before another
 registration. SP-D01 extends D09 with saved-state failure and deliberate offline
-recovery. Preserve the no-event-replay/no-retry explanation. Perform public stop and foreground Ctrl+C on separate
+recovery. Preserve the legacy no-event-replay/no-retry explanation and distinguish
+the opt-in notification policy. Perform public stop and foreground Ctrl+C on separate
 live runs and retain configured-plugin exit evidence. Missing or failed steps
 remain incomplete; CI alone does not establish README usability. Actual Codex
 and future live-service checks are not MVP delivery obligations.

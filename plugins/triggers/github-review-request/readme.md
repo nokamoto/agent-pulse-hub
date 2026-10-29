@@ -13,7 +13,8 @@ Obtain the source with the `git clone` and `cd` commands in the root
 [installation instructions](../../../README.md#installation); skip that section's
 local-demo builds. Continue below from the repository root with Go 1.26.0 or later.
 Build the hub and both plugins from the same revision. This trigger requires
-the hub's `runtime_state_v2` checkpoint and activation capability.
+the hub's `runtime_state_v2` checkpoint and activation capability, provided by
+the builds below.
 
 You need HTTPS access to GitHub and a user credential that can read the
 intended repositories. Use either an environment token or saved GitHub CLI
@@ -119,6 +120,9 @@ The [daemon example](examples/daemon.json) defines plugin names, roles, and empt
 selects the host and a polling interval of `60s`. The interval accepts any
 positive Go duration string, including fractional durations. The
 [destination example](examples/destination.json) selects the local output file.
+With the empty action `args` array, this example uses default delivery without
+automatic retry. Optional retained notification evidence and conservative
+retry are described in the root [notification-mode guide](../../../README.md#retain-notification-evidence-and-enable-safe-retry).
 
 Note the printed run directory. Wait for `plugin_ready` with `available: true`
 for both configured plugins, then `daemon_ready` with `restored_registrations: 0`.
@@ -138,6 +142,7 @@ suffix="$(go env GOEXE)"
 ```
 
 Expect exit success and JSON with `"ok":true` and a `subscription_id`.
+Retain the returned ID and the daemon address if you want to cancel this watch.
 The trigger reports its search coverage limitation at watch startup. Repeating
 the same registration returns the same active ID. Once registered, it begins
 searching automatically. With no matching requests, no output file is expected.
@@ -163,6 +168,26 @@ To send URLs to a Codex conversation instead, use the
 [Codex Queue action guide](../../actions/codex-queue/readme.md) to prepare that
 action and register its destination with this trigger's watch arguments.
 
+## Cancel this watch
+
+To stop only this subscription while leaving the daemon and other watches
+running, use the ID returned by its successful registration:
+
+```sh
+printf 'Subscription ID returned at registration: '
+IFS= read -r subscription
+"$run/agent-pulse-hub$suffix" unsubscribe --subscription-id "$subscription" --address 127.0.0.1:47832
+```
+
+Require exit success and `"ok":true` with the exact same `subscription_id`.
+Cancellation removes this watch and its saved progress, so normal restart does
+not restore it. It does not change review requests on GitHub.
+An action already issued may still finish; cancellation cannot
+recall accepted output. A later registration creates a fresh watch without the
+cancelled watch's suppression history. For rejected, busy, storage, or uncertain
+results, follow the root [cancellation instructions](../../../README.md#cancel-one-subscription)
+and [recovery guide](../../../docs/design/windows-operations.md#cancel-one-subscription).
+
 ## Stop and restart
 
 From the second terminal, stop normally:
@@ -172,7 +197,7 @@ From the second terminal, stop normally:
 ```
 
 Alternatively, press Ctrl+C in the first terminal. Wait for final
-`runtime_state_saved` for your subscription, configured-plugin exit diagnostics,
+`runtime_state_saved` for each retained subscription, configured-plugin exit diagnostics,
 and daemon exit before relying on saved progress. A save failure means restart
 continuity is not guaranteed even if live monitoring continued.
 
@@ -185,7 +210,9 @@ live state.
 
 Restart with the same daemon command, configuration, state, host, and user
 identity. Wait for `daemon_ready` with `restored_registrations: 1`; do not
-register again. Confirmed requests remain suppressed; a newly observed request
+register again. This assumes you retained the example's one watch; if you
+cancelled it above, expect zero restored registrations instead.
+For a retained watch, confirmed requests remain suppressed; a newly observed request
 can produce a new URL. Restoration does not need the original argument files.
 A new registration starts without prior progress.
 
@@ -225,7 +252,8 @@ The trigger marks an event attempted before sending it. While the plugin
 session remains usable, the hub returns a terminal delivery outcome.
 `accepted` means the selected action confirmed acceptance; it does not promise
 durable completion. Only confirmed acceptance is saved as confirmed progress.
-Failed, unknown, and discarded outcomes are not retried automatically, and
+In this example's default delivery mode, failed, unknown, and discarded outcomes
+are not retried automatically, and
 unfinished attempts receive no additional restart guarantee. Normal stop
 discards queued and in-flight hub events and cannot retract accepted output.
 There is no automatic plugin restart, replay, or stopped-event collection.

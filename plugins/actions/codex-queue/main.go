@@ -55,7 +55,7 @@ func runPlugin(arguments []string) error {
 		HandshakeConfig: pluginprocess.HandshakeConfig,
 		Plugins: plugin.PluginSet{
 			pluginprocess.PluginKey(string(domain.OutputRole)): &pluginprocess.FrameworkPlugin{
-				Impl: codexqueue.New(executable, application.NewDeliveryService(runner), logger),
+				Impl: codexqueue.New(executable, application.NewDeliveryService(runner), logger).WithNotifications(hasNotificationFlag(arguments)),
 			},
 		},
 		GRPCServer: func(options []grpc.ServerOption) *grpc.Server {
@@ -67,7 +67,30 @@ func runPlugin(arguments []string) error {
 	return nil
 }
 
+func hasNotificationFlag(arguments []string) bool {
+	for _, a := range arguments {
+		if a == "--notification-delivery" {
+			return true
+		}
+	}
+	return false
+}
+
 func parsePluginArguments(arguments []string) (string, error) {
+	var filtered []string
+	seen := false
+	for _, a := range arguments {
+		if a == "--notification-delivery" {
+			if seen {
+				return "", errors.New("duplicate --notification-delivery")
+			}
+			seen = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	arguments = filtered
+
 	if len(arguments) != 2 || arguments[0] != "--codex-executable" || arguments[1] == "" {
 		return "", errors.New("plugin mode requires exactly --codex-executable <absolute-file-path>")
 	}

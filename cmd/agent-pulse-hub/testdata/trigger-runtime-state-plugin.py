@@ -43,6 +43,11 @@ def serve(directory, activation_v2=False):
     def read_source(watch):
         position = 0
         source = Path(watch["args"]["source_file"])
+        release = watch["args"].get("source_release_file")
+        # Test-owned input release; independent of the host's v1/v2 protocol.
+        while release and not Path(release).exists():
+            if stopped.wait(0.01):
+                return
         if activation_v2:
             record("source_read", subscription_id=watch["subscription_id"])
         while not stopped.is_set():
@@ -153,14 +158,13 @@ def serve(directory, activation_v2=False):
                             continue
                     accept_watch(frame, watch)
                 elif kind == "activate_watch":
+                    record("activate_watch", subscription_id=subscription_id)
                     with state_lock:
                         watch = watches.get(subscription_id)
                     if watch is None:
-                        record("activate_watch", subscription_id=subscription_id)
                         record("activation_ignored", subscription_id=subscription_id)
                         continue
                     watch["accepted"].wait(1)
-                    record("activate_watch", subscription_id=subscription_id)
                     with state_lock:
                         if not watch["accepted"].is_set() or watch["active"] or watch["quiesced"] or stopped.is_set():
                             record("activation_ignored", subscription_id=subscription_id)
@@ -211,8 +215,10 @@ def serve(directory, activation_v2=False):
                     return
                 if isinstance(item, tuple):
                     response, watch = item
-                    yield response
+                    # Journal preparation before the peer can receive the result
+                    # and send activation on the independent request reader.
                     record("watch_prepared", subscription_id=watch["subscription_id"])
+                    yield response
                     watch["accepted"].set()
                 else:
                     yield item

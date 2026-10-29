@@ -9,6 +9,12 @@ sources:
     resource: design/bundled-plugins.md
   - id: runtime-state-design
     resource: design/trigger-runtime-state.md
+  - id: runtime-stream-design
+    resource: design/runtime-state-stream.md
+  - id: cancellation-design
+    resource: design/subscription-cancellation.md
+  - id: notification-design
+    resource: design/notification-delivery.md
 ---
 
 # Agent Pulse Hub plugin protocol v2
@@ -25,6 +31,15 @@ message encoding, exchange ordering, and application deadlines.
 The optional runtime-state extension derives from
 [trigger runtime state](trigger-runtime-state.md), which owns state storage,
 checkpoint scheduling, coordinated shutdown, and recovery.
+The optional [repeated-wait profile](pr-watch-rewait.md) owns daemon-controlled
+notification generations and same-registration rewait. Its exact capability,
+conditional message schemas and ordering supplement this specification.
+The optional [notification-delivery design](notification-delivery.md) owns
+notification identity, retained evidence, retry decisions and operator status.
+The output profile below owns its public message schemas and correlations.
+The optional [streamed-state profile](runtime-state-stream.md) owns multi-message
+opaque state handoff, complete-generation storage and migration. Its conditional
+schemas replace only the state-transfer path for inputs advertising it.
 
 The daemon owns integration-independent control and decisions. Plugins carry
 out requested service-specific operations and report results. An input plugin
@@ -124,12 +139,14 @@ an instance lifetime, including across operation types. Request, subscription,
 and delivery IDs are opaque strings; recipients echo them without parsing or
 normalization. The daemon generates fresh IDs for new operations and routes.
 [Local persistence](state-persistence.md) deliberately restores subscription
-IDs across daemon runs; request and delivery IDs remain fresh. A plugin does
-not manufacture them.
+IDs across daemon runs; legacy request and delivery IDs remain fresh. The
+notification profile below retains its notification ID across eligible retries
+and restart, using a fresh attempt request ID each time. A plugin does not
+manufacture these IDs.
 
 | Direction / role / type | Additional fields | Meaning |
 | --- | --- | --- |
-| Plugin to host / either / `ready` | `role`: `input` or `output`, matching configuration and dispense name; input may additionally include `capabilities` as specified below | First message, exactly once, when the instance can serve its role. |
+| Plugin to host / either / `ready` | `role`: `input` or `output`, matching configuration and dispense name; optional role-specific `capabilities` as specified below | First message, exactly once, when the instance can serve its role. |
 | Host to plugin / input / `watch` | `request_id`, `subscription_id`: nonempty strings; `watch_args`: object | Request a continuing watch. |
 | Plugin to host / input / `watch_result` | `request_id`: nonempty string; `accepted`: boolean; `error`: nonempty string only when false | Accept or reject the requested watch. |
 | Plugin to host / input / `event` | `subscription_id`: nonempty string; `context`: nonempty string, at most 8,192 decoded UTF-8 bytes | Report external data from an accepted watch. |
@@ -151,9 +168,10 @@ public contract contains no GitHub fields, Codex identifiers, or daemon-owned
 service-specific validation rules.
 
 The [Codex Queue action profile](codex-queue.md) defines its own destination
-schema, CLI queue acceptance and registration helper. It uses this unchanged
-output interface; Codex-specific fields remain inside destination arguments,
-and the helper uses the existing local registration client.
+schema, CLI queue acceptance and registration helper. It supports the legacy
+interface and the optional notification profile; Codex-specific fields remain
+inside destination arguments, and the helper uses the existing local
+registration client.
 
 ## Readiness and registration ordering
 
@@ -212,8 +230,9 @@ been issued,
 registration cannot become active. An already accepted or uncertain watch
 may continue until input shutdown, but its route is an inactive tombstone:
 no event is delivered and no registration reuses it. The governing design owns
-capacity accounting and duplicate-registration behavior for this state. There
-is no per-watch cancellation or new rollback RPC.
+capacity accounting and duplicate-registration behavior for this state.
+Registration failure does not automatically issue cancellation or rollback.
+An explicit request can use the [cancellation profile](#optional-individual-watch-cancellation).
 
 ```json
 {"version":2,"type":"event","subscription_id":"subscription-a","context":"PULSE-MODEL-001"}
@@ -226,25 +245,95 @@ to the input. Repeated valid events remain distinct; plugins do not retransmit f
 confirmation. The daemon's [routing rules](mvp.md) bind each admitted event
 to its registered output and arguments.
 
+## Optional individual watch cancellation
+
+This profile derives from [individual cancellation](subscription-cancellation.md),
+which owns local control, persistence and lifecycle fencing. A capable input
+includes `cancel_watch_v1` in `ready.capabilities`, alone or with the valid
+runtime-state/rewait combinations below. This input capability does not select
+the output notification profile.
+
+| Direction / type | Exact additional fields | Meaning |
+| --- | --- | --- |
+| Host to input / `cancel_watch` | `request_id`, `subscription_id`: nonempty strings | Stop this accepted watch and release its watch-specific resources. |
+| Input to host / `cancel_result` | `request_id`: nonempty string; `accepted`: boolean; `error`: bounded nonempty string only when false | Confirm completed selective termination, or report why it could not complete. |
+
+Both messages include `version:2` and `type` and follow existing strict encoding,
+ownership and bounds. The host sends this request only for an ID owned by that
+input. Use a fresh request ID on each explicit attempt. An input must process
+cancellation concurrently with its monitor, stop emission and staged rewait,
+discard watch-owned logical progress, and release equivalent-watch reservations
+before sending a positive result. Other watches and the Session remain live.
+Cancelling an already-absent watch is a positive no-op; local unknown-ID control
+requests still fail before any plugin exchange. IDs cannot be reused within the
+Session, so a late grant/preparation must never recreate a removed watch.
+
+One ten-second deadline covers queuing, send and result. A negative result or
+timeout keeps the target fenced in the host. Timeout alone expires that request
+correlation and removes any unsent request; it does not kill a healthy shared
+input. Late results are ignored. An explicitly retried cancellation is safe
+because stopping an absent or stopping watch is idempotent; overlapping plugin
+requests must converge on the same termination. Actual stream/send failure
+retains normal instance-unavailability handling. No automatic retry is added.
+
+The host sends already-owed delivery notices before cancellation on the same
+ordered stream. A checkpoint/preparation already transmitted may finish before
+cancellation, but its late result cannot save or grant a cancelled watch. After
+positive cancellation the host sends no further checkpoint, notice, preparation
+or grant for that watch. Already-issued action outcomes remain correlated in
+the core and do not require reviving the input watch.
+
+An unchanged input remains usable but live unsubscribe returns
+`unsubscribe_unsupported`. Upgrade the host and input together while stopped;
+retained registration IDs and arguments require no migration. Old strict hosts
+may reject the new capability. Bundled inputs adopt this profile together with
+the cancellation feature; actions require no cancellation capability.
+
 ## Optional trigger runtime state
 
 An input selects exactly one runtime-state revision by adding either
 `"capabilities":["runtime_state_v1"]` or
 `"capabilities":["runtime_state_v2"]` to `ready`. Omission means the ordinary
 v2 contract above; an empty array is also nonparticipating. Duplicate, combined
-v1/v2, or unknown capabilities, other array values, or a capabilities field on
-output readiness are malformed. The host supports both revisions without
-silently changing v1 semantics. New inputs needing activation coordination
+v1/v2, or unknown input capabilities and other array values are malformed.
+Output capabilities follow the separate notification profile below. The host
+supports both revisions without silently changing v1 semantics. New inputs needing activation coordination
 select v2. Selecting v1 retains its start-after-acceptance behavior and possible
 pre-readiness event discard. The host sends new
 messages only to participating inputs. Old v2 inputs keep their exact artifacts
 and message shapes. A participating input requires a host supporting this
 extension; old strict hosts can reject the additional readiness field.
 
+An additional allowed combination is `runtime_state_v2` with `rewait_v1`,
+in either array order. The [rewait public profile](pr-watch-rewait.md#optional-public-input-profile)
+defines its exact readiness, `resume_watch`/`resume_result`, and conditional
+`generation` fields on `activate_watch` and `state_event`. That profile replaces
+the two affected table rows and one-grant-per-Session rule only for inputs
+advertising it. All other messages, deadlines and existing input profiles keep
+their current shapes. Rewait retains one continuing monitor and grants one
+notification per explicit wait or daemon run; it introduces no cancellation.
+
+An input may also combine `runtime_state_v2` with `runtime_state_stream_v1`,
+with or without `rewait_v1`, in any array order. The
+[stream profile](runtime-state-stream.md#capability-and-compatibility) defines
+the additional allowed capability, exact restore/checkpoint messages and
+compatibility rules. It replaces `state_watch` and successful checkpoint
+responses only for that profile. It retains the 65,536-byte application bound,
+8,192-byte event context and all activation, rewait and delivery rules. Inputs
+without `runtime_state_stream_v1` keep every existing schema and state bound.
+The independent `cancel_watch_v1` capability above may appear alone or alongside
+either runtime-state revision and any otherwise valid rewait combination.
+It does not relax duplicate, role, unknown-capability or incompatible-revision
+validation. Array order is immaterial.
+
 Every message below includes `version: 2` and `type`. Existing strict encoding,
 size, request-ID and subscription ownership rules apply. The state envelope,
 32,768-byte bound, schema ownership, storage and recovery are defined by
 [runtime state](trigger-runtime-state.md#interfaces-and-data).
+For `runtime_state_stream_v1`, that 32,768-byte bound applies to each opaque
+object rather than the whole saved snapshot; the
+[stream specification](runtime-state-stream.md#state-representation-and-bounds)
+owns its exact conditional schemas and the full transfer resource budget.
 
 | Direction / input message | Exact additional fields | Meaning |
 | --- | --- | --- |
@@ -296,9 +385,10 @@ v1 receives no grants and retains all existing shapes, notices and deadlines.
 Restore/commit failure or stop before startup commit sends no grant and permits
 no delivery. After commit a grant send failure/timeout invokes ordinary input
 unavailability and cleanup; records stay saved, affected routes stop accepting
-work and healthy inputs continue. Already admitted work follows existing
-one-attempt rules. Do not roll back startup, retract readiness, replay events
-or retry through a replacement Session. Stop and grant dispatch share lifecycle
+work and healthy inputs continue. Already admitted work follows its delivery
+profile's attempt rules. Do not roll back startup, retract readiness or replay
+source events through a replacement Session. Core-owned retained retries follow
+the notification design rather than recreating source events. Stop and grant dispatch share lifecycle
 ordering: stop first prevents dispatch; an already dispatched grant can race
 with gate closure and yield `discarded`. The trigger must not record that outcome
 as success or resend it. The
@@ -311,8 +401,20 @@ event from a dormant runtime-state v2 watch violates activation ordering: discar
 terminal notice, without activating its route. This does not permit early emission.
 Notice failure during shutdown is a visible continuity failure, never success.
 Invalid, foreign, repeated and pre-watch events are discarded/logged without a
-notice. A failed/unknown/discarded update has no completed-notification guarantee;
-the host never retries it. An input must not wait indefinitely for its acceptance
+notice. A failed/unknown/discarded update has no completed-notification guarantee.
+For notification-profile routes, intermediate proven-unsubmitted attempts produce
+no terminal notice: the host sends one notice for the notification when it is
+accepted, becomes unknown, or stops. Final unsubmitted/rejected work maps to
+`failed`; unknown maps to `unknown`; confirmed acceptance maps to `accepted`.
+At normal stop, queued work not yet issued maps to `failed`, while an interrupted
+issued attempt maps to `unknown` unless acceptance is confirmed. Later evidence
+does not send a second terminal notice. Retained retries restored after restart
+have no old-Session notice or trigger-cursor update; source deduplication and
+distinct-event rules remain unchanged. The governing notification design owns
+these terminal transitions. The existing cancellation fence and ordered-notice
+rules take precedence: setting a notification to cancelled creates no new notice;
+only notices already owed before that fence precede the cancel request, and
+positive cancellation ends the watch correlation. An input must not wait indefinitely for its acceptance
 or treat a discarded startup event as completed progress. At uint64 exhaustion
 report a visible watch failure; never wrap the event counter.
 
@@ -329,6 +431,12 @@ The host drops unsent expired checkpoint requests and ignores late replies;
 expired queued requests cannot appear in a later batch. Size validation reserves
 the full state allowance with watch arguments at registration/restoration as
 specified by the governing design, preserving the overall application bound.
+For the streamed profile, its
+[same-window transfer rules](runtime-state-stream.md#checkpoint-wire-contract-and-ordering)
+include all chunks in that existing deadline; no chunk renews it. Its
+restoration request validates arguments/metadata against the wire bound rather
+than reserving the entire snapshot in one message. Other profiles retain the
+full legacy-envelope reservation.
 
 ```json
 {"version":2,"type":"ready","role":"input","capabilities":["runtime_state_v2"]}
@@ -343,8 +451,8 @@ specified by the governing design, preserving the overall application bound.
 
 ## Delivery outcomes and failures
 
-The daemon attempts each admitted event once. If its captured output becomes
-unavailable before sending, the daemon records `failed` without sending;
+For legacy output routes the daemon attempts each admitted event once. If its
+captured output becomes unavailable before sending, the daemon records `failed` without sending;
 otherwise it sends one `deliver`. Its source name,
 subscription ID, destination arguments, and context come from the captured
 registration and event. Neither event content nor plugin diagnostics can alter
@@ -361,7 +469,8 @@ acceptance under its destination contract; it does not establish a human reply
 or durable completion. `failed` means the output can establish that acceptance
 under its destination contract did not occur, including explicit rejection
 before destination work. `unknown` means that acceptance can neither be confirmed
-nor ruled out. No result causes a retry.
+nor ruled out. No legacy result causes a retry. Notification-profile routes use
+the optional exchange below and its governing retry policy instead.
 
 A valid `failed` or `unknown` result does not by itself make a healthy output
 unavailable. A delivery timeout or transport failure makes that output
@@ -383,6 +492,92 @@ configured-process exit; stream closure alone is insufficient. No product
 shutdown message or descendant termination guarantee is added. The optional
 checkpoint phase has its own bounded protocol deadline; it is not a process
 shutdown RPC. An interrupted delivery whose acceptance is unconfirmed is unknown.
+
+## Optional notification delivery
+
+An output opts in with exactly
+`"capabilities":["notification_delivery_v1"]` in its `ready` message. Omitted
+capabilities or an empty array select the legacy output contract. This is the
+only valid nonempty output capability set; duplicates, unknown values, input
+capabilities on output, or this capability on input are malformed. An upgraded
+host selects the profile only from valid output readiness; it never infers
+support from executable name or destination arguments. Destination validation
+and registration ordering remain unchanged.
+
+Bundled actions enable this readiness shape only with the explicit plugin-mode
+`--notification-delivery` option. Without it they retain legacy readiness and
+exchange behavior. An old strict host may reject the additional readiness
+field; deploy a supporting host and enable the action option together while
+stopped. Do not silently fall back to legacy delivery after selecting the
+profile or reinterpret existing unrecorded work as safe to retry.
+
+All messages use `version:2`, strict object schemas and the existing 65,536-byte
+payload bound. Each profile request has a canonical non-nil lowercase
+`8-4-4-4-12` UUID `request_id` identifying its attempt and a UUID `delivery_id`
+identifying its stable notification. The same notification keeps its delivery
+ID, context and registered destination for every eligible attempt; each attempt
+has a fresh request ID. Other legacy delivery fields and their bounds are
+unchanged. Receivers treat both IDs as correlation values and must echo them
+exactly without manufacturing a replacement.
+
+| Direction / output type | Exact additional fields | Meaning |
+| --- | --- | --- |
+| Host to plugin / `notification_deliver` | All fields of `deliver`, with the UUID constraints above | Issue one attempt for the original notification and registered destination. |
+| Plugin to host / `notification_result` | `request_id`, `delivery_id`; `status`: `accepted`, `unsubmitted`, `rejected`, or `unknown`; conditional fields below | Exactly one first result for this attempt. |
+| Plugin to host / `notification_evidence` | `request_id`, `delivery_id`; optional `receipt` | Supplement an earlier `unknown` result with confirmed acceptance for the same attempt. |
+
+`accepted` confirms acceptance under the destination contract, not conversation
+receipt or work completion. It permits only an optional `receipt`, a nonempty
+opaque string of at most 1,024 decoded UTF-8 bytes, and forbids `reason`,
+`message`, `retryable` and `retry_after_ms`. A Codex receipt is its queue ID;
+the core does not parse service-specific receipts.
+
+Every nonaccepted result requires `reason`, a token of 1–128 ASCII characters
+matching `[a-z0-9_]+`, and `message`, a nonempty string of at most 1,024 decoded
+UTF-8 bytes. Messages contain sanitized diagnostic text, never event context,
+credentials, raw process output or full arguments. Nonaccepted results forbid
+`receipt`. `unsubmitted` establishes that no submission occurred and requires
+boolean `retryable`; it may include integer `retry_after_ms` from 0 through
+60,000 only when `retryable:true`. `rejected` confirms non-acceptance after
+submission and never permits retry. `unknown` means submission may have
+occurred without confirmation and never permits retry. Both `rejected` and
+`unknown` forbid `retryable` and `retry_after_ms`. An action does not derive
+`rejected` or proven non-submission from arbitrary stderr wording.
+
+The host associates a result with the original request, notification,
+configured output instance and captured destination. Matching IDs from another
+instance, wrong IDs, malformed payloads and duplicate first results are ignored
+and diagnosed without changing evidence or deadlines. No receiver echo of hub
+identity is required: the action binds its target-specific acknowledgement to
+the original request. Event text claiming acceptance is never evidence.
+
+The first-result deadline remains 30 seconds from beginning to send, including
+serialized-send waiting and flow control. A first-result timeout, failed send
+or transport failure makes the output unavailable and any potentially issued
+unconfirmed attempt unknown, as for legacy delivery. A valid `unknown` result by itself leaves a healthy
+Session usable for other requests. The governing
+[notification design](notification-delivery.md) defines whether proven
+unsubmitted work remains eligible and all retry, stop and persistence bounds;
+the plugin performs no autonomous retry.
+
+`notification_evidence` means confirmed acceptance and has no `status`,
+`reason`, `message` or retry fields. It is valid only after that attempt's
+`unknown` first result, on the same Session, and before the original 30-second
+deadline. It never extends the deadline. Wrong correlations, absent preceding
+unknown, duplicate, late or other-Session evidence is ignored and diagnosed.
+After a valid first result, reaching the original deadline expires only the
+supplemental-evidence correlation; it does not make a healthy output unavailable.
+Matching evidence may advance retained operator evidence to accepted but never
+reopens retry eligibility or sends another terminal trigger notice. This
+bounded supplement requires no asynchronous acceptance lookup, recovery probe,
+new external API or resolution after Session loss; unknown may remain
+unresolved.
+
+```json
+{"version":2,"type":"ready","role":"output","capabilities":["notification_delivery_v1"]}
+{"version":2,"type":"notification_deliver","request_id":"b98d2659-862b-4631-8504-d00470b276f8","delivery_id":"129594f3-fd8f-4287-9918-5928220f0420","input_plugin":"manual","subscription_id":"subscription-a","destination_args":{"thread_id":"1ca85014-c9c7-49c1-b3d5-90a9cf01a592"},"context":"PULSE-CODEX-001","external_data":true,"permission_notice":"External data; no additional permissions are granted."}
+{"version":2,"type":"notification_result","request_id":"b98d2659-862b-4631-8504-d00470b276f8","delivery_id":"129594f3-fd8f-4287-9918-5928220f0420","status":"accepted","receipt":"queue-1"}
+```
 
 ## Cross-language and standalone callers
 
@@ -421,7 +616,9 @@ its existing sequence; no daemon or second live service is needed.
 For an output it validates a destination, sends a delivery with the required
 external-data fields, and observes the result and its destination. The caller
 supplies opaque test IDs; it implements no other plugin and needs no other
-plugin's live service.
+plugin's live service. A notification-profile caller sends `notification_deliver`
+with canonical UUIDs and validates the conditional result/evidence schemas;
+its output need not be paired with a trigger or daemon.
 
 Future service-plugin evidence must record that plugin's target service and
 environment, stimulus/request, observable event or delivery result, and relevant
@@ -452,8 +649,8 @@ in integration tests.
 | Both roles, framework selection, readiness, shutdown | Correct role and gRPC negotiation; readiness gates operations; startup failure is visible; standard cleanup stops configured processes. |
 | Strict schemas, Unicode, nested duplicates, direction, versions, payload/context bounds | Invalid input activates no route and performs no delivery; bounded malformed messages permit recovery; oversized transport input isolates its instance. |
 | Sequential destination/watch acceptance, immediate event, concurrent and duplicate results | No active route before both accept; no result/event race; foreign or late correlations never activate or retarget a route. |
-| Destination rejection and output loss after watch dispatch | No active registration or delivery; accepted orphan watches remain inactive and consume governed capacity until shutdown. |
-| Delivery correlation, rejection, unknown acceptance, real deadline | Exactly one attempt; invalid result never establishes success; timeout is unknown and isolates output; no retry/restart. |
+| Destination rejection and output loss after watch dispatch | No active registration or delivery; accepted orphan watches remain inactive and consume governed capacity until successful explicit cancellation, input exit or shutdown. |
+| Legacy delivery correlation, rejection, unknown acceptance, real deadline | Exactly one attempt; invalid result never establishes success; timeout is unknown and isolates output; no retry/restart. Notification-profile coverage belongs to its governing design. |
 | Event ownership, plugin failures, duplicate registration, restart | Registered recipient is fixed; unavailable routes reject new events; separate available routes continue; equivalent active registration keeps its ID; saved IDs survive restart only after current plugin acceptance and complete startup restoration. |
 | Independent-language replacements for each role | Both executables can be substituted without daemon code changes; registration and routing succeed through public interfaces. |
 | Actual bundled model pair and standalone boundary | Ordinary trigger/observation interfaces establish hub routing; standalone callers can exercise either role without a daemon or another service. |

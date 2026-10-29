@@ -25,8 +25,16 @@ func (p *pluginState) participates() bool {
 // Each watch is queued once, when committed. Capacity is bounded by the shared
 // registration limit. The deadline begins at enqueue, including stream waits.
 func (h *Hub) queueActivationLocked(name string, port PluginPort, id domain.SubscriptionID) {
-	if h.stopping {
+	if h.stopping || h.cancellations[id] != nil {
 		return
+	}
+	if h.plugins[name].capabilities["rewait_v1"] {
+		generation, err := newID()
+		if err != nil {
+			go h.pluginUnavailable(name, port, fmt.Errorf("create notification generation: %w", err))
+			return
+		}
+		h.notificationWaits[id] = &notificationWait{generation: generation, armed: true}
 	}
 	batch := h.activationBatches[name]
 	if batch == nil {
@@ -64,16 +72,41 @@ func (h *Hub) dispatchActivations(name string, batch *activationBatch) {
 		}
 		id := batch.ids[0]
 		batch.ids = batch.ids[1:]
+		if registration, exists := h.registrations[id]; !exists || !registration.Active || h.cancellations[id] != nil {
+			h.mu.Unlock()
+			continue
+		}
+		life := h.lifecycleLocked(id)
+		generation := ""
+		if wait := h.notificationWaits[id]; wait != nil {
+			generation = wait.generation
+		}
 		h.mu.Unlock()
+		grantCtx, grantCancel := context.WithCancel(batch.ctx)
+		stopCancel := context.AfterFunc(life.ctx, grantCancel)
 
 		err := batch.ctx.Err()
 		if err == nil {
-			err = batch.port.ActivateWatch(batch.ctx, id)
+			if generation != "" {
+				if capable, ok := batch.port.(RewaitPluginPort); ok {
+					err = capable.ActivateGeneration(grantCtx, id, generation)
+				} else {
+					err = fmt.Errorf("input does not implement repeated waiting")
+				}
+			} else {
+				err = batch.port.ActivateWatch(grantCtx, id)
+			}
 		}
+		stopCancel()
+		grantCancel()
 		if err != nil {
 			h.mu.Lock()
 			stopping := h.stopping
+			cancelled := h.cancellations[id] != nil || h.registrations[id].ID == ""
 			h.mu.Unlock()
+			if cancelled {
+				continue
+			}
 			if !stopping {
 				h.pluginUnavailable(name, batch.port, fmt.Errorf("activate watch %s: %s", id, safeError(err)))
 			}

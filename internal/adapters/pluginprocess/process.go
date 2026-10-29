@@ -31,21 +31,26 @@ const (
 )
 
 type Config struct {
-	Name       string
-	Role       domain.PluginRole
-	Executable string
-	Args       []string
+	Name                 string
+	Role                 domain.PluginRole
+	Executable           string
+	Args                 []string
+	RuntimeStateMaxBytes uint64
 }
 
 type pendingRequest struct {
-	kind     string
-	deadline time.Time
-	activate func() error
-	watchID  string
-	watch    *watchState
-	result   chan requestResult
-	sent     bool
-	claimed  bool
+	stream         *checkpointTransfer
+	restoreEnd     bool
+	kind           string
+	deadline       time.Time
+	activate       func() error
+	watchID        string
+	watch          *watchState
+	subscriptionID string
+	result         chan requestResult
+	sent           bool
+	claimed        bool
+	cancel         context.CancelFunc
 }
 
 type watchState struct {
@@ -55,10 +60,14 @@ type watchState struct {
 	activationRequired bool
 	activationClosed   bool
 	granted            bool
+	generation         string
+	stagedGeneration   string
 	lastEvent          uint64
 	pending            map[string]bool
 	notices            map[string]*noticeSend
 	quiesced           bool
+	cancelling         bool
+	cancelSent         bool
 }
 
 type noticeSend struct {
@@ -74,8 +83,9 @@ type requestResult struct {
 // Process owns one configured go-plugin child and its role-specific stream.
 // It cannot be restarted.
 type Process struct {
-	config Config
-	logger *slog.Logger
+	notificationCorrelations map[string]*notificationCorrelation
+	config                   Config
+	logger                   *slog.Logger
 
 	mu                  sync.Mutex
 	callbackMu          sync.Mutex
@@ -93,12 +103,15 @@ type Process struct {
 	failure             error
 	deadline            time.Time
 	pending             map[string]*pendingRequest
+	streamFinished      map[string]*checkpointTransfer
+	streamFinishedWatch map[string]string
 
 	writeGate   chan struct{}
 	readyCh     chan struct{}
 	doneCh      chan struct{}
 	setupDone   chan struct{}
 	killOnce    sync.Once
+	terminated  bool
 	diagnostics []*diagnosticWriter
 }
 
@@ -110,15 +123,17 @@ func New(config Config, logger *slog.Logger) *Process {
 	}
 	config.Args = append([]string(nil), config.Args...)
 	return &Process{
-		config:       config,
-		logger:       logger,
-		pending:      make(map[string]*pendingRequest),
-		capabilities: make(map[string]bool),
-		watches:      make(map[string]*watchState),
-		writeGate:    make(chan struct{}, 1),
-		readyCh:      make(chan struct{}),
-		doneCh:       make(chan struct{}),
-		setupDone:    make(chan struct{}),
+		config:              config,
+		logger:              logger,
+		pending:             make(map[string]*pendingRequest),
+		streamFinished:      make(map[string]*checkpointTransfer),
+		streamFinishedWatch: make(map[string]string),
+		capabilities:        make(map[string]bool),
+		watches:             make(map[string]*watchState),
+		writeGate:           make(chan struct{}, 1),
+		readyCh:             make(chan struct{}),
+		doneCh:              make(chan struct{}),
+		setupDone:           make(chan struct{}),
 	}
 }
 
@@ -240,6 +255,12 @@ func (p *Process) ValidateDestination(ctx context.Context, request hub.Destinati
 }
 
 func (p *Process) Watch(ctx context.Context, request hub.WatchRequest, activate func() error) error {
+	p.mu.Lock()
+	stream := p.capabilities[pluginprotocol.RuntimeStateStreamCapability]
+	p.mu.Unlock()
+	if stream {
+		return p.WatchStream(ctx, request, request.Source, activate)
+	}
 	if p.config.Role != domain.InputRole {
 		return &hub.WatchError{Code: "invalid_role", Message: "Watch requires an input plugin."}
 	}
@@ -281,11 +302,29 @@ func (p *Process) Watch(ctx context.Context, request hub.WatchRequest, activate 
 // ActivateWatch sends a one-way v2 grant. Its caller supplies the shared batch
 // deadline, so waiting for the serialized stream consumes that same budget.
 func (p *Process) ActivateWatch(ctx context.Context, id domain.SubscriptionID) error {
-	payload, err := pluginprotocol.Encode(pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: string(id)})
+	return p.activateGeneration(ctx, id, "")
+}
+
+func (p *Process) ActivateGeneration(ctx context.Context, id domain.SubscriptionID, generation string) error {
+	if generation == "" {
+		return &hub.RuntimeError{Code: "invalid_watch", Message: "a notification generation is required"}
+	}
+	return p.activateGeneration(ctx, id, generation)
+}
+
+func (p *Process) activateGeneration(ctx context.Context, id domain.SubscriptionID, generation string) error {
+	payload, err := pluginprotocol.Encode(pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: string(id), Generation: generation})
 	if err != nil {
 		return &hub.RuntimeError{Code: "invalid_watch", Message: "activation grant is invalid", Cause: err}
 	}
 	if err := p.acquireWrite(ctx); err != nil {
+		p.mu.Lock()
+		watch := p.watches[string(id)]
+		fenced := watch == nil || watch.cancelling
+		p.mu.Unlock()
+		if fenced {
+			return &hub.RuntimeError{Code: "invalid_watch", Message: "activation watch was cancelled before issuance"}
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			p.fail(err)
 		}
@@ -293,6 +332,11 @@ func (p *Process) ActivateWatch(ctx context.Context, id domain.SubscriptionID) e
 	}
 	p.mu.Lock()
 	watch := p.watches[string(id)]
+	if watch == nil || watch.cancelling {
+		p.mu.Unlock()
+		p.releaseWrite()
+		return &hub.RuntimeError{Code: "invalid_watch", Message: "activation watch was cancelled before issuance"}
+	}
 	if !p.ready || p.failed || p.stopping || p.stream == nil || ctx.Err() != nil {
 		cause := ctx.Err()
 		p.mu.Unlock()
@@ -302,12 +346,18 @@ func (p *Process) ActivateWatch(ctx context.Context, id domain.SubscriptionID) e
 		}
 		return &hub.RuntimeError{Code: "activation_send", Message: "input plugin is unavailable before activation", Unavailable: !errors.Is(cause, context.Canceled), Cause: cause}
 	}
-	if watch == nil || !watch.active || !watch.activationRequired {
+	if watch == nil || !watch.active || !watch.activationRequired || watch.cancelling {
 		p.mu.Unlock()
 		p.releaseWrite()
 		return &hub.RuntimeError{Code: "invalid_watch", Message: "activation requires an accepted runtime-state v2 watch"}
 	}
-	if watch.granted || watch.activationClosed || watch.quiesced {
+	rewait := p.capabilities[pluginprotocol.RewaitCapability]
+	if rewait != (generation != "") || (rewait && watch.generation != "" && generation != watch.generation && generation != watch.stagedGeneration) {
+		p.mu.Unlock()
+		p.releaseWrite()
+		return &hub.RuntimeError{Code: "invalid_watch", Message: "activation generation has no matching preparation"}
+	}
+	if (watch.granted && (!rewait || generation == watch.generation)) || watch.activationClosed || watch.quiesced {
 		p.mu.Unlock()
 		p.releaseWrite()
 		return nil
@@ -315,9 +365,16 @@ func (p *Process) ActivateWatch(ctx context.Context, id domain.SubscriptionID) e
 	// A source may respond before Send returns. Install admission before
 	// handing the grant to gRPC; a failed send invalidates this whole Session.
 	watch.granted = true
+	watch.generation = generation
+	watch.stagedGeneration = ""
+	// FenceWatch and issuance share p.mu. Starting the ordered sender while this
+	// lock is held prevents an admitted but still-unsent grant from escaping a
+	// fence between the final watch/context checks and sender issuance.
 	stream := p.stream
+	sendResult := make(chan error, 1)
+	go func() { sendResult <- stream.Send(payload) }()
 	p.mu.Unlock()
-	if sendErr, pendingSend := p.sendUntil(ctx, stream, payload, nil); sendErr != nil {
+	if sendErr, pendingSend := p.awaitSend(ctx, sendResult, nil); sendErr != nil {
 		if !pendingSend {
 			p.releaseWrite()
 		}
@@ -327,6 +384,32 @@ func (p *Process) ActivateWatch(ctx context.Context, id domain.SubscriptionID) e
 		return &hub.RuntimeError{Code: "activation_send", Message: "activation grant could not be sent", Unavailable: !errors.Is(sendErr, context.Canceled), Cause: sendErr}
 	}
 	p.releaseWrite()
+	return nil
+}
+
+func (p *Process) ResumeWatch(ctx context.Context, request hub.ResumeWatchRequest) error {
+	p.mu.Lock()
+	watch := p.watches[string(request.SubscriptionID)]
+	if !p.capabilities[pluginprotocol.RewaitCapability] || watch == nil || !watch.active || watch.quiesced || watch.activationClosed || watch.cancelling {
+		p.mu.Unlock()
+		return &hub.RuntimeError{Code: "rewait_unsupported", Message: "input watch is unavailable for preparation"}
+	}
+	p.mu.Unlock()
+	frame, err := p.request(ctx, pluginprotocol.Frame{Type: "resume_watch", RequestID: request.RequestID, SubscriptionID: string(request.SubscriptionID), Generation: request.Generation, ConfirmationPosition: request.ConfirmationPosition}, "resume_result", 10*time.Second, nil)
+	if err != nil {
+		return &hub.RuntimeError{Code: "resume_failed", Message: "rewait preparation could not be confirmed", Unavailable: isUnavailable(err), Cause: err}
+	}
+	if frame.Accepted == nil || !*frame.Accepted {
+		return &hub.PositionRejectedError{}
+	}
+	p.mu.Lock()
+	if p.watches[string(request.SubscriptionID)] == watch && !watch.cancelling && !watch.quiesced && !watch.activationClosed {
+		watch.stagedGeneration = request.Generation
+	} else {
+		p.mu.Unlock()
+		return &hub.RuntimeError{Code: "resume_failed", Message: "watch was cancelled during preparation"}
+	}
+	p.mu.Unlock()
 	return nil
 }
 
@@ -368,7 +451,7 @@ func (p *Process) Checkpoint(ctx context.Context, request hub.RuntimeCheckpointR
 	}
 	defer unlockOrder()
 	p.mu.Lock()
-	if watch.quiesced {
+	if watch.quiesced || watch.cancelling || p.watches[string(request.SubscriptionID)] != watch {
 		p.mu.Unlock()
 		return nil, &hub.RuntimeError{Code: "invalid_watch", Message: "participating watch is already quiescent"}
 	}
@@ -412,6 +495,13 @@ func (p *Process) Checkpoint(ctx context.Context, request hub.RuntimeCheckpointR
 }
 
 func (p *Process) Deliver(ctx context.Context, event domain.Event) hub.DeliveryResult {
+	return p.DeliverGuarded(ctx, event, nil)
+}
+
+// DeliverGuarded lets the owner serialize its cancellation fence and issuance.
+// The callback invokes issue while holding its lifecycle lock; issue only starts
+// the ordered sender and never waits for the stream or its response.
+func (p *Process) DeliverGuarded(ctx context.Context, event domain.Event, admit func(issue func()) bool) hub.DeliveryResult {
 	if p.config.Role != domain.OutputRole {
 		return hub.DeliveryResult{Outcome: domain.DeliveryFailed, Detail: "delivery requires an output plugin"}
 	}
@@ -419,11 +509,11 @@ func (p *Process) Deliver(ctx context.Context, event domain.Event) hub.DeliveryR
 	if err != nil {
 		return hub.DeliveryResult{Outcome: domain.DeliveryFailed, Detail: "delivery request identifier could not be created"}
 	}
-	confirmed, err := p.request(ctx, pluginprotocol.Frame{
+	confirmed, err := p.requestInternal(ctx, pluginprotocol.Frame{
 		Type: "deliver", RequestID: requestID, DeliveryID: string(event.ID), InputPlugin: event.InputPlugin,
 		SubscriptionID: string(event.SubscriptionID), DestinationArgs: event.DestinationArgs,
 		Context: event.Context, ExternalData: boolPointer(true), PermissionNotice: pluginprotocol.PermissionNotice,
-	}, "delivery_result", deliveryTimeout, nil)
+	}, "delivery_result", deliveryTimeout, nil, "", nil, nil, admit)
 	if err != nil {
 		var deliveryErr *requestError
 		if errors.As(err, &deliveryErr) && deliveryErr.sent {
@@ -438,18 +528,22 @@ func (p *Process) Deliver(ctx context.Context, event domain.Event) hub.DeliveryR
 // registration requests to arrive in any order. Its timeout includes gate wait,
 // send and result wait.
 func (p *Process) request(parent context.Context, frame pluginprotocol.Frame, resultType string, timeout time.Duration, activate func() error) (pluginprotocol.Frame, error) {
-	return p.requestInternal(parent, frame, resultType, timeout, activate, "", nil, nil)
+	return p.requestInternal(parent, frame, resultType, timeout, activate, "", nil, nil, nil)
 }
 
 func (p *Process) requestWithWatch(parent context.Context, frame pluginprotocol.Frame, resultType string, timeout time.Duration, activate func() error, watchID string, watch *watchState) (pluginprotocol.Frame, error) {
-	return p.requestInternal(parent, frame, resultType, timeout, activate, watchID, watch, nil)
+	return p.requestInternal(parent, frame, resultType, timeout, activate, watchID, watch, nil, nil)
 }
 
 func (p *Process) requestWithSent(parent context.Context, frame pluginprotocol.Frame, resultType string, timeout time.Duration, onSent func()) (pluginprotocol.Frame, error) {
-	return p.requestInternal(parent, frame, resultType, timeout, nil, "", nil, onSent)
+	return p.requestInternal(parent, frame, resultType, timeout, nil, "", nil, onSent, nil)
 }
 
-func (p *Process) requestInternal(parent context.Context, frame pluginprotocol.Frame, resultType string, timeout time.Duration, activate func() error, watchID string, watch *watchState, onSent func()) (pluginprotocol.Frame, error) {
+func (p *Process) requestInternal(parent context.Context, frame pluginprotocol.Frame, resultType string, timeout time.Duration, activate func() error, watchID string, watch *watchState, onSent func(), admit func(func()) bool) (pluginprotocol.Frame, error) {
+	return p.requestExtended(parent, frame, resultType, timeout, activate, watchID, watch, onSent, nil, nil, admit)
+}
+
+func (p *Process) requestExtended(parent context.Context, frame pluginprotocol.Frame, resultType string, timeout time.Duration, activate func() error, watchID string, watch *watchState, onSent func(), transfer *checkpointTransfer, afterSend func(context.Context, *pendingRequest) error, admit func(func()) bool) (pluginprotocol.Frame, error) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
@@ -457,23 +551,33 @@ func (p *Process) requestInternal(parent context.Context, frame pluginprotocol.F
 	if err != nil {
 		return pluginprotocol.Frame{}, &requestError{message: "request exceeds the protocol limit", cause: err}
 	}
-	pending := &pendingRequest{kind: resultType, deadline: deadline, activate: activate, watchID: watchID, watch: watch, result: make(chan requestResult, 1)}
+	pending := &pendingRequest{kind: resultType, deadline: deadline, activate: activate, watchID: watchID, watch: watch, result: make(chan requestResult, 1), stream: transfer, restoreEnd: afterSend == nil, subscriptionID: frame.SubscriptionID, cancel: cancel}
+	if transfer != nil {
+		transfer.ctx = ctx
+	}
 	p.mu.Lock()
 	if !p.ready || p.failed || p.stopping || p.stream == nil {
 		cause := p.failure
 		p.mu.Unlock()
 		return pluginprotocol.Frame{}, &requestError{message: "plugin is unavailable", cause: cause, unavailable: true}
 	}
+	if target := p.watches[frame.SubscriptionID]; target != nil && target.cancelling && (frame.Type == "checkpoint" || frame.Type == "resume_watch") {
+		p.mu.Unlock()
+		return pluginprotocol.Frame{}, &requestError{message: "watch cancellation closed request admission"}
+	}
 	if _, duplicate := p.pending[frame.RequestID]; duplicate || frame.RequestID == "" {
 		p.mu.Unlock()
 		return pluginprotocol.Frame{}, &requestError{message: "request identifier is empty or already pending"}
+	}
+	if correlation := p.notificationCorrelations[frame.RequestID]; correlation != nil {
+		correlation.deadline = deadline
 	}
 	p.pending[frame.RequestID] = pending
 	p.mu.Unlock()
 
 	if err := p.acquireWrite(ctx); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			if resultType != "checkpoint_result" {
+			if resultType != "checkpoint_result" && resultType != "cancel_result" {
 				p.fail(err)
 			}
 			p.removePending(frame.RequestID, pending)
@@ -484,9 +588,11 @@ func (p *Process) requestInternal(parent context.Context, frame pluginprotocol.F
 	}
 	p.mu.Lock()
 	stream := p.stream
-	available := !p.failed && !p.stopping && ctx.Err() == nil
-	if available {
-		pending.sent = true
+	available := !p.failed && !p.stopping && ctx.Err() == nil && p.pending[frame.RequestID] == pending
+	fenced := false
+	if target := p.watches[frame.SubscriptionID]; target != nil && target.cancelling && (frame.Type == "checkpoint" || frame.Type == "resume_watch") {
+		available = false
+		fenced = true
 	}
 	p.mu.Unlock()
 	if !available {
@@ -496,25 +602,62 @@ func (p *Process) requestInternal(parent context.Context, frame pluginprotocol.F
 		if cause == nil {
 			cause = p.failureCause()
 		}
-		return pluginprotocol.Frame{}, &requestError{message: "plugin became unavailable before send", cause: cause, unavailable: true}
+		return pluginprotocol.Frame{}, &requestError{message: "plugin became unavailable before send", cause: cause, unavailable: !fenced && !errors.Is(cause, context.Canceled)}
 	}
-	if sendErr, pendingSend := p.sendUntil(ctx, stream, payload, nil); sendErr != nil {
+	sendResult := make(chan error, 1)
+	issued := false
+	issue := func() {
+		if issued {
+			return
+		}
+		p.mu.Lock()
+		if p.pending[frame.RequestID] != pending || ctx.Err() != nil {
+			p.mu.Unlock()
+			return
+		}
+		issued = true
+		pending.sent = true
+		if correlation := p.notificationCorrelations[frame.RequestID]; correlation != nil {
+			stamp := time.Now().UTC()
+			correlation.issuedAt = &stamp
+		}
+		go func() { sendResult <- stream.Send(payload) }()
+		p.mu.Unlock()
+	}
+	if admit == nil {
+		issue()
+	} else {
+		admit(issue)
+	}
+	if !issued {
+		p.releaseWrite()
+		p.removePending(frame.RequestID, pending)
+		return pluginprotocol.Frame{}, &requestError{message: "delivery was fenced before issuance"}
+	}
+	if sendErr, pendingSend := p.awaitSend(ctx, sendResult, nil); sendErr != nil {
 		if !pendingSend {
 			p.releaseWrite()
 		}
-		if resultType != "checkpoint_result" {
+		if resultType != "checkpoint_result" && !(resultType == "cancel_result" && errors.Is(sendErr, ctx.Err())) && !(resultType == "resume_result" && errors.Is(sendErr, context.Canceled)) {
 			p.fail(fmt.Errorf("send plugin request: %w", sendErr))
 		}
 		p.removePending(frame.RequestID, pending)
 		return pluginprotocol.Frame{}, &requestError{
 			message: "plugin request send failed", cause: sendErr, sent: true,
-			unavailable: resultType != "checkpoint_result" || !errors.Is(sendErr, ctx.Err()),
+			unavailable: (resultType != "checkpoint_result" || !errors.Is(sendErr, ctx.Err())) && !(resultType == "resume_result" && errors.Is(sendErr, context.Canceled)),
 		}
 	}
 	if onSent != nil {
 		onSent()
 	}
 	p.releaseWrite()
+	if afterSend != nil {
+		if err := afterSend(ctx, pending); err != nil {
+			p.removePending(frame.RequestID, pending)
+			p.fail(err)
+			return pluginprotocol.Frame{}, &requestError{message: "stream restoration could not complete", cause: err, sent: true, unavailable: true}
+		}
+	}
 
 	select {
 	case result := <-pending.result:
@@ -536,10 +679,10 @@ func (p *Process) requestInternal(parent context.Context, frame pluginprotocol.F
 				return pluginprotocol.Frame{}, &requestError{message: "plugin became unavailable while committing its result", cause: p.failureCause(), sent: sent, unavailable: true}
 			}
 		}
-		if stillPending && sent && resultType != "checkpoint_result" {
+		if stillPending && sent && resultType != "checkpoint_result" && resultType != "cancel_result" && !(resultType == "resume_result" && errors.Is(ctx.Err(), context.Canceled)) {
 			p.fail(ctx.Err())
 		}
-		return pluginprotocol.Frame{}, &requestError{message: "plugin response deadline expired", cause: ctx.Err(), sent: sent, unavailable: sent && resultType != "checkpoint_result"}
+		return pluginprotocol.Frame{}, &requestError{message: "plugin response deadline expired", cause: ctx.Err(), sent: sent, unavailable: sent && resultType != "checkpoint_result" && !(resultType == "resume_result" && errors.Is(ctx.Err(), context.Canceled))}
 	case <-p.doneCh:
 		p.removePending(frame.RequestID, pending)
 		return pluginprotocol.Frame{}, &requestError{message: "plugin exited before its response", cause: p.failureCause(), sent: pending.sent, unavailable: true}
@@ -579,7 +722,7 @@ func (p *Process) notifyDeliveryLocked(ctx context.Context, watch *watchState, n
 	p.mu.Lock()
 	_, pending := watch.pending[notice.EventID]
 	attempt := watch.notices[notice.EventID]
-	available := p.ready && !p.failed && !p.stopping && watch.active && !watch.quiesced && p.watches[string(notice.SubscriptionID)] == watch && pending
+	available := p.ready && !p.failed && !p.stopping && watch.active && !watch.quiesced && !watch.cancelSent && p.watches[string(notice.SubscriptionID)] == watch && pending
 	stream := p.stream
 	p.mu.Unlock()
 	if !available {
@@ -615,7 +758,7 @@ func (p *Process) notifyDeliveryLocked(ctx context.Context, watch *watchState, n
 		return &hub.RuntimeError{Code: "notice_send", Message: "delivery notice could not be sent before its deadline", Unavailable: !errors.Is(err, ctx.Err()), Cause: err}
 	}
 	p.mu.Lock()
-	available = p.stream == stream && !p.failed && !p.stopping && watch.active && !watch.quiesced
+	available = p.stream == stream && !p.failed && !p.stopping && watch.active && !watch.quiesced && !watch.cancelSent && p.watches[string(notice.SubscriptionID)] == watch
 	p.mu.Unlock()
 	if !available {
 		p.releaseWrite()
@@ -690,6 +833,10 @@ func (p *Process) releaseWrite() { <-p.writeGate }
 func (p *Process) sendUntil(ctx context.Context, stream pluginprotocol.SessionClient, payload []byte, onLate func(error)) (error, bool) {
 	result := make(chan error, 1)
 	go func() { result <- stream.Send(payload) }()
+	return p.awaitSend(ctx, result, onLate)
+}
+
+func (p *Process) awaitSend(ctx context.Context, result <-chan error, onLate func(error)) (error, bool) {
 	select {
 	case err := <-result:
 		return err, false
@@ -729,6 +876,7 @@ func (p *Process) receive(stream pluginprotocol.SessionClient) {
 		}
 		frame, err := pluginprotocol.ParsePayload(payload, pluginprotocol.PluginToDaemon)
 		if err != nil {
+			p.rejectMalformedStream(payload)
 			if status.Code(err) == codes.ResourceExhausted {
 				p.fail(fmt.Errorf("plugin payload exceeds limit: %w", err))
 				return
@@ -741,6 +889,10 @@ func (p *Process) receive(stream pluginprotocol.SessionClient) {
 }
 
 func (p *Process) handleFrame(frame pluginprotocol.Frame) {
+	if frame.Type == "checkpoint_stream_begin" || frame.Type == "checkpoint_stream_chunk" || frame.Type == "checkpoint_stream_end" {
+		p.handleCheckpointStream(frame)
+		return
+	}
 	p.callbackMu.Lock()
 	p.mu.Lock()
 	if p.failed || p.stopping {
@@ -813,8 +965,14 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 		}
 		if frame.Type == "state_event" {
 			p.mu.Lock()
+			if p.capabilities[pluginprotocol.RewaitCapability] != (frame.Generation != "") {
+				p.mu.Unlock()
+				p.rejectEvent(frame, "state event generation does not match the capability profile")
+				p.callbackMu.Unlock()
+				return
+			}
 			current := p.watches[frame.SubscriptionID]
-			if current != watch || !watch.active || !watch.stateful || watch.quiesced {
+			if current != watch || !watch.active || !watch.stateful || watch.quiesced || watch.cancelling {
 				p.mu.Unlock()
 				p.rejectEvent(frame, "state event does not belong to an active participating watch")
 				p.callbackMu.Unlock()
@@ -831,7 +989,7 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 			watch.orderMu.Lock()
 			p.mu.Lock()
 			current = p.watches[frame.SubscriptionID]
-			if current != watch || !watch.active || !watch.stateful || watch.quiesced || eventID <= watch.lastEvent {
+			if current != watch || !watch.active || !watch.stateful || watch.quiesced || watch.cancelling || eventID <= watch.lastEvent {
 				p.mu.Unlock()
 				watch.orderMu.Unlock()
 				p.rejectEvent(frame, "state event does not belong to an active participating watch")
@@ -846,10 +1004,18 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 				p.runtimePendingCount++
 			}
 			handler := p.handlers.Event
+			generationHandler := p.handlers.StateEvent
+			rewait := p.capabilities[pluginprotocol.RewaitCapability]
 			p.mu.Unlock()
 			status := "discarded"
-			if handler != nil && !overflow && !dormant {
-				if terminal := handler(frame.SubscriptionID, frame.EventID, frame.Context); terminal != "" {
+			if !overflow && !dormant && ((rewait && generationHandler != nil) || (!rewait && handler != nil)) {
+				terminal := ""
+				if rewait {
+					terminal = generationHandler(frame.SubscriptionID, frame.EventID, frame.Generation, frame.Context)
+				} else {
+					terminal = handler(frame.SubscriptionID, frame.EventID, frame.Context)
+				}
+				if terminal != "" {
 					status = terminal
 				} else {
 					status = ""
@@ -883,7 +1049,7 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 			return
 		}
 		p.mu.Lock()
-		if !watch.active || watch.stateful || watch.quiesced {
+		if !watch.active || watch.stateful || watch.quiesced || watch.cancelling {
 			p.mu.Unlock()
 			p.rejectEvent(frame, "ordinary event does not belong to an active nonparticipating watch")
 			p.callbackMu.Unlock()
@@ -897,7 +1063,15 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 		p.callbackMu.Unlock()
 		return
 	}
-	if frame.Type != "watch_result" && frame.Type != "destination_result" && frame.Type != "delivery_result" && frame.Type != "checkpoint_result" {
+	if handled, callback := p.handleNotificationFrameLocked(frame); handled {
+		p.mu.Unlock()
+		p.callbackMu.Unlock()
+		if callback != nil {
+			callback()
+		}
+		return
+	}
+	if frame.Type != "watch_result" && frame.Type != "destination_result" && frame.Type != "delivery_result" && frame.Type != "checkpoint_result" && frame.Type != "resume_result" && frame.Type != "cancel_result" {
 		p.mu.Unlock()
 		p.callbackMu.Unlock()
 		p.rejectFrame("invalid direction")
@@ -910,13 +1084,29 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 		p.logger.Warn("plugin_result_rejected", "plugin", p.config.Name, "request_id", safeText(frame.RequestID, 256), "type", frame.Type, "reason", "unknown, early, duplicate, or mismatched request")
 		return
 	}
+	if pending.stream != nil {
+		p.mu.Unlock()
+		p.callbackMu.Unlock()
+		if frame.Type != "checkpoint_result" || frame.Accepted == nil || *frame.Accepted {
+			p.expireCheckpoint(frame.RequestID, pending, errors.New("stream checkpoint returned a positive legacy result"))
+			return
+		}
+		p.expireCheckpoint(frame.RequestID, pending, errors.New(safeText(frame.Error, 256)))
+		return
+	}
+	if frame.Type == "watch_result" && frame.Accepted != nil && *frame.Accepted && !pending.restoreEnd {
+		p.mu.Unlock()
+		p.callbackMu.Unlock()
+		p.fail(errors.New("stream watch accepted before complete state handoff"))
+		return
+	}
 	pending.claimed = true
 	if !time.Now().Before(pending.deadline) {
 		delete(p.pending, frame.RequestID)
 		p.mu.Unlock()
 		p.callbackMu.Unlock()
 		cause := errors.New("plugin response deadline expired")
-		checkpoint := pending.kind == "checkpoint_result"
+		checkpoint := pending.kind == "checkpoint_result" || pending.kind == "cancel_result"
 		pending.result <- requestResult{err: &requestError{message: cause.Error(), cause: cause, sent: true, unavailable: !checkpoint}}
 		if !checkpoint {
 			p.fail(cause)
@@ -987,6 +1177,7 @@ func (p *Process) fail(cause error) {
 		pending.result <- requestResult{err: &requestError{message: "plugin became unavailable", cause: cause, sent: pending.sent, unavailable: true}}
 	}
 	p.pending = make(map[string]*pendingRequest)
+	p.notificationCorrelations = nil
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -1014,6 +1205,7 @@ func (p *Process) Stop(_ context.Context) error {
 		pending.result <- requestResult{err: &requestError{message: "plugin instance stopped", cause: p.failure, sent: pending.sent, unavailable: true}}
 	}
 	p.pending = make(map[string]*pendingRequest)
+	p.notificationCorrelations = nil
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -1040,6 +1232,9 @@ func (p *Process) kill() {
 	p.killOnce.Do(func() {
 		<-p.setupDone
 		client.Kill()
+		p.mu.Lock()
+		p.terminated = client.Exited()
+		p.mu.Unlock()
 		for _, diagnostic := range p.diagnostics {
 			diagnostic.flush()
 		}

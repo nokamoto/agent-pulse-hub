@@ -127,6 +127,35 @@ func (s *Server) handle(connection net.Conn) {
 		s.writeError(connection, requestErr)
 		return
 	}
+	if request.operation == "notification" || request.operation == "notifications" {
+		wire, inspectionErr := notificationResponse(s.service, request)
+		if inspectionErr != nil {
+			s.writeError(connection, inspectionErr)
+			return
+		}
+		_, _ = writeRequest(connection, wire)
+		return
+	}
+	if request.operation == "unsubscribe" {
+		completed := make(chan *hub.Error, 1)
+		go func() { completed <- s.service.Unsubscribe(request.subscriptionID) }()
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		select {
+		case <-s.done:
+		case <-timer.C:
+		case operationErr := <-completed:
+			if operationErr != nil {
+				s.writeError(connection, operationErr)
+				return
+			}
+			response, err := EncodeSuccess(request.subscriptionID)
+			if err == nil {
+				_, _ = writeRequest(connection, response)
+			}
+		}
+		return
+	}
 	if request.operation == "stop" {
 		// Hub shutdown closes registration and event admission and resolves any
 		// in-flight delivery before the public stop acknowledgement is written.
@@ -135,6 +164,34 @@ func (s *Server) handle(connection net.Conn) {
 			s.logger.Warn("control_stop_response_lost", "reason", safeText(err.Error(), 256))
 		}
 		_ = s.Close()
+		return
+	}
+	if request.operation == "rewait" {
+		completed := make(chan *hub.Error, 1)
+		go func() {
+			completed <- s.service.Rewait(request.subscriptionID, request.operationID, request.confirmationPosition)
+		}()
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		select {
+		case <-s.done:
+			return
+		case <-timer.C:
+			return
+		case operationErr := <-completed:
+			if operationErr != nil {
+				s.writeError(connection, operationErr)
+				return
+			}
+			response, err := EncodeRewaitSuccess(request.subscriptionID, request.operationID)
+			if err != nil {
+				s.logger.Error("control_response_error", "reason", "could not encode rewait response")
+				return
+			}
+			if _, err := writeRequest(connection, response); err != nil {
+				s.logger.Warn("control_rewait_response_lost", "subscription_id", request.subscriptionID, "reason", safeText(err.Error(), 256))
+			}
+		}
 		return
 	}
 	// Hub registration owns its plugin operation. Waiting on the server signal

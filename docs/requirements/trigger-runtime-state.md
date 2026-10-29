@@ -66,7 +66,8 @@ state belongs to the trigger.
   termination or power-loss recovery; queued/in-flight event recovery;
   in-progress notification loss or duplicate guarantees; automatic delivery
   retries; general duplicate-event suppression; a common guarantee to retrieve
-  updates that occur while stopped; a new live subscription-deletion API;
+  updates that occur while stopped; a new live subscription-deletion API
+  (defined separately by [subscription cancellation](subscription-cancellation.md));
   external-service trigger implementations, including GitHub review triggers.
 
 ## Use cases
@@ -122,7 +123,9 @@ Design must distinguish runtime-state restoration failure from registration
 record failure. Registration corruption still follows state-persistence FR-005;
 runtime-state failure follows this document's FR-006 and must not be described
 as successful restoration of the affected watch. No automatic initial-state
-fallback or new live deletion interface is authorized.
+fallback is authorized. This concept does not authorize a new live deletion
+interface; the separate [subscription cancellation extension](subscription-cancellation.md)
+governs live removal of registrations and their progress when adopted.
 
 ## Acceptance criteria
 

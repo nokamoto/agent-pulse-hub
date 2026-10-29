@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -34,8 +35,41 @@ type commandOperations interface {
 
 type localOperations struct{}
 
+type cancellationOperations interface {
+	Unsubscribe(context.Context, string, string) (control.RegistrationResponse, []byte, error)
+}
+
+func (localOperations) Unsubscribe(ctx context.Context, address, id string) (control.RegistrationResponse, []byte, error) {
+	return control.Unsubscribe(ctx, address, id)
+}
+
+type rewaitOperations interface {
+	Position(string) (string, error)
+	Rewait(context.Context, string, string, string, string) (control.RegistrationResponse, []byte, error)
+}
+
+func (localOperations) Position(path string) (string, error) {
+	value, err := loadJSONFile(path)
+	if err != nil {
+		return "", errors.New("confirmation position file must be an accessible absolute regular file containing strict UTF-8 JSON without a BOM")
+	}
+	position, ok := jsonvalue.ParseString(value)
+	if !ok || !control.ValidPosition(position) {
+		return "", errors.New("confirmation position file must contain one nonempty JSON string of at most 4096 UTF-8 bytes")
+	}
+	return position, nil
+}
+
+func (localOperations) Rewait(ctx context.Context, address, subscriptionID, operationID, position string) (control.RegistrationResponse, []byte, error) {
+	return control.Rewait(ctx, address, subscriptionID, operationID, position)
+}
+
 func (localOperations) Daemon(path, stateDirectory, address string, stderr io.Writer) error {
 	return runDaemon(path, stateDirectory, address, stderr)
+}
+
+func (localOperations) DaemonWithRuntimeBudget(path, stateDirectory, address string, budget uint64, stderr io.Writer) error {
+	return runDaemonWithRuntimeBudget(path, stateDirectory, address, budget, stderr)
 }
 
 func (localOperations) Arguments(path string) (*jsonvalue.Value, error) { return loadArguments(path) }
@@ -54,15 +88,64 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func runWith(args []string, stdout, stderr io.Writer, operations commandOperations) int {
 	if len(args) == 0 {
-		return report(stderr, "usage: agent-pulse-hub <daemon|register|stop> ...")
+		return report(stderr, "usage: agent-pulse-hub <daemon|register|unsubscribe|rewait|notifications|notification|stop> ...")
 	}
 	switch args[0] {
+	case "notification", "notifications":
+		return runNotification(args, stdout, stderr)
+	case "unsubscribe":
+		flags, err := parseFlags(args[1:], []string{"--subscription-id"}, []string{"--address"})
+		if err != nil {
+			return report(stderr, "unsubscribe: "+err.Error())
+		}
+		if !control.ValidSubscriptionID(flags["--subscription-id"]) {
+			return report(stderr, "unsubscribe: a canonical lowercase subscription UUID is required")
+		}
+		cancellation, ok := operations.(cancellationOperations)
+		if !ok {
+			return report(stderr, "unsubscribe: command operations are unavailable")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), controlDeadline)
+		defer cancel()
+		_, wire, err := cancellation.Unsubscribe(ctx, addressOrDefault(flags["--address"]), flags["--subscription-id"])
+		if err != nil {
+			var daemonError *control.DaemonError
+			if errors.As(err, &daemonError) {
+				if writeAll(stdout, daemonError.Wire) != nil {
+					return report(stderr, "unsubscribe: could not write the daemon response to stdout.")
+				}
+				return 1
+			}
+			return report(stderr, "unsubscribe: "+err.Error())
+		}
+		if writeAll(stdout, wire) != nil {
+			return report(stderr, "unsubscribe: cancellation succeeded but its response could not be written to stdout.")
+		}
+		return 0
 	case "daemon":
-		flags, err := parseFlags(args[1:], []string{"--config"}, []string{"--state-dir", "--address"})
+		flags, err := parseFlags(args[1:], []string{"--config"}, []string{"--state-dir", "--address", "--runtime-state-max-bytes"})
 		if err != nil {
 			return report(stderr, "daemon: "+err.Error())
 		}
-		if err := operations.Daemon(flags["--config"], flags["--state-dir"], addressOrDefault(flags["--address"]), stderr); err != nil {
+		budget := hub.DefaultRuntimeStateMaxBytes
+		if value, exists := flags["--runtime-state-max-bytes"]; exists {
+			var err error
+			budget, err = parseRuntimeByteBudget(value)
+			if err != nil {
+				return report(stderr, "daemon: "+err.Error())
+			}
+		}
+		var runErr error
+		if op, ok := operations.(interface {
+			DaemonWithRuntimeBudget(string, string, string, uint64, io.Writer) error
+		}); ok {
+			runErr = op.DaemonWithRuntimeBudget(flags["--config"], flags["--state-dir"], addressOrDefault(flags["--address"]), budget, stderr)
+		} else if budget != hub.DefaultRuntimeStateMaxBytes {
+			return report(stderr, "daemon: runtime-state byte configuration unavailable")
+		} else {
+			runErr = operations.Daemon(flags["--config"], flags["--state-dir"], addressOrDefault(flags["--address"]), stderr)
+		}
+		if err := runErr; err != nil {
 			return report(stderr, "daemon: "+err.Error())
 		}
 		return 0
@@ -96,6 +179,42 @@ func runWith(args []string, stdout, stderr io.Writer, operations commandOperatio
 			return report(stderr, "register: registration succeeded but its response could not be written to stdout.")
 		}
 		return 0
+	case "rewait":
+		flags, err := parseFlags(args[1:], []string{"--subscription-id", "--operation-id", "--confirmation-position-file"}, []string{"--address"})
+		if err != nil {
+			return report(stderr, "rewait: "+err.Error())
+		}
+		if !control.ValidOperationID(flags["--operation-id"]) {
+			return report(stderr, "rewait: operation ID must be canonical Unix milliseconds, a colon, and 32 lowercase hexadecimal digits")
+		}
+		rewait, ok := operations.(rewaitOperations)
+		if !ok {
+			return report(stderr, "rewait: command operations are unavailable")
+		}
+		position, err := rewait.Position(flags["--confirmation-position-file"])
+		if err != nil {
+			return report(stderr, "rewait: "+err.Error())
+		}
+		if !control.ValidPosition(position) {
+			return report(stderr, "rewait: confirmation position is invalid")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), controlDeadline)
+		defer cancel()
+		_, wire, err := rewait.Rewait(ctx, addressOrDefault(flags["--address"]), flags["--subscription-id"], flags["--operation-id"], position)
+		if err != nil {
+			var daemonError *control.DaemonError
+			if errors.As(err, &daemonError) {
+				if writeAll(stdout, daemonError.Wire) != nil {
+					return report(stderr, "rewait: could not write the daemon response to stdout.")
+				}
+				return 1
+			}
+			return report(stderr, "rewait: "+err.Error())
+		}
+		if writeAll(stdout, wire) != nil {
+			return report(stderr, "rewait: wait was installed but its response could not be written to stdout.")
+		}
+		return 0
 	case "stop":
 		flags, err := parseFlags(args[1:], nil, []string{"--address"})
 		if err != nil {
@@ -111,7 +230,7 @@ func runWith(args []string, stdout, stderr io.Writer, operations commandOperatio
 		}
 		return 0
 	default:
-		return report(stderr, "usage: agent-pulse-hub <daemon|register|stop> ...")
+		return report(stderr, "usage: agent-pulse-hub <daemon|register|unsubscribe|rewait|notifications|notification|stop> ...")
 	}
 }
 
@@ -125,6 +244,26 @@ func addressOrDefault(address string) string {
 }
 
 func runDaemon(configPath, selectedStateDirectory, address string, stderr io.Writer) (returnErr error) {
+	return runDaemonWithRuntimeBudget(configPath, selectedStateDirectory, address, hub.DefaultRuntimeStateMaxBytes, stderr)
+}
+
+func parseRuntimeByteBudget(value string) (uint64, error) {
+	if value == "" {
+		return 0, errors.New("runtime-state-max-bytes must be positive decimal bytes")
+	}
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return 0, errors.New("runtime-state-max-bytes must be positive decimal bytes")
+		}
+	}
+	n, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || n == 0 {
+		return 0, errors.New("runtime-state-max-bytes must be positive decimal bytes through uint64 maximum")
+	}
+	return n, nil
+}
+
+func runDaemonWithRuntimeBudget(configPath, selectedStateDirectory, address string, budget uint64, stderr io.Writer) (returnErr error) {
 	settings, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -137,12 +276,28 @@ func runDaemon(configPath, selectedStateDirectory, address string, stderr io.Wri
 	if err != nil {
 		return err
 	}
+	var inputNames []string
+	for _, configured := range settings.Plugins {
+		if configured.Role == "input" {
+			inputNames = append(inputNames, configured.Name)
+		}
+	}
+	cleanupErr, err := store.RecoverCancellations(inputNames)
+	if err != nil {
+		return errors.Join(err, store.Close())
+	}
+	if cleanupErr != nil {
+		daemonLogger(stderr).Warn("cancellation_cleanup_error", "reason", boundedDiagnostic(cleanupErr.Error(), 1024))
+	}
 	registrations, err := store.Load()
 	if err != nil {
 		return errors.Join(err, store.Close())
 	}
 	logger := daemonLogger(stderr)
 	service := hub.NewWithRegistrationStore(logger, store)
+	if err := service.SetRuntimeStateMaxBytes(budget); err != nil {
+		return errors.Join(err, store.Close())
+	}
 	var server *control.Server
 	defer func() {
 		if server != nil {
@@ -159,7 +314,8 @@ func runDaemon(configPath, selectedStateDirectory, address string, stderr io.Wri
 
 	for _, configured := range settings.Plugins {
 		process := pluginprocess.New(pluginprocess.Config{
-			Name: configured.Name, Role: configured.Role, Executable: configured.Executable, Args: configured.Args,
+			RuntimeStateMaxBytes: budget,
+			Name:                 configured.Name, Role: configured.Role, Executable: configured.Executable, Args: configured.Args,
 		}, logger)
 		if err := service.AddPlugin(configured.Name, configured.Role, process); err != nil {
 			return err
@@ -179,6 +335,9 @@ func runDaemon(configPath, selectedStateDirectory, address string, stderr io.Wri
 		service.StartPlugins(ctx)
 		if ctx.Err() != nil {
 			return nil
+		}
+		if err := service.PrepareNotifications(); err != nil {
+			return err
 		}
 		if err := service.Restore(ctx); err != nil {
 			return err
@@ -264,6 +423,17 @@ func parseFlags(args, required, optional []string) (map[string]string, error) {
 }
 
 func loadArguments(path string) (*jsonvalue.Value, error) {
+	value, err := loadJSONFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if value.Kind() != jsonvalue.Object {
+		return nil, errors.New("argument file must contain a JSON object")
+	}
+	return value, nil
+}
+
+func loadJSONFile(path string) (*jsonvalue.Value, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("argument file path must be absolute")
 	}
@@ -289,9 +459,6 @@ func loadArguments(path string) (*jsonvalue.Value, error) {
 	value, err := jsonvalue.Parse(data, protocol.MaxFrameBytes-1)
 	if err != nil {
 		return nil, fmt.Errorf("parse argument file JSON: %w", err)
-	}
-	if value.Kind() != jsonvalue.Object {
-		return nil, errors.New("argument file must contain a JSON object")
 	}
 	return value, nil
 }

@@ -22,6 +22,8 @@ const (
 	maxStoredRegistrations = 1_024
 )
 
+//go:generate go run go.uber.org/mock/mockgen -source=store.go -destination=store_mock_test.go -package=registrationstore
+
 type readFile interface {
 	Read([]byte) (int, error)
 	Close() error
@@ -57,15 +59,19 @@ func (osFileSystem) OpenFile(path string, flags int, mode os.FileMode) (writeFil
 // Store owns the exclusive state-directory marker until Close. The caller
 // keeps it open until configured plugins have stopped.
 type Store struct {
-	mu        sync.Mutex
-	files     fileSystem
-	root      string
-	lockPath  string
-	records   string
-	staging   string
-	runtime   string
-	lockOwned bool
-	closed    bool
+	notifications   *notificationStoreState
+	runtimeLocks    map[string]*sync.Mutex
+	runtimeLockRefs map[string]int
+	mu              sync.Mutex
+	files           fileSystem
+	root            string
+	lockPath        string
+	records         string
+	staging         string
+	runtime         string
+	cancellations   string
+	lockOwned       bool
+	closed          bool
 }
 
 func Open(root string) (*Store, error) { return open(root, osFileSystem{}) }
@@ -98,12 +104,13 @@ func open(root string, files fileSystem) (*Store, error) {
 	}
 
 	store := &Store{
-		files:    files,
-		root:     root,
-		lockPath: filepath.Join(root, ".lock"),
-		records:  filepath.Join(root, "registrations"),
-		staging:  filepath.Join(root, "staging"),
-		runtime:  filepath.Join(root, "runtime"),
+		files:         files,
+		root:          root,
+		lockPath:      filepath.Join(root, ".lock"),
+		records:       filepath.Join(root, "registrations"),
+		staging:       filepath.Join(root, "staging"),
+		runtime:       filepath.Join(root, "runtime"),
+		cancellations: filepath.Join(root, "cancellations"),
 	}
 	if err := files.Mkdir(store.lockPath, 0o700); err != nil {
 		cause := fmt.Errorf("acquire state directory lock %s: %w", store.lockPath, err)
@@ -143,7 +150,7 @@ func open(root string, files fileSystem) (*Store, error) {
 		return fail(fmt.Errorf("new state directory %s changed during initialization", root))
 	}
 	if freshRoot {
-		for _, path := range []string{store.records, store.staging, store.runtime} {
+		for _, path := range []string{store.records, store.staging, store.runtime, store.cancellations} {
 			if err := files.Mkdir(path, 0o700); err != nil {
 				return fail(fmt.Errorf("create state directory %s: %w", path, err))
 			}
@@ -153,7 +160,7 @@ func open(root string, files fileSystem) (*Store, error) {
 		seen := make(map[string]bool, 4)
 		for _, entry := range entries {
 			name := entry.Name()
-			if name != ".lock" && name != "registrations" && name != "staging" && name != "runtime" {
+			if name != ".lock" && name != "registrations" && name != "staging" && name != "runtime" && name != "cancellations" && name != "notification-store.json" && name != "notifications" {
 				return fail(fmt.Errorf("state directory %s contains unknown entry %q", root, name))
 			}
 			seen[name] = true
@@ -184,6 +191,16 @@ func open(root string, files fileSystem) (*Store, error) {
 			}
 			createdDirectories = append(createdDirectories, store.runtime)
 		}
+	}
+	if info, err := files.Lstat(store.cancellations); errors.Is(err, fs.ErrNotExist) {
+		if err := files.Mkdir(store.cancellations, 0o700); err != nil {
+			return fail(fmt.Errorf("create cancellation directory %s: %w", store.cancellations, err))
+		}
+		createdDirectories = append(createdDirectories, store.cancellations)
+	} else if err != nil {
+		return fail(fmt.Errorf("inspect cancellation directory %s: %w", store.cancellations, err))
+	} else if !isDirectory(info) {
+		return fail(fmt.Errorf("cancellation path %s must be a real directory", store.cancellations))
 	}
 	if err := store.cleanStaging(); err != nil {
 		return fail(err)
@@ -323,6 +340,16 @@ func (s *Store) cleanStaging() error {
 	}
 	for _, entry := range entries {
 		path := filepath.Join(s.staging, entry.Name())
+		if strings.HasPrefix(entry.Name(), "runtime-stream-") {
+			nonce := strings.TrimPrefix(entry.Name(), "runtime-stream-")
+			if !validID(nonce) {
+				return fmt.Errorf("unsafe runtime staging directory %s", path)
+			}
+			if err := s.removeStreamDirectory(path, true); err != nil {
+				return err
+			}
+			continue
+		}
 		info, err := s.files.Lstat(path)
 		if err != nil {
 			return fmt.Errorf("inspect staging entry %s: %w", path, err)

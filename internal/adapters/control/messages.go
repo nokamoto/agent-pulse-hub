@@ -22,13 +22,22 @@ type RegistrationRequest struct {
 type RegistrationResponse struct {
 	Success        bool
 	SubscriptionID string
+	OperationID    string
 	Code           string
 	Message        string
 }
 
 type controlRequest struct {
-	operation    string
-	registration RegistrationRequest
+	notificationID       string
+	after                string
+	limit                int
+	offset               int
+	revision             string
+	operation            string
+	registration         RegistrationRequest
+	subscriptionID       string
+	operationID          string
+	confirmationPosition string
 }
 
 func parseRequest(frame []byte) (controlRequest, *hub.Error) {
@@ -44,8 +53,32 @@ func parseRequest(frame []byte) (controlRequest, *hub.Error) {
 		return controlRequest{}, &hub.Error{Code: "unsupported_version", Message: "Control protocol version is missing or unsupported."}
 	}
 	operation, ok := protocol.StringField(value, "op")
-	if !ok || (operation != "register" && operation != "stop") {
+	if !ok || (operation != "register" && operation != "stop" && operation != "rewait" && operation != "unsubscribe" && operation != "notifications" && operation != "notification") {
 		return controlRequest{}, &hub.Error{Code: "invalid_request", Message: "Control operation is invalid."}
+	}
+	if operation == "notification" || operation == "notifications" {
+		return parseNotificationRequest(value, operation)
+	}
+	if operation == "unsubscribe" {
+		fields := []string{"version", "op", "subscription_id"}
+		id, valid := protocol.StringField(value, "subscription_id")
+		if protocol.ValidateFields(value, fields, fields...) != nil || !valid || !ValidSubscriptionID(id) {
+			return controlRequest{}, &hub.Error{Code: "invalid_request", Message: "Unsubscribe requires exactly one canonical lowercase subscription UUID."}
+		}
+		return controlRequest{operation: operation, subscriptionID: id}, nil
+	}
+	if operation == "rewait" {
+		fields := []string{"version", "op", "subscription_id", "operation_id", "confirmation_position"}
+		if protocol.ValidateFields(value, fields, fields...) != nil {
+			return controlRequest{}, &hub.Error{Code: "invalid_request", Message: "Rewait request fields are invalid."}
+		}
+		id, idOK := protocol.StringField(value, "subscription_id")
+		op, opOK := protocol.StringField(value, "operation_id")
+		position, positionOK := protocol.StringField(value, "confirmation_position")
+		if !idOK || id == "" || !opOK || !ValidOperationID(op) || !positionOK || !ValidPosition(position) {
+			return controlRequest{}, &hub.Error{Code: "invalid_request", Message: "Rewait identifiers or confirmation position are invalid."}
+		}
+		return controlRequest{operation: operation, subscriptionID: id, operationID: op, confirmationPosition: position}, nil
 	}
 	if operation == "stop" {
 		if err := protocol.ValidateFields(value, []string{"version", "op"}, "version", "op"); err != nil {
@@ -55,6 +88,38 @@ func parseRequest(frame []byte) (controlRequest, *hub.Error) {
 	}
 	registration, requestErr := registrationFields(value)
 	return controlRequest{operation: operation, registration: registration}, requestErr
+}
+
+func EncodeRewaitSuccess(subscriptionID, operationID string) ([]byte, error) {
+	return protocol.EncodeFrame(jsonvalue.NewObject(map[string]*jsonvalue.Value{
+		"ok":              jsonvalue.NewBoolean(true),
+		"subscription_id": jsonvalue.NewString(subscriptionID),
+		"operation_id":    jsonvalue.NewString(operationID),
+	}))
+}
+
+func parseRewaitResponse(frame []byte) (RegistrationResponse, error) {
+	value, err := protocol.ParseFrame(frame)
+	if err != nil {
+		return RegistrationResponse{}, err
+	}
+	ok, valid := protocol.BooleanField(value, "ok")
+	if !valid {
+		return RegistrationResponse{}, errors.New("control response has no boolean ok field")
+	}
+	if !ok {
+		return parseErrorResponse(value)
+	}
+	fields := []string{"ok", "subscription_id", "operation_id"}
+	if protocol.ValidateFields(value, fields, fields...) != nil {
+		return RegistrationResponse{}, errors.New("successful rewait response fields are invalid")
+	}
+	id, idOK := protocol.StringField(value, "subscription_id")
+	op, opOK := protocol.StringField(value, "operation_id")
+	if !idOK || id == "" || !opOK || !ValidOperationID(op) {
+		return RegistrationResponse{}, errors.New("successful rewait response identifiers are invalid")
+	}
+	return RegistrationResponse{Success: true, SubscriptionID: id, OperationID: op}, nil
 }
 
 func registrationFields(value *jsonvalue.Value) (RegistrationRequest, *hub.Error) {

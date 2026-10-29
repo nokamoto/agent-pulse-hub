@@ -1,0 +1,16 @@
+{
+  "plugins": [
+    {
+      "name": "github-pr-watch",
+      "role": "input",
+      "executable": "<ABSOLUTE_GITHUB_PR_WATCH_EXECUTABLE>",
+      "args": ["--host", "github.com", "--poll-interval", "60", "--state-profile", "signals-v3"]
+    },
+    {
+      "name": "model",
+      "role": "output",
+      "executable": "<ABSOLUTE_MODEL_OUTPUT_EXECUTABLE>",
+      "args": []
+    }
+  ]
+}

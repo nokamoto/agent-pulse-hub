@@ -140,7 +140,27 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
+			h.mu.Lock()
+			_, exists := h.registrations[watch.registration.ID]
+			if !exists || h.runtimeWatches[watch.registration.ID] != watch || h.cancellations[watch.registration.ID] != nil {
+				h.mu.Unlock()
+				return
+			}
+			life := h.lifecycleLocked(watch.registration.ID)
+			if notification := h.notificationWaits[watch.registration.ID]; notification != nil {
+				if notification.preparing || notification.checkpointBusy {
+					h.mu.Unlock()
+					return
+				}
+				notification.checkpointBusy = true
+			}
+			h.mu.Unlock()
 			watch.mu.Lock()
+			if !quiesce && life.ctx.Err() != nil {
+				watch.mu.Unlock()
+				h.finishRewaitCheckpoint(watch)
+				return
+			}
 			flushed, err := h.flushRuntimeOutcomesLocked(ctx, watch)
 			if err != nil {
 				watch.mu.Unlock()
@@ -148,9 +168,30 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 				results <- runtimeCheckpointResult{watch: watch, err: err, operation: "delivery notice"}
 				return
 			}
-			state, err := watch.inputPort.Checkpoint(ctx, RuntimeCheckpointRequest{
+			checkpointCtx, checkpointCancel := context.WithCancel(ctx)
+			stopCancel := func() bool { return false }
+			if !quiesce {
+				stopCancel = context.AfterFunc(life.ctx, checkpointCancel)
+			}
+			if port, ok := watch.inputPort.(StreamPluginPort); ok {
+				h.mu.Lock()
+				stream := h.plugins[watch.inputName] != nil && h.plugins[watch.inputName].capabilities["runtime_state_stream_v1"]
+				h.mu.Unlock()
+				if store, ok := h.runtimeStore.(StreamRuntimeStore); ok && stream {
+					result := h.runStreamCheckpoint(checkpointCtx, quiesce, watch, port, store)
+					stopCancel()
+					checkpointCancel()
+					watch.mu.Unlock()
+					h.releasePendingEvents(flushed)
+					results <- result
+					return
+				}
+			}
+			state, err := watch.inputPort.Checkpoint(checkpointCtx, RuntimeCheckpointRequest{
 				SubscriptionID: watch.registration.ID, Quiesce: quiesce,
 			})
+			stopCancel()
+			checkpointCancel()
 			watch.mu.Unlock()
 			h.releasePendingEvents(flushed)
 			results <- runtimeCheckpointResult{watch: watch, state: state, err: err, operation: "checkpoint"}
@@ -171,11 +212,18 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 		go func() {
 			defer saves.Done()
 			for result := range jobs {
+				if result.stream != nil {
+					h.saveStreamResult(result)
+					h.finishRewaitCheckpoint(result.watch)
+					continue
+				}
 				if result.err != nil {
 					h.reportCheckpointError(ctx, quiesce, result)
+					h.finishRewaitCheckpoint(result.watch)
 					continue
 				}
 				h.saveRuntimeState(result.watch, result.state)
+				h.finishRewaitCheckpoint(result.watch)
 			}
 		}()
 	}
@@ -187,6 +235,7 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 }
 
 type runtimeCheckpointResult struct {
+	stream    *runtimeStreamSink
 	watch     *runtimeWatch
 	state     *jsonvalue.Value
 	err       error
@@ -197,6 +246,9 @@ func (h *Hub) runtimeWatchGroups() map[string][]*runtimeWatch {
 	h.mu.Lock()
 	groups := make(map[string][]*runtimeWatch)
 	for _, watch := range h.runtimeWatches {
+		if h.cancellations[watch.registration.ID] != nil {
+			continue
+		}
 		if state := h.plugins[watch.inputName]; state != nil && state.port == watch.inputPort {
 			groups[watch.inputName] = append(groups[watch.inputName], watch)
 		}
@@ -219,9 +271,22 @@ func (h *Hub) flushRuntimeOutcomesLocked(ctx context.Context, watch *runtimeWatc
 		}
 		watch.outcomes[0] = RuntimeNotice{}
 		watch.outcomes = watch.outcomes[1:]
+		h.mu.Lock()
+		if wait := h.notificationWaits[watch.registration.ID]; wait != nil {
+			wait.outstanding = false
+		}
+		h.mu.Unlock()
 		flushed++
 	}
 	return flushed, nil
+}
+
+func (h *Hub) finishRewaitCheckpoint(watch *runtimeWatch) {
+	h.mu.Lock()
+	if wait := h.notificationWaits[watch.registration.ID]; wait != nil {
+		wait.checkpointBusy = false
+	}
+	h.mu.Unlock()
 }
 
 func (h *Hub) finishRuntimeOutcome(item queuedEvent, status string) {
@@ -231,13 +296,27 @@ func (h *Hub) finishRuntimeOutcome(item queuedEvent, status string) {
 	h.mu.Lock()
 	watch := h.runtimeWatches[item.event.SubscriptionID]
 	stopping := h.stopping
+	cancelling := h.cancellations[item.event.SubscriptionID] != nil
 	h.mu.Unlock()
+	if cancelling {
+		h.releasePendingEvents(1)
+		return
+	}
 	if watch == nil || watch.inputPort != item.inputPort {
 		h.logger.Warn("runtime_state_persistence_error", "input_plugin", item.event.InputPlugin, "subscription_id", item.event.SubscriptionID, "operation", "delivery notice", "reason", "runtime state watch is unavailable", "message", runtimeWarning)
 		h.releasePendingEvents(1)
 		return
 	}
 	watch.mu.Lock()
+	h.mu.Lock()
+	cancelling = h.cancellations[item.event.SubscriptionID] != nil
+	_, exists := h.registrations[item.event.SubscriptionID]
+	h.mu.Unlock()
+	if cancelling || !exists {
+		watch.mu.Unlock()
+		h.releasePendingEvents(1)
+		return
+	}
 	if watch.unavailable {
 		watch.mu.Unlock()
 		h.releasePendingEvents(1)
@@ -330,11 +409,34 @@ func (h *Hub) reportCheckpointError(ctx context.Context, stopping bool, result r
 func (h *Hub) saveRuntimeState(watch *runtimeWatch, state *jsonvalue.Value) {
 	h.runtimeSaveGate <- struct{}{}
 	defer func() { <-h.runtimeSaveGate }()
+	h.mu.Lock()
+	_, exists := h.registrations[watch.registration.ID]
+	if !exists || h.runtimeWatches[watch.registration.ID] != watch || h.cancellations[watch.registration.ID] != nil {
+		h.mu.Unlock()
+		return
+	}
+	life := h.lifecycleLocked(watch.registration.ID)
+	h.mu.Unlock()
+	life.save.Lock()
+	defer life.save.Unlock()
+	h.mu.Lock()
+	_, exists = h.registrations[watch.registration.ID]
+	fenced := h.cancellations[watch.registration.ID] != nil
+	h.mu.Unlock()
+	if fenced || !exists {
+		return
+	}
 	if state == nil {
 		h.reportRuntimeStateError(watch, "save", errors.New("checkpoint returned no state"))
 		return
 	}
-	generation, err := h.runtimeStore.CommitRuntime(watch.registration, state)
+	done := make(chan streamSaveResult, 1)
+	_ = h.runtimeFS.submit(context.Background(), watch.registration.ID, func() {
+		generation, err := h.runtimeStore.CommitRuntime(watch.registration, state)
+		done <- streamSaveResult{generation: generation, err: err}
+	})
+	saved := <-done
+	generation, err := saved.generation, saved.err
 	if generation == 0 {
 		if err == nil {
 			err = errors.New("runtime state store returned no committed generation")

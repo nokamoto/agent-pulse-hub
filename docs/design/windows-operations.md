@@ -12,6 +12,10 @@ sources:
     title: Plugin-based event routing MVP
   - id: runtime-state-design
     resource: design/trigger-runtime-state.md
+  - id: cancellation-design
+    resource: design/subscription-cancellation.md
+  - id: notification-design
+    resource: design/notification-delivery.md
 ---
 
 # Model-plugin operations
@@ -46,6 +50,11 @@ the procedures do not select an operating system or support matrix.
 The maintainer runs the clean-build README walkthrough during delivery and
 records actual results. These instructions define the expected procedure;
 they are not a report that any check has passed.
+
+Steps 1–8 use the default legacy one-attempt output profile. The optional
+[notification inspection procedure](#inspect-notifications-and-conservative-retry)
+adds durable evidence and pre-submission retry in a separate run. It does not
+change the default walkthrough's acceptance evidence.
 
 ## 1. Prepare a clean build and evidence directory
 
@@ -396,8 +405,9 @@ process handle and log, and do not call forced termination normal shutdown.
 
 Normal shutdown retains committed registrations and releases state exclusion.
 Queued/in-flight events and incomplete registrations are not restored; an
-unconfirmed interrupted delivery is unknown. There is no per-subscription
-unsubscribe, delivery retry, automatic plugin restart, stopped-event collection,
+unconfirmed interrupted delivery is unknown. For selective removal use
+[Cancel one subscription](#cancel-one-subscription). There is no delivery retry,
+automatic plugin restart, stopped-event collection,
 or forced-termination/power-loss recovery guarantee. Output records remain
 separate ordinary files; registration state establishes restoration.
 
@@ -556,7 +566,7 @@ runtime-progress guarantee.
 | --- | --- |
 | Invalid configuration, executable, role, or endpoint | Correct the reported input and retain diagnostics; require both model roles before continuing. |
 | Rejected watch/destination or unavailable plugin | No active subscription is established. Check argument files, trigger absence, lexical path conflicts, and output parent/file validity. |
-| Output exit after an input watch request | The route stays inactive; its residual watch may consume capacity until daemon shutdown. It cannot deliver or be reused. Stop/restart deliberately before reusing a conflicted model trigger. |
+| Output exit after an input watch request | The route stays inactive; its residual watch may consume capacity until daemon shutdown. It cannot deliver or be reused. With a retained returned ID and a capable input, use [explicit unsubscribe](#cancel-one-subscription) to release it; otherwise stop/restart deliberately before reusing a conflicted model trigger. |
 | Missing registration response | Acceptance may be uncertain. An explicit identical request can recover the same still-active ID; the client never guesses a destination. |
 | Invalid trigger encoding/size or claim/read/remove failure | No event is emitted for that file. Inspect the claimed path and preserve leftovers before a new publication; no claim retry occurs. |
 | Output open failure before writing | The plugin reports `failed`; no retry occurs. Correct the destination before deliberately publishing a distinct event. |
@@ -608,6 +618,13 @@ record, so inspect it before deciding whether damaged-file recovery applies.
 ## Trigger runtime state recovery
 
 This procedure derives from [trigger runtime state](trigger-runtime-state.md).
+For inputs advertising `runtime_state_stream_v1`, also follow
+[streamed-state resource controls and migration](runtime-state-stream.md#resource-controls-and-operator-instructions).
+That contract defines `--runtime-state-max-bytes`, complete `.stream`
+generations, legacy conversion and fail-closed downgrade. Backup/reset applies
+to the entire registration runtime directory, never an individual chunk.
+Keep a sufficient byte budget on restart; lowering it below saved state causes
+visible restoration failure rather than a fresh baseline.
 Participating inputs select `runtime_state_v2` when first observation must wait
 until the host can admit events. They apply state and accept while dormant,
 then poll/emit only on `activate_watch`. Standalone callers prepare their event
@@ -695,8 +712,8 @@ Do not remove just the latest generation, which could select older progress.
 `DELETE` removes both saved registration and runtime directory. Restart, wait
 for readiness, then repeat the original register command with the chosen
 arguments. Even identical arguments create a new UUID with initial state;
-other retained registrations keep their own progress. No live deletion command
-is introduced. If interrupted between offline removals, finish the chosen
+other retained registrations keep their own progress. Prefer the live unsubscribe
+procedure below for ordinary selective removal. If interrupted between offline removals, finish the chosen
 procedure while still stopped or restore the complete backup before restarting.
 
 For repair that preserves continuity, keep every owner stopped and restore a
@@ -706,6 +723,120 @@ together. Old daemons reject `runtime/`; deliberate rollback requires preserving
 it separately from a stopped working tree and using old-compatible trigger
 artifacts. An old daemon cannot maintain the newer runtime progress; returning
 to the new daemon requires an explicit restore/reset decision.
+
+## Cancel one subscription
+
+Use a daemon and input built with the
+[individual cancellation profile](subscription-cancellation.md). Keep the
+`subscription_id` printed by each successful registration, along with its daemon
+address. It is the cancellation target; argument files and conversation identity
+are not substitutes. With the daemon running, use the same hub executable.
+Replace `<absolute-hub-path>` with the absolute path held in the Python `hub`
+variable from the build step:
+
+```sh
+<absolute-hub-path> unsubscribe --subscription-id <returned-id> --address 127.0.0.1:47831
+```
+
+Success exits zero and prints `{"ok":true,"subscription_id":"<returned-id>"}`.
+Only that monitor stops; other subscriptions and shared plugins continue.
+Already-issued output may still arrive, but no new attempt for that ID begins.
+Its saved registration and progress are removed. Stop normally, wait for all
+configured processes to exit, and restart with the same configuration/state:
+the cancelled watch remains absent. Explicit registration of its old arguments
+creates a fresh ID and initial progress without the old resource reservation.
+
+Malformed IDs fail before changes. A valid unknown/already-cancelled ID returns
+`unknown_subscription`. `unsubscribe_unsupported` means upgrade the input and
+daemon together while stopped, restart from the same state, then use the same
+ID; do not re-register to find it. Plugin or storage failures are not success.
+Read the bounded error's stage: before durable intent commit, restart can restore
+the target; after commit, startup finishes deletion before readiness. Repair
+the reported cause and explicitly retry the same ID, or stop normally and
+restart after repair. Never modify a live state tree. A missing response is
+uncertain; retry deliberately, knowing an already-completed removal returns
+not-found rather than another success. Do not automatically select another ID.
+
+If startup reports an incomplete cancellation, keep all owners stopped and
+preserve the entire tree before repairing the reported obstruction. Keep
+`cancellations/` intents intact so startup can finish the requested removal.
+Do not run the offline RESET example on a target with a pending intent, and do
+not delete intents to bypass recovery. The cancellation design defines rollback
+of the new reserved directory. Outputs already delivered cannot be recalled.
+
+## Inspect notifications and conservative retry
+
+The [notification design](notification-delivery.md) and
+[public output profile](plugin-v1.md#optional-notification-delivery) govern this
+procedure. Complete the build/configuration steps above and stop the daemon
+normally before changing plugin arguments. Preserve the entire stopped state
+tree. Use matching host/model-output artifacts that support the profile; older
+strict hosts can reject its capability. Add the explicit option to the model
+output entry, keeping the manual trigger unchanged:
+
+```python
+config["plugins"][1]["args"] = ["--notification-delivery"]
+config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+daemon, daemon_sink, daemon_log = start_daemon()
+```
+
+Wait for `daemon_ready` and the same restored subscription ID as in step 7.
+For a fresh state directory, register using step 4 first. Publish one unique
+marker through step 5's ordinary closed-file rename procedure; no historical
+event is reconstructed when enabling tracking. List using the retained ID:
+
+```python
+listed = subprocess.run([str(hub), "notifications", "--subscription-id",
+    subscription, "--limit", "20", "--address", address],
+    cwd=repo, text=True, encoding="utf-8", capture_output=True, check=True)
+page = json.loads(listed.stdout)
+print(page)
+assert page["notifications"], "No retained record yet; inspect again after event admission"
+notification_id = page["notifications"][0]["notification_id"]
+shown = subprocess.run([str(hub), "notification", "--notification-id",
+    notification_id, "--address", address], cwd=repo, text=True,
+    encoding="utf-8", capture_output=True, check=True)
+print(json.loads(shown.stdout))
+```
+
+Select the intended record using its ID/time; the list is UUID-ordered rather
+than newest-first. If the list is empty, no retained notification matches; that
+does not prove an old event was never submitted. When `next_after` is non-null,
+pass it as `--after` to read another page. Pagination is live: restart listing
+to discover notifications whose IDs sort before an earlier cursor. Show assembles
+bounded read-only chunks internally; an unstable snapshot fails visibly rather
+than printing mixed evidence. Neither command submits work.
+
+Read `acceptance` separately from `retry_state`. Temporary proven-unsubmitted
+failures can produce up to three attempts under one notification ID, with minimum
+two/ten-second retry delays and any longer destination guidance. The daemon
+schedules them without a retry command or an agent polling turn. A successful
+write is accepted; unknown after a possible write stops immediately, even if the
+destination file appears empty. Permanent/rejected/exhausted outcomes also stop.
+Do not manufacture a failure by damaging live state; controlled verification
+owns failure injection. A normal successful run does not prove retry was exercised.
+
+Stop using step 7, await configured process exits, then restart the same state.
+Inspect the same ID: only retained eligible unsubmitted work may resume with its
+remaining budget. Unknown and accepted notifications are not resent. Evidence
+remains after successful unsubscribe, but scheduled work is cancelled and a late
+ACK cannot recreate the watch. Keep notification files separate from trigger
+progress cleanup.
+
+Evidence expires seven days after admission; missing/expired IDs return not-found,
+not unsent. At 1,024 retained records new admission fails visibly until expiry frees
+space. Corruption, missing guards, clock regression and storage errors block unsafe
+work with an actionable reason. Preserve the stopped tree and follow the design's
+recovery rules; deleting files, using an old backup, republishing context or
+re-registering is not safe recovery of an uncertain notification. Rollback with
+notification records is unsupported; older daemons reject the new state entries.
+
+For Codex, add this option alongside the configured `--codex-executable` and use
+the [Codex instructions](codex-queue.md#configuration-and-operating-instructions).
+Only the non-experimental queue interface is used. A queue token confirms target
+acceptance, not conversation receipt or work completion. Started-but-unconfirmed
+queue processes remain unknown; no receiver idempotency or acceptance lookup is
+assumed. Keep real-Codex delivery evidence separate from the model run.
 
 ## Source-layout migration
 

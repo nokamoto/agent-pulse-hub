@@ -5,10 +5,16 @@ description: Restore optional trigger-owned progress through core-managed coordi
 sources:
   - id: runtime-requirements
     resource: requirements/trigger-runtime-state.md
+  - id: subscription-cancellation-requirements
+    resource: requirements/subscription-cancellation.md
   - id: registration-design
     resource: design/state-persistence.md
   - id: routing-design
     resource: design/mvp.md
+  - id: notification-design
+    resource: design/notification-delivery.md
+  - id: runtime-stream-design
+    resource: design/runtime-state-stream.md
 ---
 
 # Trigger runtime state persistence
@@ -23,7 +29,14 @@ requests a final checkpoint, and saves it before stopping plugins. Successful
 persistence prevents a completed update from being notified again solely because
 of restart. Recipient processing, unfinished notifications, crash recovery,
 automatic retries, and collection of updates while stopped remain outside this
-guarantee. Actions have no new interface or state obligations.
+guarantee. This trigger-progress feature alone adds no action obligations.
+The optional [notification-delivery design](notification-delivery.md) separately
+owns retained notification evidence and safe retry for participating outputs;
+it does not change trigger checkpoint formats or source deduplication.
+
+[Subscription cancellation](subscription-cancellation.md) governs selective
+live deletion. Its registration fence stops checkpoint scheduling and commits
+for the target, while this design continues to govern retained watches.
 
 Participation is an optional capability in application/framework version 2.
 `runtime_state_v2` adds explicit activation once route admission is ready. The
@@ -65,6 +78,13 @@ restorable snapshot, and deciding which completed updates that snapshot prevents
 from being emitted again. It performs no state-file access or persistence-service
 calls. The action retains sole authority to report delivery acceptance.
 
+Inputs may additionally select the [repeated-wait profile](pr-watch-rewait.md)
+alongside runtime-state v2. Its notification generations and operation receipts
+are daemon-owned Session control, distinct from plugin-owned logical progress.
+It retains this storage format and checkpoint contract; the profile governs
+preparation/grant ordering against checkpoints and automatic rearming after
+restart. Inputs without that capability retain the behavior below unchanged.
+
 For a participating watch the core correlates each admitted event with its
 event ID and sends its terminal outcome back to the input. The input consumes
 these notices in host-stream order before producing a requested checkpoint.
@@ -73,8 +93,13 @@ progress necessary to suppress every such update. A scan cursor that moves past
 unfinished updates is not evidence of their successful notification.
 
 The core neither understands service cursors nor inspects payload fields to
-choose destinations. Existing captured-recipient routing and one-attempt
-delivery remain unchanged. State is distinct from watch/destination arguments.
+choose destinations. Captured-recipient routing remains unchanged; one-attempt
+delivery applies to legacy outputs. For notification-profile routes, keep the
+event correlation outstanding across intermediate retryable unsubmitted
+attempts and send one terminal notice for the notification, not each attempt.
+Accepted sends accepted, unknown sends unknown, stopped unaccepted work sends
+failed, and pre-admission rejection sends discarded, under the governing
+notification design. State is distinct from watch/destination arguments.
 
 ## Interfaces and data
 
@@ -95,7 +120,8 @@ progress. The core stores only its last value and bounded outstanding work.
 
 The state envelope contains exactly `schema` and `payload`. `schema` is a
 nonempty string of at most 128 decoded UTF-8 bytes; `payload` is a JSON object.
-The complete compact-encoded envelope is at most 32,768 bytes. Existing strict
+For inputs without `runtime_state_stream_v1`, the complete compact-encoded
+envelope is at most 32,768 bytes. Existing strict
 [JSON, Unicode, and exact-number rules](plugin-v1.md#application-service-and-encoding)
 apply. The core validates shape and
 size; only the trigger validates the service meaning and schema compatibility.
@@ -118,6 +144,15 @@ are retrieved or skipped. They implement restoration, ordered delivery-notice
 handling, and snapshot production; no storage location or filesystem contract
 belongs in the plugin. No additional RPC, service SDK, or Go dependency is
 required by this language-neutral JSON/gRPC extension.
+
+Inputs combining `runtime_state_v2` and `runtime_state_stream_v1` instead use
+[streamed opaque state](runtime-state-stream.md). That optional specification
+owns the ordered-object representation, conditional restore/checkpoint wire
+schemas, byte budget and complete multi-chunk generation format. Each object
+remains at most 32,768 bytes and every message remains at most 65,536 bytes;
+there is no single-envelope total-state reservation for this profile. Its
+ten-second watch/batch/final-stop windows and delivery-notice fence are unchanged.
+Legacy runtime-state v1/v2 inputs retain all envelope behavior above.
 
 ### Storage and compatibility
 
@@ -147,6 +182,15 @@ unsupported versions, or owner mismatch fail restoration. For multiple valid
 generation filenames load the highest only and validate it completely; corrupt
 newest state never falls back to older progress.
 
+The optional [stream format and migration](runtime-state-stream.md#core-managed-generation-storage)
+add `<generation>.stream/` directories only for stream-capable inputs. Select
+the highest generation across both forms; equal-number forms, an invalid newest
+generation or unsupported stream capability fail closed. The stream specification
+governs staging and atomic directory commit for that form. Legacy files retain
+their exact format and limits. A stream-capable host hands a legacy envelope
+to a compatible plugin as one opaque payload object with the original schema;
+only a later successful checkpoint creates a higher stream generation.
+
 To save, select one more than the highest generation, exclusively create/write/
 close a temporary file in existing `staging/`, then rename to the previously
 absent final generation path on the same filesystem. A successful rename is
@@ -163,6 +207,10 @@ uncommitted registration tombstones. Runtime directories for IDs absent from
 the committed registration set are never loaded or assigned to another route;
 offline deletion removes them. Validate their entry names/types without
 interpreting their payloads as live registrations.
+Explicit unsubscribe removes target runtime state through the
+[cancellation transaction](subscription-cancellation.md); committed removal
+intents are resolved before runtime loading. A remaining orphan alone does not
+make an ID eligible for unsubscribe or transfer progress to a new registration.
 
 A missing per-registration directory means initial state, including an explicit
 offline reset. An existing saved checkpoint requires a participating input;
@@ -175,7 +223,9 @@ destination or canonical duplicate key.
 ### Registration and startup
 
 Keep destination validation before watch acceptance and commit/activation
-serialization. New participating watches receive `state: null`; a repeated
+serialization. New legacy-profile participating watches receive `state: null`;
+stream-profile watches receive null schema and zero chunks followed by end.
+A repeated
 equivalent active registration returns its existing ID without another watch,
 reset, or checkpoint. Registration storage failure retains the existing inert
 tombstone behavior and does not schedule runtime checkpoints for that route.
@@ -270,15 +320,26 @@ Stop/Ctrl+C use the same coordinator. Under lifecycle serialization close new
 registration/event admission and establish the delivery-result cutoff. A valid
 `accepted` result processed before this cutoff is confirmed and its notice must
 precede the final checkpoint. Results processed after the cutoff cannot change
-an already final unknown outcome. This makes an acceptance/stop race explicit.
+an already final source outcome. The notification profile may still advance
+only its retained ledger from bounded late acceptance evidence, never send
+another terminal notice or update an old checkpoint. This makes an
+acceptance/stop race explicit.
 
-Wait for any serialized registration commit already in progress. Discard queued
+Wait for any serialized registration commit already in progress. Discard legacy queued
 work with `discarded` notices, cancel unconfirmed in-flight delivery work and
 record `unknown`; neither outcome authorizes advancing successful-notification
 progress. Cancel pending registrations. Keep participating input Sessions alive
 for the final coordination instead of cancelling every Session immediately.
 Finish/expire a periodic checkpoint correlation before issuing the final one;
 a periodic result cannot substitute for a later final snapshot.
+For notification-profile work, first save known outcomes, mark issued uncertain
+attempts unknown, and retain queued/waiting proven-unsubmitted work with its
+consumed bounds under the
+[notification stop contract](notification-delivery.md#source-outcomes-shutdown-and-cancellation).
+Send final `failed` for retained unsent work and `unknown` for issued uncertain
+work before final input checkpointing. Failed notification save is a visible
+continuity failure, never permission for restart retry. Await those saves
+before releasing state exclusion.
 
 Concurrently for each participating input, send all remaining terminal notices
 and `checkpoint` requests with `quiesce: true`. Quiescing prevents further event
@@ -295,10 +356,41 @@ does not stop other watches or notifications.
 Then cancel Sessions, use standard `Client.Kill`, await configured-process exit,
 and release state exclusion only after all storage work and plugin cleanup.
 Stop acknowledgement still precedes process exit; the operator waits for exit.
-There is no new process-shutdown RPC, automatic delivery retry, event replay, or recipient
+This trigger-progress feature adds no process-shutdown RPC, automatic delivery retry, event replay, or recipient
 processing claim. The final protocol phase is bounded; existing filesystem and
 framework-cleanup limits remain separately observable. Successful checkpoint
 diagnostics identify the registration and committed generation without payloads.
+
+### Coordination with individual cancellation
+
+The [cancellation design](subscription-cancellation.md) owns the target's
+terminal lifecycle fence. Serialize that fence with admission, activation,
+rewait commits, outcome handling, checkpoint scheduling and every runtime save
+commit. Remove the target from future periodic and final-stop selections.
+An already selected checkpoint or save job must recheck the same registration
+identity and fence before publishing state. Drain any save that already won
+this ordering before deleting runtime files; checking only at snapshot
+selection or removing the watch from a map is insufficient.
+
+Cancellation does not need a final target checkpoint: the requested outcome
+is removal of that progress. Late checkpoint results, delivery notices and
+action results may be diagnosed or finish existing outcome correlation, but
+cannot schedule another save, recreate a runtime directory, rearm a generation
+or restore a route. An issued action attempt may finish after unsubscribe
+succeeds; this does not make its deleted checkpoint state live again. Keep the
+bounded correlation necessary to finalize that attempt without retaining
+cancelled service progress. Other watches continue their ordinary notices,
+checkpoint schedule and normal-stop persistence.
+Durably cancel retained target notification retry states before runtime or
+registration removal and successful unsubscribe, under the notification design.
+Its evidence survives progress deletion and late matching acceptance updates
+only that evidence, never the removed watch or checkpoint.
+
+Notification retries resumed after restart have no old Session event ID. Their
+later acceptance updates only the notification ledger, without an old terminal
+notice or successful-progress checkpoint update. Existing source deduplication
+and failed-event recovery are unchanged: a later source event is a distinct
+notification even when its context or source data resembles retained work.
 
 ### Offline reset, deletion, and recreation
 
@@ -319,8 +411,9 @@ and its entire runtime directory while stopped. Recreate by normal registration
 after restart; it receives a new UUID and initial state even with identical
 arguments. Removing only a registration file never transfers its orphan runtime
 directory to the recreated ID. Restore a preserved valid tree/configuration for
-repair instead of resetting when continuity is required. No live removal API or
-automatic corrupt-state salvage is added.
+repair instead of resetting when continuity is required. This recovery
+procedure adds no automatic corrupt-state salvage. Explicit live removal is
+separately governed by [subscription cancellation](subscription-cancellation.md).
 
 ## Specification documents
 
@@ -329,11 +422,16 @@ recovery, and runtime-state acceptance. [Plugin v2](plugin-v1.md) is the separat
 authoritative wire specification for authors in any language; its optional
 extension derives from this design. [Registration persistence](state-persistence.md)
 retains immutable registration storage/commit/exclusion authority and incorporates
-this mutable runtime extension by reference. [MVP](mvp.md) retains recipient,
+this mutable runtime extension by reference. The
+[cancellation design](subscription-cancellation.md) owns selective termination,
+save fencing and the removal-intent recovery exception to restoration.
+[MVP](mvp.md) retains recipient,
 delivery and configuration authority. The [operation guide](windows-operations.md)
 derives reusable operator procedures; [bundled design](bundled-plugins.md) retains
 unchanged model-plugin artifacts and its verification authority. No additional
-specification is deferred. Internal package/helper names and temporary suffixes
+specification is deferred. The optional [stream specification](runtime-state-stream.md)
+owns its capability, conditional wire/storage contracts and resource controls;
+it derives ownership and coordination from this design. Internal package/helper names and temporary suffixes
 remain routine implementation choices constrained by these contracts.
 
 ## Decisions and alternatives
@@ -343,7 +441,7 @@ remain routine implementation choices constrained by these contracts.
 | Runtime-state v2 one-way activation; preserve v1 | Silently strengthen v1; reject v1; add activation ACK or all-watch transaction | Explicit opt-in preserves existing authors and binary shapes; rejecting v1 expands migration scope. A grant suffices once admission is installed. An ACK cannot undo earlier delivery if a later watch fails; post-commit failure uses ordinary unavailability. |
 | Optional v2 capability and distinct participating messages | Mandatory wire version change; adding fields to every old message | Unchanged old inputs retain their artifacts and message shapes; new participating inputs require a new host. |
 | Ordered outcome notices plus coordinated snapshots | Snapshot after cancelling input; event receipt as successful progress; core service-cursor interpretation | Preserves confirmed delivery at normal stop while keeping service meaning inside the trigger. |
-| Per-registration bounded state envelope | Per-process shared state; arbitrary unbounded blobs | Ownership and reset are explicit; a trigger must bound/compact its own progress representation. |
+| Per-registration bounded envelope, or optional stream | Per-process shared state; arbitrary unbounded blobs | Ownership and reset are explicit. Legacy inputs retain their allocation; the stream profile separates message size from total state under an operator byte budget and existing time limits. |
 | Immutable generation commit and old-generation cleanup | Replace an existing file; retain every checkpoint forever | Portable unique-path rename preserves the previous commit on failure without intentional storage growth. |
 | Fail closed on incompatible state | Automatic initial state; silently ignore state on opt-out | Continuity requires an explicit repair or reset decision. |
 | Periodic plus final snapshots | Shutdown-only saves; plugin-owned files | Periodic failures become visible during monitoring; final coordination covers later accepted notifications. |
@@ -469,15 +567,20 @@ service-plugin quality evidence remains with its governing design.
 
 Implement optional wire capability, outcome correlation, checkpoint lifecycle,
 runtime storage, diagnostics, and operator procedures together after approval.
-Capability revision changes no persistent format: registration v1 records,
+The original v1-to-v2 activation revision changes no persistent format: registration v1 records,
 runtime generation version 1, state envelopes and plugin schemas stay identical.
+The separately opted-in [stream rollout](runtime-state-stream.md#migration-and-rollout) adds
+stream generation version 2, preserves legacy readback and requires matching
+stream-capable binaries after a stream generation is committed.
 A compatible v1-to-v2 trigger upgrade loads the same saved checkpoint without
 rewrite. Do not persist/infer the negotiated capability from progress. New v2
 inputs require a v2-capable host; older strict hosts reject its unknown capability
 visibly. Use matching binaries and stopped-tree preservation for rollback. V1
 on the new host remains supported with its explicit pre-readiness discard limit.
 Old registration v1 files need no rewrite; absent runtime directories mean
-initial state. Manual/model plugins remain nonparticipating and unchanged.
+initial state. Manual/model plugins remain nonparticipating in runtime state;
+their independent cancellation capability follows the
+[cancellation migration](subscription-cancellation.md).
 Existing pure-registration storage failure semantics remain intact.
 
 Stop before replacing binaries and preserve the entire tree. Old daemons reject
