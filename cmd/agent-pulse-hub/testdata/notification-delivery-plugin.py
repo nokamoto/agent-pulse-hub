@@ -101,7 +101,9 @@ def serve(directory, role):
         number = 1
         while not stopped.is_set():
             path = directory / f"command-{number}.json"
-            if not path.exists():
+            # Existence of the command alone does not prove its publisher's
+            # rename has returned. The marker releases this read afterwards.
+            if not (directory / f"command-{number}.ready").exists():
                 time.sleep(0.005)
                 continue
             command = json.loads(path.read_text(encoding="utf-8"))

@@ -241,11 +241,21 @@ var _ = Describe("Trigger runtime state command acceptance", Serial, func() {
 			if err := os.RemoveAll(filepath.Join(variantState, runtimeOwnerDirectory)); err != nil {
 				t.Fatalf("explicit offline reset of %s: %v", variant.name, err)
 			}
+			// A v1 watch may consume early input before admission opens. Preserve
+			// the original source offline and release it only after readiness so
+			// this case tests reset recovery without assuming v2 activation.
+			heldSource := source + ".held"
+			if err := os.Rename(source, heldSource); err != nil {
+				t.Fatalf("hold reset source while stopped: %v", err)
+			}
 			reset := mvpEnv.startDaemonWithState(t, root, config, freeMVPAddress(t), variantState)
 			DeferCleanup(reset.cleanup)
 			ready := mvpRowsOfMessage(reset.logPath, "daemon_ready")
 			if len(ready) != 1 || ready[0]["restored_registrations"] != float64(1) {
 				t.Fatalf("explicit reset readiness = %v; log=%s", ready, readMVPFile(reset.logPath))
+			}
+			if err := os.Rename(heldSource, source); err != nil {
+				t.Fatalf("release original source after readiness: %v", err)
 			}
 			if !waitMVP(t, 3*time.Second, func() bool { return len(modelRecords(t, destination)) == outputBeforeVariant+1 }) {
 				t.Fatalf("reset did not permit initial source behavior: %s", readMVPFile(reset.logPath))
