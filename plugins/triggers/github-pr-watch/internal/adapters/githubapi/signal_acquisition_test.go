@@ -232,7 +232,7 @@ func TestReadSignalPRSelectedOrigin(t *testing.T) {
 	})
 	client := NewWithHTTPClient(&http.Client{Transport: transport})
 	total := uint64(0)
-	aggregate, result, err := client.readSignalPR(context.Background(), config, "secret", &total)
+	aggregate, result, _, err := client.readSignalPR(context.Background(), config, "secret", &total)
 	if err != nil || aggregate.ID != "pr" || result.Pair != observed.Pair || !result.Draft || total == 0 {
 		t.Fatal(aggregate, result, err)
 	}

@@ -98,9 +98,9 @@ func TestSignalPRPairConsistency(t *testing.T) {
 	if err != nil || observed.BaseExists {
 		t.Fatal(observed, err)
 	}
-	race := strings.Replace(body, `"target":{"oid":"`+strings.Repeat("b", 40), `"target":{"oid":"`+strings.Repeat("c", 40), 1)
-	if _, _, err := parseSignalPR(signalRaw(t, race)); err == nil || err.Error() != "observation_changed_during_acquisition" {
-		t.Fatal(err)
+	unequal := strings.Replace(body, `"target":{"oid":"`+strings.Repeat("b", 40), `"target":{"oid":"`+strings.Repeat("c", 40), 1)
+	if _, observed, err := parseSignalPR(signalRaw(t, unequal)); err != nil || observed.Pair.BaseSHA != strings.Repeat("c", 40) {
+		t.Fatal(observed, err)
 	}
 	for _, mutation := range []string{strings.Replace(body, `"isDraft":true`, `"isDraft":null`, 1), strings.Replace(body, `"mergeable":"UNKNOWN"`, `"mergeable":"BEHIND"`, 1), strings.Replace(body, `"baseRepository":{"id":"repo"}`, `"baseRepository":null`, 1)} {
 		if _, _, err := parseSignalPR(signalRaw(t, mutation)); err == nil {
