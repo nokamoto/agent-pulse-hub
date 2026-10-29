@@ -1,1 +1,2 @@
-GPWS-D01 controlled base: conflicting base-only update
+GPWS-D01 controlled head: changed line for later base-only conflict
+Fixed head for real CI failure observation.
