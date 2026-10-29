@@ -43,6 +43,11 @@ def serve(directory, activation_v2=False):
     def read_source(watch):
         position = 0
         source = Path(watch["args"]["source_file"])
+        release = watch["args"].get("source_release_file")
+        # Test-owned input release; independent of the host's v1/v2 protocol.
+        while release and not Path(release).exists():
+            if stopped.wait(0.01):
+                return
         if activation_v2:
             record("source_read", subscription_id=watch["subscription_id"])
         while not stopped.is_set():
