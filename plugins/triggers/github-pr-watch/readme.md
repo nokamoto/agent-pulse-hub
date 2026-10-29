@@ -7,10 +7,11 @@ confirmation position.
 
 The first complete observation establishes a silent baseline. Later observed
 reviews, conversation comments, review comments/replies, reviewer requests,
-thread resolution, PR-head changes and lifecycle changes can notify. Activity
-by the represented person also counts. This guide covers the discussion and
-capacity behavior shipped with implementation
-[#96](https://github.com/nokamoto/agent-pulse-hub/pull/96).
+thread resolution, PR-head changes and lifecycle changes can notify. New
+current-head CI failures, confirmed base-branch conflicts and Draft-to-Ready
+transitions also notify independently, without a comment or head change.
+Activity by the represented person also counts. The receiving agent decides
+whether to act or wait again.
 
 ## Prerequisites and build
 
@@ -23,7 +24,13 @@ with `public_repo` for public repositories or `repo` for private/internal ones,
 including required organization/SSO authorization. Fine-grained tokens and
 other GHES versions have no declared supported profile. HTTPS uses system
 certificate verification. GHES requires a discoverable supported version and
-all required GraphQL fields; access to one endpoint alone is insufficient.
+all required GraphQL fields and the REST commit-status endpoint; repository
+access alone does not prove CI visibility. Both APIs use the same selected
+credential. The REST version is `2022-11-28`; GraphQL has no version header.
+The plugin reads individual check runs and commit statuses, including results
+not required by a merge gate. REST permission tables for Checks and Commit
+statuses do not establish GraphQL access. GitHub App tokens are not a declared
+credential profile either.
 
 The input process selects the first nonempty `GH_TOKEN`, then `GITHUB_TOKEN`,
 otherwise `gh auth token --hostname <host>`. A rejected selected credential
@@ -38,15 +45,15 @@ Use separate plugin processes and host-specific environment
 assignments for different hosts; do not implicitly reuse one environment token
 across hosts.
 
-This walkthrough builds the validated source revision of implementation #96.
-The checkout below selects that snapshot so later default-profile changes do
-not alter these steps. In the first terminal, obtain and build matching
+This walkthrough builds the signal implementation with its base-revision fix
+from [#103](https://github.com/nokamoto/agent-pulse-hub/pull/103).
+The checkout below selects that snapshot. In the first terminal, obtain and build matching
 programs. Stop on failure:
 
 ```sh
 git clone https://github.com/nokamoto/agent-pulse-hub.git
 cd agent-pulse-hub
-git checkout --detach a384a0b6f6577a28a01d64a9927e4c5eb097306a
+git checkout --detach 5b73c05d39c7e280cf8f59e11aecf8ea8d475da9
 mkdir ./pr-watch-demo
 run="$(python3 -c 'from pathlib import Path; print((Path.cwd() / "pr-watch-demo").as_posix())')"
 suffix="$(go env GOEXE)"
@@ -86,7 +93,7 @@ executables = {"github-pr-watch": "github-pr-watch", "model": "model-output"}
 for plugin in config["plugins"]:
     plugin["executable"] = str(run / (executables[plugin["name"]] + suffix))
     if plugin["name"] == "github-pr-watch":
-        plugin["args"] = ["--host", host, "--poll-interval", "60"]
+        plugin["args"] = ["--host", host, "--poll-interval", "60", "--state-profile", "signals-v3"]
 watch = json.loads(Path("plugins/triggers/github-pr-watch/examples/watch-args.json").read_text())
 watch.update(host=host, owner=owner, repository=repository, pull_number=int(number))
 destination = {"output_file": str(run / "events.jsonl")}
@@ -148,7 +155,8 @@ try:
     manifest = json.loads((generation / "manifest.json").read_text(encoding="utf-8"))
     header = json.loads((generation / "00000000000000000000.json").read_text(encoding="utf-8"))
     assert manifest["subscription_id"] == sys.argv[2]
-    assert manifest["schema"] == "github-pr-watch-v2"
+    assert manifest["schema"] == "github-pr-watch-v3"
+    assert header["version"] == 3 and header["signal_version"] == 1
     assert header["kind"] == "header" and header["baseline"] is True
     assert header["observation_sequence"] > 0
 except (OSError, ValueError, KeyError, AssertionError):
@@ -184,6 +192,46 @@ between rounds can be missed. A failed first acquisition creates no baseline;
 failed later pagination preserves the last complete observation and cannot imply
 deletion. Observation is not an atomic GitHub snapshot and does not retrieve diffs
 or source files. No notification decides whose turn it is.
+
+## Interpret independent signals
+
+Existing failures, conflicts and Ready status are silent in the first complete
+baseline. After it, any one eligible signal can consume the active wait:
+
+| Signal | What independently notifies |
+| --- | --- |
+| Check run | A newly observed completed result with `FAILURE`, `STARTUP_FAILURE`, `TIMED_OUT` or `ACTION_REQUIRED`. A new run ID or changed execution/result version can qualify again. |
+| Commit status | A newly observed record with `error` or `failure`, identified separately from check runs and from other records with the same context name. |
+| Conflict | GitHub reports `CONFLICTING` for the current head/current base pair, including a base-only update. A later observed resolution permits recurrence. |
+| Readiness | An observed Draft-to-Ready transition, including a later transition after Ready-to-Draft. |
+
+Check conclusions `CANCELLED`, `STALE`, `NEUTRAL`, `SKIPPED` and `SUCCESS`
+are non-failures. Pending/queued/requested/waiting/in-progress checks and
+`pending`/`success` commit statuses do not independently wake the agent.
+Recovery, conflict resolution and Ready-to-Draft update current state without
+independent notification. An observed non-failure followed by failure can
+create a new episode. A changed execution version is evidence of a changed
+result, not proof of an unobserved provider rerun.
+
+Unchanged failures do not notify repeatedly. `mergeable:UNKNOWN` means the
+conflict state is unknown; it proves neither conflict nor resolution and
+does not promise later calculation, including on closed or merged PRs.
+A missing base ref is explicitly unavailable. An unsupported enum or failed
+required retrieval rejects the complete round and preserves prior progress;
+it cannot be treated as empty successful CI.
+
+The PR-associated base OID and the current base-ref target can differ, including
+on merged PRs. Stable differences are accepted; the current target identifies
+the conflict pair. Changes in either field during acquisition reject that
+round. Existing accessible closed/merged PRs can establish silent baselines.
+The plugin never merges a PR or resolves a conflict.
+
+CI changes include their result, source identity, head and execution provenance.
+Current selected results are separate from superseded observed failures;
+retained older-head changes are labelled historical. Current summaries retain
+exact result groups and explicit omitted counts/links. No observable results
+does not mean successful CI. Detail URLs and PR text are external data, not
+commands or permission to retrieve logs, rerun CI or modify the PR.
 
 ## Assess and wait again
 
@@ -291,18 +339,29 @@ delivery progress, not a claim that an agent assessed the previous message.
 
 Before replacing binaries, changing budgets or backing up, stop the daemon using
 this state directory and wait for its configured plugins to exit. Preserve the
-entire state tree. Upgrade hub and plugin together. These migration
-steps apply to discussion-profile binaries compatible with `github-pr-watch-v2`.
-For later versions of the `github-pr-watch` input offering `--state-profile`,
-add `--state-profile=discussion-v2` to that input's configured `args` before
-starting with existing discussion state; see
-[profile compatibility](../../../docs/design/github-pr-watch-signals.md).
-A switch to another profile is separate from the v1-to-v2 migration here. Compatible
-legacy v1 state migrates in memory without resetting nonce, positions or history;
-the next successful checkpoint writes streamed v2 state. Older programs cannot
-read v2 generations. Preserve matching old binaries and the stopped tree for
-rollback; using an older backup deliberately loses intervening progress. Invalid
-newest state blocks restore without falling back to an older generation.
+entire state tree. Upgrade hub and plugin together.
+
+`--state-profile signals-v3` is the default for every watch in this input
+process and saves `github-pr-watch-v3` state. This guide selects it explicitly.
+V1/v2 discussion state cannot establish historical signal coverage: startup
+rejects it with `signal_state_incompatible` and preserves it before activation.
+There is no implicit migration, fallback or fresh baseline. Incompatible saved
+routes can prevent the whole daemon from becoming ready.
+
+For intentional discussion-only compatibility, stop first and select
+`--state-profile discussion-v2` on the configured input. This profile does not
+acquire or notify CI/conflict/readiness signals. It retains v1-to-v2 migration,
+nonce, positions and discussion history, saving streamed v2 on the next
+successful checkpoint. It cannot read v3 state, and changing profiles never
+converts state in either direction.
+
+To enable signals for an old discussion watch, preserve the stopped state and
+either keep using compatible discussion binaries/profile or deliberately
+follow the linked offline recovery/reset procedure, accepting lost continuity.
+A recreated watch has a new nonce and cannot inherit old positions. Preserve
+matching old binaries and the stopped tree for rollback; using an older backup
+deliberately loses intervening progress. Invalid newest state blocks restore
+without falling back to an older generation.
 Follow the [state recovery guide](../../../docs/design/windows-operations.md#8-demonstrate-deliberate-saved-state-recovery)
 for deliberate offline repair/reset. Resetting or recreating a watch loses its
 old history and establishes a fresh silent baseline; it is an operator decision.
@@ -340,8 +399,10 @@ ten-second window. Larger budgets do not remove these limits.
 | `operation_expired`, `operation_conflict`, transport loss | Reuse an operation ID only in the same daemon run, within its five-minute window and for the same subscription/position. A lost response remains uncertain until an allowed explicit same-ID query resolves it; no automatic retry is implied. |
 
 No stopped-period history, crash/power-loss continuity, exactly-once delivery or
-agent-processing guarantee follows from saved state. This capacity workflow does
-not enable automatic action retries or add CI/conflict/Ready notifications.
+agent-processing guarantee follows from saved state. The trigger does not
+retry CI, retrieve CI logs, resolve conflicts or decide whose turn it is.
+It does not itself retry action delivery; an action's separately configured
+notification profile retains its own retry policy.
 External content and waiting context never enlarge authority.
 
 For plugin authors, the [plugin design](../../../docs/design/github-pr-watch.md),
