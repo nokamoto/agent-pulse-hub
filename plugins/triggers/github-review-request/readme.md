@@ -123,6 +123,10 @@ positive Go duration string, including fractional durations. The
 With the empty action `args` array, this example uses default delivery without
 automatic retry. Optional retained notification evidence and conservative
 retry are described in the root [notification-mode guide](../../../README.md#retain-notification-evidence-and-enable-safe-retry).
+To adapt that guide, change this example's `model` action arguments as directed,
+use `127.0.0.1:47832` for inspection, and use direct review requests as the event
+source in place of the manual example's file markers. Stop and restart with the
+updated configuration as that guide describes.
 
 Note the printed run directory. Wait for `plugin_ready` with `available: true`
 for both configured plugins, then `daemon_ready` with `restored_registrations: 0`.
