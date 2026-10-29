@@ -322,6 +322,10 @@ destination; it does not replay Codex work.
 The [GitHub PR watch guide](plugins/triggers/github-pr-watch/readme.md) shows
 how authors and reviewers can monitor one selected PR, receive its review and
 discussion changes, and explicitly wait again on the same subscription.
+Current-head CI failures, confirmed conflicts (including base-only updates) and
+Draft-to-Ready transitions can independently resume a wait. The guide explains
+signal permissions, UNKNOWN state and deliberate recovery of incompatible saved
+discussion state when enabling the default signal profile.
 It includes source builds, selected-host authentication, a local output example,
 and the optional Codex destination. The first complete observation is silent.
 Large backlogs arrive in bounded parts; assess each part and return its position
