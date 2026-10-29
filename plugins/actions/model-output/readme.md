@@ -29,6 +29,13 @@ Keep the instance names `manual` and `model`, the public roles `input` and
 `output`, and the empty `args` arrays as shown; `trigger` and `action` describe
 directory roles and are not configuration values.
 
+To retain per-notification evidence and enable core-owned safe retry, set only
+the `model` entry's `args` to `["--notification-delivery"]`. This optional flag
+takes no value and may appear once. Without it, the action keeps its one-attempt
+mode. Stop and wait before changing configuration, preserve the entire stopped
+state tree, and upgrade host and action together; older hosts may reject the
+capability. A route with retained notifications cannot downgrade by removing it.
+
 [`examples/destination.json`](examples/destination.json) shows this plugin's
 arguments. Set `output_file` to an absolute file path in an existing writable
 parent directory. Start with an absent file; if the file already exists, it
@@ -76,13 +83,35 @@ starts can report `unknown`; so can loss of confirmation after the write.
 Inspect the destination after `unknown`, because a complete or partial record
 may already be present.
 
+In notification mode, the first write invocation is the submission boundary.
+Only a recognized temporary resource error opening the file before any write
+is retryable `unsubmitted`; path, permission and unclassified pre-write errors
+are permanent `unsubmitted`. Any write/close failure after invoking write is
+`unknown`, including a zero-byte failed write. Full write and close is accepted.
+The action never retries, repairs or deduplicates records; the hub alone issues
+eligible later attempts. Use one output instance per file; multiple routes in
+that instance may share it. Do not let another process modify the file while
+that instance is using it. The file format stays the same.
+
+Follow the root README's
+[notification inspection steps](../../../README.md#retain-notification-evidence-and-enable-safe-retry)
+using the saved subscription ID and an ID returned by `notifications`.
+`notification` shows the captured destination, acceptance, retry state and each
+attempt's ID/times/outcome; both commands are read-only. `queue_accepted` is the
+shared acceptance label here for successful file output, not an agent receipt
+or a crash-durability guarantee. All previous attempts must be proven unsubmitted
+and the latest failure retryable for up to three total attempts under one
+notification ID, with minimum two/ten-second waits or longer guidance.
+Unknown, permanent failure and exhaustion stop retry. Republishing the same
+context is a new event, not safe recovery of uncertain output.
+
 ## Recovery
 
-No delivery is retried and the daemon does not automatically restart the
-plugin. Stop the daemon, wait for plugin exits, and preserve the damaged
+The default mode does not retry delivery. Plugins never restart automatically.
+Stop the daemon, wait for plugin exits, and preserve the damaged
 destination and stopped state tree. Completed registrations survive normal
-shutdown with their IDs; queued/in-flight events and incomplete registrations do
-not. Restore valid destination conditions at the saved path, or deliberately
+shutdown with their IDs; in default mode queued/in-flight events and incomplete
+registrations do not. Restore valid destination conditions at the saved path, or deliberately
 remove the affected saved registration while stopped before selecting fresh
 output/trigger paths and registering a new route. Inspect trigger/claim leftovers
 and restore trigger absence. Restart with the same configuration/state, wait for
@@ -91,3 +120,18 @@ not retry the uncertain event or repair its record. There is no stopped-event
 collection, replay, or crash-recovery guarantee.
 See the [operations guide](../../../docs/design/windows-operations.md)
 for the paired recovery procedure.
+
+In notification mode, successful normal stop also retains evidence and eligible
+unsent work. Restart from the same configuration/state and inspect the original
+notification ID: only still-eligible work resumes with its remaining budget.
+Unknown and accepted work is never resent. Evidence lasts seven days from
+admission; expiry stops scheduling and not-found does not prove non-submission.
+At 1,024 retained notifications, admission fails until normal expiry frees space.
+Storage/plugin failure blocks issuance until normal stop, repair and restart;
+a backward clock must catch up before issuance or expiry cleanup. Never delete
+safety records, use an older snapshot or roll back binaries on a tree containing
+notifications. Preserve the stopped tree and restore original matching evidence;
+if unavailable, leave it blocked. See the
+[status diagnosis guide](../codex-queue/readme.md#inspect-notifications-and-diagnose-stopping)
+for shared states and the [notification policy](../../../docs/design/notification-delivery.md)
+for recovery limits.

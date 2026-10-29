@@ -192,8 +192,10 @@ From the second terminal, request shutdown:
 
 Alternatively, press Ctrl+C in the first terminal. Wait for daemon exit and
 the configured-plugin exit diagnostics before restarting. Normal shutdown
-retains uncancelled registrations and their IDs. It discards queued and in-flight
-hub events and incomplete registrations; it cannot retract accepted output.
+retains uncancelled registrations and their IDs. In this example's default mode,
+it discards queued and in-flight hub events and incomplete registrations; it
+cannot retract accepted output. The optional notification mode below retains
+evidence and eligible unsent work separately.
 
 To resume this example, inspect leftover triggers while stopped, including files
 the manual trigger renamed for processing (see claimed paths in diagnostics).
@@ -225,7 +227,8 @@ prevents the whole daemon from becoming ready. Stop all owners and preserve
 state before deliberate repair; follow the [operation guide](docs/design/windows-operations.md#8-demonstrate-deliberate-saved-state-recovery)
 for recovery, including a leftover state lock after abnormal termination.
 
-There is no automatic retry or plugin restart. An `unknown` delivery outcome
+This default mode has no automatic retry. Plugins never restart automatically.
+An `unknown` delivery outcome
 may already have appended a record; inspect the output before deliberately
 publishing another event. There is no replay, stopped-event collection, or
 forced-termination/power-loss recovery guarantee. Output acceptance does not
@@ -233,6 +236,63 @@ promise crash durability.
 The output file contains the event text, so choose its contents and retention
 accordingly. See the [operation guide](docs/design/windows-operations.md) for
 detailed diagnostics and recovery.
+
+### Retain notification evidence and enable safe retry
+
+To inspect individual notifications, opt in before starting the daemon. Build
+the hub and action from the same revision as above. For the local example,
+set the `model` entry's `args` to `["--notification-delivery"]`; for Codex,
+append `"--notification-delivery"` alongside its `--codex-executable` arguments.
+The option takes no value and may appear once. Stop and wait for plugin exits
+before changing configuration, and preserve the entire stopped state directory
+before upgrading. Older hosts can reject this capability, and a retained
+notification route cannot restart with the option removed.
+
+Start with the same configuration/state, wait for readiness, and use an active
+subscription's saved ID. Fresh setups still need registration first. Publish
+one distinct marker using the closed-file rename procedure above, then inspect:
+
+```sh
+printf 'Active subscription ID saved at registration: '
+IFS= read -r subscription
+"$run/agent-pulse-hub$suffix" notifications --subscription-id "$subscription" --address 127.0.0.1:47831
+printf 'Notification ID from the list: '
+IFS= read -r notification
+"$run/agent-pulse-hub$suffix" notification --notification-id "$notification" --address 127.0.0.1:47831
+```
+
+The list reports notification IDs, admission times, acceptance, retry state and
+attempt counts. Select by ID/time; UUID order is not newest-first. If `next_after`
+is non-null, pass it as `--after` for the next page; `--limit` accepts 1–20.
+Restart the list to find newly admitted IDs that sort before a previous cursor.
+Detail shows the original destination and individual attempt IDs, times,
+outcomes and receipt. Both commands are read-only and send no notification.
+Detail assembles bounded chunks internally; if the record keeps changing, it
+fails visibly instead of showing mixed or partial JSON.
+
+Read `acceptance` separately from `retry_state`. `queue_accepted` confirms
+destination acceptance; for Codex this means queued for the registered thread,
+not conversation receipt or work completion. Only when **all** earlier attempts
+are proven `unsubmitted` and the latest failure is retryable can the hub retry:
+at most three attempts under the same notification ID, with minimum two- and
+ten-second waits, or longer destination guidance. `unknown` may already have
+reached the destination and stops retry immediately, including after restart.
+Permanent failures, rejection and exhaustion also stop. There is no manual
+notification retry. Republishing the same text creates a separate event and
+is not safe recovery of uncertain delivery.
+
+Evidence is retained for seven days from admission. Expiry stops work; a later
+not-found result does not prove it was never submitted. At 1,024 retained
+notifications, admission fails with `notification_capacity_exceeded` until
+normal expiry/cleanup frees space; unexpired evidence is not evicted.
+For blocked work, stop normally, wait for daemon/plugin exits, preserve state,
+repair the reported storage/plugin cause, and restart the same configuration
+and state. A backward clock blocks issuance and expiry cleanup until it catches
+up. Only retained eligible unsent work resumes with its remaining budget;
+accepted and unknown work is not resent. Never delete safety files, restore an
+older snapshot, or roll back binaries on a state tree containing notifications.
+See the [action diagnosis guide](plugins/actions/codex-queue/readme.md#inspect-notifications-and-diagnose-stopping)
+for status reasons and recovery limits.
 
 ### Send events to Codex
 
@@ -267,3 +327,11 @@ show the bundled behavior. The protocol document's filename is retained from
 v1; v1 plugins, the old `codex_executable` configuration, and session-based
 registration are incompatible. Replace matching programs and configuration
 together, then register again.
+
+For inspectable delivery and core-owned safe retry, implement the optional
+[notification output profile](docs/design/plugin-v1.md#optional-notification-delivery)
+under the [notification policy](docs/design/notification-delivery.md). Outputs
+report service-specific submission evidence; the hub owns identity, storage
+and retry. Inputs keep their source-progress responsibilities. Legacy `failed`
+is not retry permission; do not add autonomous action retry or infer acceptance
+from event text.
