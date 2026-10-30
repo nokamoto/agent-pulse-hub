@@ -15,6 +15,16 @@ import (
 
 var mvpEnv *mvpCaseEnv
 
+func writeMVPCommand(t mvpReporter, directory string, number int, command any) {
+	t.Helper()
+	writeFixtureCommand(t, directory, number, command)
+	// Release the peer only after rename returns and closes its file handle.
+	ready := filepath.Join(directory, fmt.Sprintf("command-%d.ready", number))
+	if err := os.WriteFile(ready, nil, 0o600); err != nil {
+		t.Fatalf("release MVP fixture command %d: %v", number, err)
+	}
+}
+
 var _ = BeforeSuite(func() {
 	mvpEnv = prepareMVPSuite(GinkgoT())
 })
@@ -222,7 +232,7 @@ var _ = Describe("MVP input/output routing command acceptance", Serial, func() {
 		qR := parseMVPResponse(t, mvpEnv.register(t, 5*time.Second, address, "Q", "R", map[string]any{}, map[string]any{}))["subscription_id"].(string)
 		qO := parseMVPResponse(t, mvpEnv.register(t, 5*time.Second, address, "Q", "O", map[string]any{}, map[string]any{}))["subscription_id"].(string)
 		pDir, qDir := filepath.Join(root, "P"), filepath.Join(root, "Q")
-		writeFixtureCommand(t, pDir, 1, map[string]any{"raw": "{not-json"})
+		writeMVPCommand(t, pDir, 1, map[string]any{"raw": "{not-json"})
 		writeFixtureEvent(t, pDir, 2, "unknown-subscription", "unknown")
 		writeFixtureEvent(t, pDir, 3, qR, "foreign")
 		writeFixtureEvent(t, pDir, 4, pO, "PULSE-valid-P")
@@ -235,7 +245,7 @@ var _ = Describe("MVP input/output routing command acceptance", Serial, func() {
 		if len(mvpRowsOfKind(oJournal, "deliver")) != 1 {
 			t.Fatalf("malformed/unknown/foreign event caused output work: %v", mvpRowsOfKind(oJournal, "deliver"))
 		}
-		writeFixtureCommand(t, pDir, 5, map[string]any{"exit": true})
+		writeMVPCommand(t, pDir, 5, map[string]any{"exit": true})
 		if !waitMVP(t, 3*time.Second, func() bool { return hasMVPLogPlugin(daemon.logPath, "plugin_unavailable", "P") }) {
 			t.Fatalf("input P exit was not reported: %s", readMVPFile(daemon.logPath))
 		}
@@ -245,7 +255,7 @@ var _ = Describe("MVP input/output routing command acceptance", Serial, func() {
 		}
 		writeFixtureEvent(t, qDir, 1, qR, "PULSE-Q-survives-input-P-exit")
 		awaitMVPJournal(t, rJournal, "deliver", 1, 3*time.Second)
-		writeFixtureCommand(t, filepath.Join(root, "O"), 1, map[string]any{"exit": true})
+		writeMVPCommand(t, filepath.Join(root, "O"), 1, map[string]any{"exit": true})
 		if !waitMVP(t, 3*time.Second, func() bool { return hasMVPLogPlugin(daemon.logPath, "plugin_unavailable", "O") }) {
 			t.Fatalf("output O exit was not reported: %s", readMVPFile(daemon.logPath))
 		}
@@ -406,7 +416,7 @@ var _ = Describe("MVP input/output routing command acceptance", Serial, func() {
 				t.Fatal(err)
 			}
 			for _, entry := range entries {
-				if strings.HasPrefix(entry.Name(), "command-") && strings.HasSuffix(entry.Name(), ".json") {
+				if strings.HasPrefix(entry.Name(), "command-") && (strings.HasSuffix(entry.Name(), ".json") || strings.HasSuffix(entry.Name(), ".ready")) {
 					if err := os.Remove(filepath.Join(directory, entry.Name())); err != nil {
 						t.Fatal(err)
 					}

@@ -152,7 +152,8 @@ def serve(directory):
         number = 1
         while not stopped.is_set():
             path = directory / f"command-{number}.json"
-            if not path.exists():
+            # The publisher releases this read after its rename has returned.
+            if not (directory / f"command-{number}.ready").exists():
                 stopped.wait(0.005)
                 continue
             command = json.loads(path.read_text(encoding="utf-8"))
