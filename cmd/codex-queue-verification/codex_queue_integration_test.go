@@ -282,7 +282,6 @@ var _ = Describe("Codex Queue public command acceptance", Serial, func() {
 			unset []string
 		}{
 			{name: "missing thread id", set: map[string]string{"CODEX_SESSION_ID": cqThreadA}, unset: []string{"CODEX_THREAD_ID"}},
-			{name: "missing session id", set: map[string]string{"CODEX_THREAD_ID": cqThreadA}, unset: []string{"CODEX_SESSION_ID"}},
 			{name: "malformed thread id", set: map[string]string{"CODEX_THREAD_ID": "not-a-uuid", "CODEX_SESSION_ID": cqThreadA}},
 			{name: "malformed session id", set: map[string]string{"CODEX_THREAD_ID": cqThreadA, "CODEX_SESSION_ID": "not-a-uuid"}},
 			{name: "nil thread id", set: map[string]string{"CODEX_THREAD_ID": "00000000-0000-0000-0000-000000000000", "CODEX_SESSION_ID": cqThreadA}},

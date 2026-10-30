@@ -6,9 +6,21 @@ description: Register the current top-level Codex conversation with an Agent Pul
 # Register or cancel a Codex Queue subscription
 
 For registration, use this skill only for the conversation invoking it. The
-registration helper reads the current process environment and refuses to run
-unless `CODEX_THREAD_ID` and `CODEX_SESSION_ID` are both canonical, non-nil
-UUIDs with the same value. Never supply, copy, set, or rewrite either ID.
+registration helper reads identity only from the current process environment.
+`CODEX_THREAD_ID` identifies the destination conversation; `CODEX_SESSION_ID`
+is an optional consistency check, never a fallback destination.
+
+| Invoking environment | Registration result |
+| --- | --- |
+| Canonical, non-nil thread UUID; session variable absent | Use the thread UUID as the destination. |
+| Canonical, non-nil thread UUID; session UUID identical to it | Use the thread UUID as the destination. |
+| Thread variable absent, empty, malformed or nil, with any session value | Fail with `codex_identity_invalid` before temporary-file creation or client launch. |
+| Valid thread UUID; session variable present but empty, malformed, nil or unequal | Fail with `codex_identity_invalid` before temporary-file creation or client launch. |
+
+Canonical UUIDs use lowercase `8-4-4-4-12` hexadecimal form. An exported empty
+session variable is present, not absent. Never supply, copy, set, rewrite, trim
+or normalize either ID, including copying the thread value into the session
+variable to make an unsupported environment pass.
 
 Use it when the user asks to register this conversation, for example: “Register
 this conversation with the configured Codex Queue route.”
@@ -17,6 +29,10 @@ Run the registration directly in this top-level conversation. Do not delegate
 the helper to a subagent or another conversation. Do not discover a recipient
 from history, a process list, a file, or event content. Do not run a queue probe
 or retry an uncertain registration.
+
+With only a thread value, the helper cannot distinguish a subagent from a
+top-level caller. Direct top-level invocation is a required procedure; these
+environment labels do not authenticate the caller or grant permissions.
 
 For an explicit cancellation request, follow **Cancel one subscription** below.
 Cancellation uses the retained registration ID and does not require either

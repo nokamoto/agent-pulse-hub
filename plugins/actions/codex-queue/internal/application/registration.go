@@ -50,7 +50,7 @@ func NewRegistrationService(runner ProcessRunner, files DestinationFileFactory) 
 func (s *RegistrationService) RegisterCurrent(parent context.Context, config RegisterConfig, environment Environment) (result RegistrationResult) {
 	threadID, threadOK := environment.Lookup("CODEX_THREAD_ID")
 	sessionID, sessionOK := environment.Lookup("CODEX_SESSION_ID")
-	if !threadOK || !sessionOK || !domain.IsCanonicalUUID(threadID) || !domain.IsCanonicalUUID(sessionID) || threadID != sessionID {
+	if !threadOK || !domain.IsCanonicalUUID(threadID) || (sessionOK && (!domain.IsCanonicalUUID(sessionID) || threadID != sessionID)) {
 		return RegistrationResult{Status: "failed", Reason: "codex_identity_invalid"}
 	}
 

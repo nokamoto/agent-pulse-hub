@@ -6,7 +6,8 @@
         "CQ-V01-DELIVER",
         "CQ-V02-OUTCOMES",
         "CQ-V03-REGISTER",
-        "CQ-V04-REGISTRATION-BOUNDARY"
+        "CQ-V04-REGISTRATION-BOUNDARY",
+        "CQ-V05-THREAD-ONLY-REGISTER"
       ]
     }
   ]
