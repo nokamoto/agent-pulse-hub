@@ -93,8 +93,8 @@ eligible later attempts. Use one output instance per file; multiple routes in
 that instance may share it. Do not let another process modify the file while
 that instance is using it. The file format stays the same.
 
-Follow the root README's
-[notification inspection steps](../../../README.md#retain-notification-evidence-and-enable-safe-retry)
+Follow the local walkthrough's
+[notification inspection steps](../../triggers/manual/walkthrough.md#retain-notification-evidence-and-enable-safe-retry)
 using the saved subscription ID and an ID returned by `notifications`.
 `notification` shows the captured destination, acceptance, retry state and each
 attempt's ID/times/outcome; both commands are read-only. `queue_accepted` is the

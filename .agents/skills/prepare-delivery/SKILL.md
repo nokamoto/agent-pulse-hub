@@ -28,13 +28,17 @@ is part of every delivery.
 
 ## Prepare instructions and evidence
 
-Update the root README under the
-[README rule](../../../docs/aidd/README.md#user-facing-readme). Before drafting,
-select the steps a first-time human user needs to reach a useful result.
-Keep those steps and necessary limitations in the README, route plugin
-implementation details to existing authoritative specifications, and put
-verification records in the PR. Draft that usage path without reproducing
-the delivery case inventory. Use the README rule's primary shell convention;
+Apply the [README rule](../../../docs/aidd/README.md#user-facing-readme) before
+drafting: decide what belongs in the root overview, the relevant user guide,
+an authoritative specification, or PR evidence. Keep the root concept, small
+input/output example, and guide links easy to scan. Put complete setup and
+operation in the guide, with limitations at the affected step. Extend an
+existing guide where it serves the same task; add a focused guide only when
+needed, and update incoming links when moving content. A feature does not
+automatically need a new root section or walkthrough. Review the whole root
+page after editing, not just the added paragraph, for accumulating detail.
+Keep contract inventories in specifications and verification records in the PR.
+Use the README rule's primary shell convention;
 check prerequisites against the governing requirements and design rather than
 copying the local verification environment. Record shell adaptations and
 unexecuted published commands under
@@ -42,7 +46,8 @@ unexecuted published commands under
 If no README change is necessary,
 explain why and still verify the existing instructions for this scope.
 
-Follow the documented acquisition and setup steps and execute every scoped
+Follow the root entry link and the guide's complete acquisition and setup
+steps, then execute every scoped
 delivery case against the identified product revision. Use the approved
 expected results and execution roles; a case requiring a top-level Codex
 conversation must not be executed through a subagent instead.
@@ -68,8 +73,10 @@ Run the applicable checks from [AGENTS.md](../../../AGENTS.md), including
 formatting and guardrails, and record actual results. Apply
 [Markdown readability review](../review-markdown-readability/SKILL.md) to all
 written or edited Markdown. For the root README, specify first-time human
-users as the primary audience and reaching a useful working result as the
-primary purpose; include external plugin authors for the plugin section.
+users as the primary audience and understanding the concept, seeing a simple
+example, and choosing a guide as the purpose. Review each detailed guide for
+its complete working path separately; include external plugin authors for
+the plugin section.
 Do not frame the audience solely as agents, contract implementers, or delivery
 reviewers. Delegate delivery self-review to a fresh
 clean-context subagent with `fork_turns="none"`, model `gpt-6.1-sol`, and

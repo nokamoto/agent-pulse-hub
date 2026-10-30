@@ -302,8 +302,8 @@ Previously issued A work may still finish and update its acceptance evidence;
 an empty list or not-found cannot prove historical non-submission. Observe B's
 later message processing separately in its registered conversation. Stop normally
 and wait for daemon/plugin exits, then restart from the same configuration and
-state: A remains absent, B is restored with its saved ID. The root
-[local example](../../../README.md#cancel-one-subscription) shows the two-watch
+state: A remains absent, B is restored with its saved ID. The
+[local example](../../triggers/manual/walkthrough.md#cancel-one-subscription) shows the two-watch
 publication and restart sequence using file output.
 
 `unknown_subscription` includes an already-removed ID and is a failure, not
