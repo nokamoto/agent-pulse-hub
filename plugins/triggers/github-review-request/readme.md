@@ -10,8 +10,8 @@ are excluded.
 ## Prerequisites
 
 Obtain the source with the `git clone` and `cd` commands in the root
-[installation instructions](../../../README.md#installation); skip that section's
-local-demo builds. Continue below from the repository root with Go 1.26.0 or later.
+[installation instructions](../../../README.md#installation).
+Continue below from the repository root with Go 1.26.0 or later.
 Build the hub and both plugins from the same revision. This trigger requires
 the hub's `runtime_state_v2` checkpoint and activation capability, provided by
 the builds below.
@@ -122,7 +122,7 @@ positive Go duration string, including fractional durations. The
 [destination example](examples/destination.json) selects the local output file.
 With the empty action `args` array, this example uses default delivery without
 automatic retry. Optional retained notification evidence and conservative
-retry are described in the root [notification-mode guide](../../../README.md#retain-notification-evidence-and-enable-safe-retry).
+retry are described in the [local notification-mode guide](../manual/walkthrough.md#retain-notification-evidence-and-enable-safe-retry).
 To adapt that guide, change this example's `model` action arguments as directed,
 use `127.0.0.1:47832` for inspection, and use direct review requests as the event
 source in place of the manual example's file markers. Stop and restart with the
@@ -189,7 +189,7 @@ not restore it. It does not change review requests on GitHub.
 An action already issued may still finish; cancellation cannot
 recall accepted output. A later registration creates a fresh watch without the
 cancelled watch's suppression history. For rejected, busy, storage, or uncertain
-results, follow the root [cancellation instructions](../../../README.md#cancel-one-subscription)
+results, follow the local [cancellation instructions](../manual/walkthrough.md#cancel-one-subscription)
 and [recovery guide](../../../docs/design/windows-operations.md#cancel-one-subscription).
 
 ## Stop and restart

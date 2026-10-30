@@ -61,9 +61,13 @@ through the applicable phase instead of silently narrowing scope.
 
 The root `README.md` is the entry point for people and external AI agents
 using this OSS project. Write first for a human encountering the product for
-the first time: explain its purpose, then provide the minimum complete path
-from prerequisites and installation to a useful, observable result. Keep
-necessary configuration and user-visible limitations beside the relevant step.
+the first time: make the concept clear at a glance with a small input-to-result
+example, then direct the reader to a complete getting-started guide. Keep the
+root README an overview and navigation page. Put copyable setup procedures,
+configuration, stop/restart, cancellation, diagnostics, and recovery in linked
+user guides, using bundled plugin directories for plugin-specific walkthroughs.
+Those guides must preserve the complete path from acquisition and installation
+to an observable result, with necessary limitations beside the relevant step.
 Support external AI agents through the same clear instructions. Repository development
 and implementation instructions belong in `AGENTS.md` and the documents it
 references, not in the root README. Writing a plugin as an external user is
@@ -77,8 +81,8 @@ this order:
 | --- | --- |
 | `Background and motivation` | The problem the project addresses and why users would choose it. |
 | `Requirements` | Prerequisites for installing, running, and using the product. |
-| `Installation` | How users obtain and install the product. |
-| `Usage` | Configuration, running the product, and observable usage examples. |
+| `Installation` | Source acquisition and a clear link to complete build and setup instructions. |
+| `Usage` | A small observable input/output example and task-based links to detailed guides. |
 | `Writing plugins` | A concise entry point for external plugin authors, linking to the authoritative contracts for implementation details. |
 
 Level-three through level-six subheadings may be added freely within these
@@ -89,13 +93,14 @@ Do not add contributor setup, repository architecture, implementation plans,
 development checks, or agent workflow instructions under any heading.
 
 Select content by the reader's task, not by the amount of behavior verified
-during delivery. Keep the normal usage path easy to follow without reading
-plugin protocol details, internal identifiers, or acceptance scenarios. Link
-existing authoritative specifications for those plugin details instead of
-copying contract inventories into the README. Keep execution evidence in the
-delivery PR. Shortening must preserve steps and constraints needed to run the
-product; neither a line limit nor moving necessary setup behind links proves
-usability.
+during delivery. A new feature usually needs a guide update and at most a short
+entry-point link in the root README, not another root walkthrough. Before adding
+root content, decide whether it helps a newcomer understand the concept, see a
+simple result, or choose a guide. Otherwise place it in the relevant guide or
+authoritative specification. Avoid duplicating procedures across entry points.
+Keep execution evidence in the delivery PR. Review the root page for quick
+comprehension and the linked guide for a complete usable path; neither a line
+limit nor working links alone proves usability.
 
 Apply the [OS-neutral documentation policy](#os-neutral-development-and-documentation)
 to prerequisites and command examples. Keep necessary platform-specific
@@ -508,10 +513,11 @@ approved scope; identify exclusions without dropping required cases within it.
 For changes that need no new upstream PR, explain why and identify the existing
 approved baseline.
 
-Update the root README within its [user-facing structure](#user-facing-readme)
-to explain verified prerequisites, acquisition and installation, configuration,
-normal usage, and plugin authoring for the delivered scope. Validate the
-documented steps from acquisition through an observable working result in the
+Update user instructions under the [README rule](#user-facing-readme): keep
+the root overview and guide links accurate, and explain verified acquisition,
+installation, configuration, normal operation, and limitations in the relevant
+user guides. Validate the documented path from the root entry point through
+the linked setup steps to an observable working result in the
 supported environment. Record the revision or artifact used and the outcome
 in the delivery PR. If existing instructions already cover the entire scope,
 record the verification and explain why no README edit is needed.
@@ -551,7 +557,8 @@ resolve missing or conflicting acceptance decisions upstream.
 #### Delivery scope and feedback
 
 Delivery edits explain approved behavior for product users. They may add
-README examples and links to existing authoritative specifications, but may
+overview examples, user guides describing approved usage, and links to existing
+authoritative specifications, but may
 not create or revise product contracts or developer operating instructions
 that belong to requirements or design. The
 [developer documentation rule](#developer-documentation-and-upstream-feedback)

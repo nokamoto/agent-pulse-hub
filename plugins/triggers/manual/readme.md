@@ -5,6 +5,10 @@ published file's UTF-8 contents as event context. It is stored under the
 bundled **trigger** role and uses the public plugin protocol v2 **input** role.
 Its daemon configuration name remains `manual`.
 
+For a complete first run with copyable commands, follow the
+[local file walkthrough](walkthrough.md). This reference explains the trigger's
+arguments, limits, and recovery behavior.
+
 ## Prerequisites and build
 
 Use Go 1.26.0 or later from the repository root. Build the hub, manual trigger,
