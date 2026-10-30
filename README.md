@@ -303,8 +303,10 @@ and configure the optional action with the manual trigger. It requires a trusted
 native Codex executable supporting `queue --thread --message` and access to the
 target conversation's shared server. The guide covers deliberate installation
 and discovery of the bundled registration skill. Invoke it in the top-level
-conversation with the configuration values it requests; both inherited Codex
-identity variables must be present and equal. The skill never invents a target.
+conversation with the configuration values it requests. `CODEX_THREAD_ID` must
+be a canonical, non-nil UUID; `CODEX_SESSION_ID` may be absent, but if present
+must be the same canonical UUID. Never set or copy either value to repair an
+unsupported environment. The skill never invents a target.
 
 Retain each successful registration's returned `subscription_id` and daemon
 address. To cancel one route, explicitly ask the skill to unsubscribe that ID;
