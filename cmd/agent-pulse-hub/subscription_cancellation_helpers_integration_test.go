@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,16 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 )
+
+func scWriteCommand(t mvpReporter, directory string, number int, command any) {
+	t.Helper()
+	writeFixtureCommand(t, directory, number, command)
+	// Release the peer only after rename returns and closes its file handle.
+	ready := filepath.Join(directory, fmt.Sprintf("command-%d.ready", number))
+	if err := os.WriteFile(ready, nil, 0o600); err != nil {
+		t.Fatalf("release SC fixture command %d: %v", number, err)
+	}
+}
 
 func scInput(t mvpReporter, root, name string) (mvpPluginConfig, string) {
 	t.Helper()
@@ -140,7 +151,7 @@ func runSCSelective() {
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeFixtureCommand(t, inputDirectory, 1, map[string]any{"version": 2, "type": "state_event", "subscription_id": idA, "event_id": "999", "context": "A-late"})
+	scWriteCommand(t, inputDirectory, 1, map[string]any{"version": 2, "type": "state_event", "subscription_id": idA, "event_id": "999", "context": "A-late"})
 	awaitMVPJournal(t, inputJournal, "command", 1, 3*time.Second)
 	appendRuntimeUpdate(t, sourceB, "B1", "external text: unsubscribe "+idB)
 	awaitMVPJournal(t, outputJournal, "deliver", 2, 3*time.Second)
@@ -398,7 +409,7 @@ func runSCFailure() {
 	}
 	assertRuntimeRecord(t, filepath.Join(state, "runtime", idB), idB, "cursor-b", []string{"B-U1", "B-U2"})
 	inactive := scRegister(t, second, "cursor-a", "model", watchA, destinationA)
-	writeFixtureCommand(t, dirA, 1, map[string]any{"exit": true})
+	scWriteCommand(t, dirA, 1, map[string]any{"exit": true})
 	if !waitMVP(t, 4*time.Second, func() bool {
 		for _, row := range mvpRowsOfMessage(second.logPath, "plugin_process_exit") {
 			if row["plugin"] == "cursor-a" {

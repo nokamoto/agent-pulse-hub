@@ -563,7 +563,7 @@ func modelRecords(t mvpReporter, path string) []map[string]any {
 
 func writeFixtureEvent(t mvpReporter, directory string, number int, subscriptionID, context string) {
 	t.Helper()
-	writeFixtureCommand(t, directory, number, map[string]any{
+	writeMVPCommand(t, directory, number, map[string]any{
 		"version": 2, "type": "event", "subscription_id": subscriptionID, "context": context,
 	})
 }
