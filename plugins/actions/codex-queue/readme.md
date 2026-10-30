@@ -104,7 +104,10 @@ Confirm that `register-codex-queue` is available in your installation before
 invoking it. In the current top-level conversation, ask for example:
 “Register this conversation with the configured Codex Queue route.” The
 skill's source in this repository is authoritative; there is no fixed home
-path or automatic installer.
+path or automatic installer. When upgrading registration, rebuild the action
+and replace the installed skill from the same revision. Existing matching-ID
+registrations and saved destinations remain valid and require no route
+migration. Stop the daemon before changing executable configuration.
 
 The skill needs these values from your hub configuration:
 
@@ -117,11 +120,22 @@ for both skill and direct registration.
 - The configured output plugin name, which must refer to this Codex Queue
   action.
 
-The helper reads `CODEX_THREAD_ID` and `CODEX_SESSION_ID` from the skill's
-invoking process. It requires both to be canonical, non-nil UUIDs with the same
-value. Invoke the skill directly in the top-level conversation. Do not delegate
-registration or set, copy, or replace either identity variable. Environments
-that cannot provide both matching values are unsupported.
+The helper reads identity from the skill's invoking process. `CODEX_THREAD_ID`
+must be a canonical, non-nil UUID in lowercase `8-4-4-4-12` hexadecimal form.
+`CODEX_SESSION_ID` may be absent; when present, it must be the same canonical,
+non-nil UUID. A present empty session variable is invalid. Missing or invalid
+thread identity, or an empty, malformed, nil or unequal session value, fails
+with `codex_identity_invalid` before temporary-file creation or client launch.
+The session is never a fallback destination.
+
+Invoke the skill directly in the top-level conversation. Do not delegate
+registration or set, copy, replace, trim or normalize either identity variable,
+including copying the thread value into the session variable. With only a
+thread value, the helper cannot identify a subagent independently; direct
+top-level invocation is a required procedure, not authentication. These labels
+grant no additional permissions. Local identity validation and readiness do
+not establish that a particular Desktop build can receive queued work; observe
+the target conversation's response separately.
 
 The helper invokes the existing hub client once, using a temporary destination
 file containing only the validated thread ID. If it cannot remove that file,
