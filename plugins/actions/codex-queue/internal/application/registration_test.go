@@ -3,7 +3,7 @@ package application
 import (
 	"context"
 	"errors"
-	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,23 +24,69 @@ func mockEnvironment(controller *gomock.Controller, values map[string]string) *M
 	return environment
 }
 
-func TestRegisterCurrentRequiresEqualCanonicalInvokingIdentityBeforeClient(t *testing.T) {
-	for index, identity := range []map[string]string{
-		{"CODEX_SESSION_ID": registerThread},
-		{"CODEX_THREAD_ID": registerThread},
-		{"CODEX_THREAD_ID": "not-a-uuid", "CODEX_SESSION_ID": registerThread},
-		{"CODEX_THREAD_ID": "00000000-0000-0000-0000-000000000000", "CODEX_SESSION_ID": "00000000-0000-0000-0000-000000000000"},
-		{"CODEX_THREAD_ID": registerThread, "CODEX_SESSION_ID": "22222222-2222-4222-8222-222222222222"},
+func TestRegisterCurrentValidatesInvokingIdentityBeforeCreatingFilesOrLaunchingClient(t *testing.T) {
+	const thread = "abcdef01-2345-6789-abcd-ef0123456789"
+	for _, threadProfile := range []struct {
+		name    string
+		value   string
+		present bool
+		valid   bool
+	}{
+		{name: "absent"},
+		{name: "empty", present: true},
+		{name: "malformed", value: "not-a-uuid", present: true},
+		{name: "nil", value: "00000000-0000-0000-0000-000000000000", present: true},
+		{name: "uppercase", value: strings.ToUpper(thread), present: true},
+		{name: "whitespace", value: " " + thread, present: true},
+		{name: "canonical", value: thread, present: true, valid: true},
 	} {
-		t.Run(fmt.Sprintf("invalid identity %d", index+1), func(t *testing.T) {
-			controller := gomock.NewController(t)
-			runner := NewMockProcessRunner(controller)
-			files := NewMockDestinationFileFactory(controller)
-			result := NewRegistrationService(runner, files).RegisterCurrent(context.Background(), RegisterConfig{}, mockEnvironment(controller, identity))
-			if result.Status != "failed" || result.Reason != "codex_identity_invalid" {
-				t.Fatalf("result=%+v for %v", result, identity)
-			}
-		})
+		for _, sessionProfile := range []struct {
+			name    string
+			value   string
+			present bool
+			valid   bool
+		}{
+			{name: "absent", valid: true},
+			{name: "empty", present: true},
+			{name: "malformed", value: "not-a-uuid", present: true},
+			{name: "nil", value: "00000000-0000-0000-0000-000000000000", present: true},
+			{name: "uppercase", value: strings.ToUpper(thread), present: true},
+			{name: "whitespace", value: thread + " ", present: true},
+			{name: "unequal", value: registerThread, present: true},
+			{name: "matching", value: thread, present: true, valid: true},
+		} {
+			t.Run("thread="+threadProfile.name+"/session="+sessionProfile.name, func(t *testing.T) {
+				controller := gomock.NewController(t)
+				runner := NewMockProcessRunner(controller)
+				files := NewMockDestinationFileFactory(controller)
+				identity := make(map[string]string)
+				if threadProfile.present {
+					identity["CODEX_THREAD_ID"] = threadProfile.value
+				}
+				if sessionProfile.present {
+					identity["CODEX_SESSION_ID"] = sessionProfile.value
+				}
+				valid := threadProfile.valid && sessionProfile.valid
+				cleanupCalls := 0
+				if valid {
+					files.EXPECT().Create(thread).Return(temporaryDestination, func() error {
+						cleanupCalls++
+						return nil
+					}, nil)
+					runner.EXPECT().Run(gomock.Any(), "", gomock.Any()).Return(ProcessResult{
+						Started: true, Exited: true, Stdout: []byte(`{"ok":true,"subscription_id":"sub"}`),
+					})
+				}
+				result := NewRegistrationService(runner, files).RegisterCurrent(context.Background(), RegisterConfig{}, mockEnvironment(controller, identity))
+				if valid {
+					if result.Status != "accepted" || result.SubscriptionID != "sub" || cleanupCalls != 1 {
+						t.Fatalf("result=%+v cleanup calls=%d", result, cleanupCalls)
+					}
+				} else if result.Status != "failed" || result.Reason != "codex_identity_invalid" {
+					t.Fatalf("result=%+v for %v", result, identity)
+				}
+			})
+		}
 	}
 }
 
