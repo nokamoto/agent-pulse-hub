@@ -273,19 +273,61 @@ prerequisites locally before invoking the client. Do not accept a thread ID,
 destination file, parent ID, Codex executable, or arbitrary client arguments
 in this mode. Executable selection for delivery stays in daemon configuration.
 
-Read `CODEX_THREAD_ID` and `CODEX_SESSION_ID` from this process's invoking
-environment. Both must meet the canonical non-nil UUID rule and be equal.
-Missing, malformed or unequal values fail before creating a registration or
-launching the client. Do not discover a recipient from cwd, history, the latest
-session, a process list, event text or a user-supplied fallback. This supported
-environment profile is a prerequisite, not an authentication mechanism.
+Read identity only from this process's invoking environment. The notification
+destination is the current Codex conversation (the Desktop session from which
+the skill is invoked), identified by `CODEX_THREAD_ID`. It is independent of
+window, tab, working directory and PR identity. `CODEX_SESSION_ID` is an optional
+consistency check, never an alternative recipient source.
+
+| Invoking environment | Result before temporary-file creation or client launch |
+| --- | --- |
+| Canonical non-nil thread UUID A; session variable absent | Register destination A. |
+| Canonical non-nil thread UUID A; canonical session UUID A | Register destination A. |
+| Thread variable absent, empty, malformed or nil, with any session value | Fail with the existing `codex_identity_invalid` reason. Never fall back to the session value. |
+| Valid thread UUID; session variable present but empty, malformed, nil or unequal | Fail with `codex_identity_invalid`. An empty exported variable is present, not absent. |
+
+Do not normalize, trim, synthesize, copy, set or rewrite either ID. Preserve the
+canonical UUID rule and pass the validated thread value unchanged to
+the destination file. Do not discover a recipient from cwd, history, the latest
+session, a process list, event text or a user-supplied fallback. Use portable
+environment lookup; no OS, Desktop-installation-path or application-name branch
+selects this behavior. The contract remains in this design; no separate
+identity specification is needed. Environment lookup and temporary-file creation
+remain helper responsibilities; the daemon, trigger, queue invocation and saved-route
+schemas do not change.
+
+#### Runtime evidence and trust boundary
+
+The official Codex source at revision
+[`55c099a142eb302188fee00ab9e9062f2db1c359`](https://github.com/openai/codex/tree/55c099a142eb302188fee00ab9e9062f2db1c359)
+distinguishes these values:
+
+- [Core environment construction](https://github.com/openai/codex/blob/55c099a142eb302188fee00ab9e9062f2db1c359/codex-rs/core/src/exec_env.rs)
+  injects the supplied thread ID and separately injects a shared root-session
+  ID. They are not two independent proofs of recipient identity.
+- [Executor command metadata](https://github.com/openai/codex/blob/55c099a142eb302188fee00ab9e9062f2db1c359/codex-rs/exec-server/README.md#command-metadata)
+  specifies `metadata.threadId` as `CODEX_THREAD_ID` in the launched command.
+  Its [implementation](https://github.com/openai/codex/blob/55c099a142eb302188fee00ab9e9062f2db1c359/codex-rs/exec-server/src/local_process.rs)
+  replaces the inherited thread value when metadata supplies one and clears it
+  when present metadata omits the thread. It does not require a session value.
+
+These sources establish a thread-only execution path, not the exact cause of
+an absent variable in every Desktop build or a supported Desktop version range.
+Shell startup and descendants can change the labels; older executors may
+preserve stale values. Compatibility qualification therefore requires the
+actual Desktop runtime and selected delivery CLI in CQ-D04 below. Do not infer
+support from the operating system or this source revision alone.
 
 Invoke directly in the top-level conversation. Delegation/subagent invocation
-is unsupported: the skill must not delegate registration or copy the parent's
-IDs into a child environment. A runtime that cannot provide both matching IDs
-is unsupported and must fail visibly. Environment equality cannot detect an
-external tool deliberately forging both values; such forgery is outside this
-trusted local workflow. It does not grant additional permissions.
+remains unsupported: the skill must not delegate registration or copy the
+parent's IDs into a child environment. If a child retains the root-session
+value with a different thread value, the mismatch is rejected. With only a
+thread value, the helper cannot distinguish a child from a top-level caller;
+the top-level restriction is enforced by the skill's invocation procedure,
+not proven by the helper. Missing thread identity still fails visibly.
+Neither the old matching-ID rule nor this profile authenticates the caller or
+detects deliberately forged environment values. This is a trusted local
+workflow and grants no additional permissions.
 
 Create a private temporary directory and a destination JSON file containing
 only the validated `thread_id`, using standard portable temporary-file APIs
@@ -448,9 +490,9 @@ port names and helper functions remain routine implementation choices.
 | Treat every unconfirmed started process as unknown | Parsing arbitrary stderr into failed risks claiming that a submitted message was not queued. |
 | Explicit notification-profile opt-in with core-owned retries | Automatically changing existing action readiness breaks strict older hosts and changes route behavior; action-local retry would divide policy and retained evidence ownership. |
 | Helper mode in the same action binary | Skill-only validation is difficult to test and can be bypassed accidentally; a hub-specific command would put identity logic in the wrong component. |
-| Require both matching environment UUIDs | Falling back to one ID risks registering a child or another session. Some Codex environments remain unsupported until a revised profile is verified. |
+| Require the thread UUID; check the session UUID when present | Supports executors that expose only the current thread. Requiring both rejects that valid context; ignoring a present session value loses a useful mismatch check. Session-only fallback and history lookup cannot establish the invoking recipient. Thread-only callers retain the procedural top-level restriction rather than a claim of automatic child detection. |
 | Fixed 20-second inner delivery bound | Reusing 30 seconds races the host deadline; configurable timing adds unnecessary configuration and verification combinations. |
-| Four assembled workflows plus unit matrices | One process case per parser permutation duplicates inexpensive unit coverage; removing subprocess/registration workflows would miss real wiring defects. |
+| Five assembled workflows plus unit matrices | One process case per parser permutation duplicates inexpensive unit coverage; removing subprocess/registration workflows would miss real wiring defects. |
 
 ## Requirement coverage
 
@@ -461,8 +503,8 @@ All IDs in this table refer to `requirements/codex-queue.md` unless qualified.
 | FR-004 | AC-002 | Architecture and v2 lifecycle; CQ-V01, CQ-V03, source inspection and existing MVP inventory. |
 | FR-005 | AC-003, AC-004, AC-006 | Immutable destination, envelope and ACK contracts; CQ-V01–02, unit parser matrix, CQ-D01–02. |
 | FR-006 | AC-004 | One attempt/outcome rules and bounded subprocesses; CQ-V02, unit cancellation matrix, CQ-D02. |
-| FR-007 | AC-005, AC-006 | Helper and skill contracts; CQ-V03–04, unit identity/response matrix, CQ-D03 and skill review. |
-| FR-008 | AC-003, AC-005, AC-007 | Artifact and operating contracts; CQ-D01–03, README/skill review and existing artifact guardrail. |
+| FR-007 | AC-005, AC-006 | Helper and skill contracts; CQ-V03–05, unit identity/response matrix, CQ-D03–04 and skill review. |
+| FR-008 | AC-003, AC-005, AC-007 | Artifact and operating contracts; CQ-D01–04, README/skill review and existing artifact guardrail. |
 | NFR-001 | AC-002, AC-003 | Standalone public caller, independent MVP scope and separate real-service evidence; CQ-V01, CQ-D01. |
 | NFR-002 | AC-006 | JSON envelope and existing-authority notice; CQ-V01, CQ-V04, unit encoding matrix and skill inspection. |
 | NFR-003 | AC-007 | Go/portable process APIs, explicit prerequisites; CQ-V02–04, source/artifact review and CQ-D01–03 environment records. |
@@ -491,11 +533,11 @@ start failure, pre-launch cancellation and temporary-file cleanup failures.
 Inspect skill text for no delegation, no fallback/retry and existing authority.
 These isolated decisions do not justify a subprocess for every combination.
 
-Retain four integration workflows for actual process argv, OS launch/cancel,
+Use five integration workflows for actual process argv, OS launch/cancel,
 public Session and local-client/daemon assembly. Combine idle, invalid
 destination, adversarial context and successful ACK into one lifecycle case.
 Combine controlled failure outcomes with recovery on the same healthy Session.
-Use one actual registration route and one controlled-client boundary case;
+Use one actual registration route and two controlled-client identity/outcome cases;
 do not run a live model for CI. Existing MVP cases cover shared routing,
 stream corruption, host timeout, restart and framework shutdown, avoiding
 duplicate new suites for those unchanged contracts.
@@ -505,7 +547,8 @@ duplicate new suites for those unchanged contracts.
 Keep the suite in `cmd/codex-queue-verification/` before and after implementation.
 It is a verification command directory, not a production launcher. All case,
 suite and feasibility files are `*_integration_test.go` with the `integration`
-build tag. Its `testdata/codex-queue-cases.json` owns exactly these four IDs.
+build tag. Its `testdata/codex-queue-cases.json` must include all five IDs below
+for implementation completion; add V05 under the transition described below.
 Fixtures stay in its `testdata/`; no new production placeholder or shared
 harness is needed. Static Pending defers product wiring, never method selection.
 
@@ -514,7 +557,31 @@ harness is needed. Static Pending defers product wiring, never method selection.
 | CQ-V01-DELIVER | Standalone go-plugin host launches the actual action with controlled Codex executable; open output Session, reject malformed destination, validate canonical A, observe one second idle, deliver Unicode/quoted context asking to retarget B. | Ready/output and destination responses obey v2; no queue invocation during validation/idle. Exactly one queue argv targets A; decoded envelope preserves source/subscription/context and notice. Matching ACK yields accepted with matching request ID; standard Kill observes action exit. |
 | CQ-V02-OUTCOMES | Public action caller uses controlled executable modes for missing-at-delivery executable, wrong-target ACK and a held queue process. Execute the real 20-second timeout; then send another distinct valid request on the healthy Session. | Missing launch is failed; mismatch and held process are unknown, each with one attempted launch and no retry. Held direct child exits, result arrives before the outer deadline under the bounded local harness. Next valid request succeeds; no false accepted result. |
 | CQ-V03-REGISTER | Build actual hub/manual/action; set both environment IDs to A. Invoke actual register-current with real client and configured pair; record subscription, observe idle, atomically publish one unique manual event, then stop. | Confirmed subscription routes once to A through the real daemon and action with controlled Codex. No queue submission before event, exact source/ID/context after event; observe configured exits and clean temporary state. |
-| CQ-V04-REGISTRATION-BOUNDARY | Run actual helper with absent/malformed/unequal IDs and a controlled client counter. With valid IDs, return success JSON, explicit rejection, truncated output and a held client. | Invalid identity starts no client. Each valid attempt invokes exactly one client with a temporary destination for A and unchanged selected watch/output arguments. Only valid success reports active ID; rejection is failed, truncation and 25-second timeout are unknown. No retry; temporary destination removed and direct child reaped. |
+| CQ-V04-REGISTRATION-BOUNDARY | Run actual helper with absent/malformed thread identity or present invalid/unequal session identity and a controlled client counter. With matching valid IDs, return success JSON, explicit rejection, truncated output and a held client. | Invalid identity starts no client. Each valid attempt invokes exactly one client with a temporary destination for A and unchanged selected watch/output arguments. Only valid success reports active ID; rejection is failed, truncation and 25-second timeout are unknown. No retry; temporary destination removed and direct child reaped. |
+| CQ-V05-THREAD-ONLY-REGISTER: FR-007, AC-005/007, NFR-003 | Invoke the actual helper with thread A and the session variable removed, using the existing controlled client. Return accepted, rejected and truncated results on separate explicit invocations. Also run with empty session and with both variables absent. | Each thread-only attempt starts exactly one client targeting A; success returns the subscription ID, rejection is failed and truncation is unknown, with no retry. Empty session and absent thread start no client and return `codex_identity_invalid`. All temporary destination files are removed. |
+
+V05 is declared initially static Pending in
+`cmd/codex-queue-verification/thread_identity_integration_test.go`. Reuse the
+existing suite, built action and controlled client, `environmentWith` (explicitly
+removing the session variable), invocation journal and temporary-file assertions.
+Only the external hub client is substituted. This command-level case detects
+environment inheritance and destination handoff defects that mocked unit tests
+cannot. Add it to the existing scoped inventory
+`cmd/codex-queue-verification/testdata/codex-queue-cases.json` during implementation.
+Do not reset the existing passing cases to Pending. In V04, move the former
+missing-session rejection stimulus to V05's success profile; retain every
+other rejection and outcome check. This design revision changes that expected
+behavior and requires approval and merge before the tests or product change.
+
+Use mocked unit tests for the entire identity table, including empty and nil
+UUIDs, absent versus present-empty variables, both profiles and mismatch.
+Assert no file creation or client launch on invalid input. Existing tests own
+timeouts and client-output permutations; repeating their real 25-second timeout
+for V05 would add cost without new identity coverage. V05 needs at most five
+seconds total in a warmed suite, no extra build and one helper/client pair at
+a time. It uses the existing portable Go fixtures and cleanup.
+The existing V04 harness supplies its method; measure V05 and rerun the full
+scoped gate during implementation rather than treating Pending as evidence.
 
 V01 needs actual argument encoding and framework lifecycle; V02 needs real
 start/exit/cancel behavior; V03 needs assembled registration and route wiring;
@@ -533,8 +600,8 @@ Peak children are six (hub, two plugins, helper/client and one controlled CLI);
 each captured stream is bounded to 64 KiB. Tests run serially.
 
 The proposed warmed suite budget is 30 seconds for builds/setup, five for V01,
-25 for V02, 15 for V03, 30 for V04 and five for cleanup: 110 seconds, leaving
-ten seconds below the scoped runner's two-minute limit. Warm caches
+25 for V02, 15 for V03, 30 for V04, five for V05 and five for cleanup:
+115 seconds, leaving five seconds below the scoped runner's two-minute limit. Warm caches
 outside the scoped run. Feasibility evidence must measure process/fixture
 setup and confirm the two real timeouts fit; a cold cache may exceed the scoped
 limit and must be prepared without changing CI gates or their budgets.
@@ -551,7 +618,7 @@ go run build/mage.go -d build -w . integrationAll
 go run build/mage.go -d build -w . integration cmd/codex-queue-verification/testdata/codex-queue-cases.json <new-report-directory>
 ```
 
-The final command gates implementation only: all four IDs must pass, with no
+The final command gates implementation only: all five IDs must pass, with no
 Pending, skipped, missing or filtered case. Also retain the unchanged MVP
 scoped report independently for hub/model behavior. Design compilation,
 registration, static Pending and fixture feasibility establish preparation,
@@ -590,12 +657,25 @@ derive from this invocation and must replace placeholders with usable paths.
 | CQ-D01: AC-003/007, FR-005/008, NFR-001/003 | Maintainer selects existing A and B, instructs A in advance to acknowledge a unique marker, then runs the standalone caller once with the actual action/Codex. Require target-specific queue acceptance and A's later marker response without another user message. B receives no marker and no new conversation appears. | Maintainer records revision, OS/shell, selected binary/version, shared-server context, exact non-secret commands, A/B identities, marker, action result/ACK and separate conversation observations. Declare observation period; absent processing is incomplete/failed evidence, never inferred from ACK. |
 | CQ-D02: AC-004 | While A is visibly processing prearranged work, submit another marker through the standalone caller once. Require queued work without interruption, or a reported non-acceptance/unknown outcome, with no retry. | Maintainer records before/during/after activity, queue result, continuity of existing work and eventual marker handling if accepted. Simulated success cannot replace this check. |
 | CQ-D03: AC-005/006/007, FR-007/008 | Follow shipped README/examples and install/discover skill deliberately. In top-level A invoke it with actual hub/manual/action, receive ID, publish a unique event and observe A. Confirm invalid environment refuses registration, permission notice is present, no override/delegation/retry instruction exists; stop, observe exits and the applicable same-ID saved-route restoration boundary. | Maintainer retains materialized configurations, helper/client result, route/queue evidence, actual conversation response, shutdown/restart observations and README/skill/artifact review. Keep independent model walkthrough evidence separate. |
+| CQ-D04: AC-005/007, FR-007/008, NFR-003 | In actual Codex Desktop on macOS, invoke the updated skill directly in top-level A with its unmodified invoking environment. Record whether each identity variable is absent, valid or mismatched without dumping the environment. For the thread-only profile require confirmed registration, one unique manual event delivered to A, and A's response; existing conversation B receives nothing and no conversation is created. Repeat on Windows Desktop before claiming Windows Desktop qualification, and retain a matching-ID runtime check. | Maintainer records OS/shell, Desktop and selected CLI versions, product revision, identity profile, subscription ID, unique marker, client result, target-specific ACK, separate A/B observations and cleanup. Missing prerequisites leave that platform/profile unverified; do not synthesize IDs or remove a real session value to manufacture Desktop evidence. Controlled CI proves helper behavior only. |
 
 Execute these checks only during delivery after implementation approval/merge.
 No CI substitute proves real Codex behavior. No new messages to real
 conversations are needed to compile this design or measure fixture feasibility.
 
 ## Change and rollout impact
+
+For the thread-only registration revision, deploy the updated helper and shipped
+registration skill together. Implementation must replace the skill's mandatory
+two-ID wording with the identity table and procedural top-level restriction;
+delivery must align the plugin README's prerequisites and diagnostics. Users
+must not repair compatibility by exporting a copied session ID. Existing
+matching-ID registration and saved destinations remain valid; no route migration,
+daemon restart for an already selected executable path, or PR-trigger change
+is required by this identity revision. Rollback restores the two-ID restriction
+for new registrations; it does not remove previously registered thread-only
+routes. The runtime checks remain necessary before claiming a particular
+Desktop build can receive queue delivery.
 
 Add the action/skill/artifacts and their implementation tests. Link this
 profile from MVP, public plugin and model operations documents without changing
