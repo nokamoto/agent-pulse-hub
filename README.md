@@ -13,6 +13,8 @@ Try the bundled local example below: publish a text file and see its contents
 appended to a JSON-lines file. It needs no live service, credentials, or Codex
 installation. The optional [Codex Queue action](plugins/actions/codex-queue/readme.md)
 can instead send events to an existing Codex conversation.
+The [GitHub review request trigger](plugins/triggers/github-review-request/readme.md)
+can watch for pull requests that request your review directly.
 
 ## Requirements
 
@@ -316,6 +318,22 @@ was queued for the registered conversation; observe its later processing
 separately. Inspect the target after an `unknown` result before deliberately
 submitting another event. A restart restores saved routes and revalidates the
 destination; it does not replay Codex work.
+
+### Watch GitHub review requests
+
+Follow the [GitHub trigger guide](plugins/triggers/github-review-request/readme.md)
+to build the trigger from the same source revision and run a separate example
+that writes pull request URLs to a local file. Supply a user token through the
+daemon environment, or use saved GitHub CLI authentication. Environment-token
+users do not need the GitHub CLI. The guide includes configuration, registration,
+output inspection, and normal restart.
+
+The trigger watches open requests addressed directly to the authenticated user
+across repositories visible to that credential; it has no repository filter.
+Team-only requests are excluded. Polling can miss a cancellation and re-request
+between observations. Read the guide's search coverage and recovery limits
+before relying on notifications. GitHub Enterprise Server 3.19.x is the designed
+API target; real-service compatibility verification remains incomplete.
 
 ### Watch a GitHub pull request
 
