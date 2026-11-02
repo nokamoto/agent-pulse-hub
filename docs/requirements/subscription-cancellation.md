@@ -45,10 +45,8 @@ This extension supersedes the individual-cancellation exclusion in the
 Their other routing, restoration, isolation, and failure guarantees remain.
 
 [Selected-PR monitoring FR-006](github-pr-watch.md#functional-requirements)
-requires continuous notification without recipient rearming. Cancellation stops
-that continuing watch and future notification attempts under FR-002/FR-006
-below; an already-issued attempt may finish. Legacy repeated-wait requests
-during migration must not revive a cancelled subscription.
+notifies continuously. Cancellation stops that watch and future delivery
+attempts under FR-002/FR-006 below; an already-issued attempt may finish.
 
 ## Scope
 
@@ -77,10 +75,10 @@ human approval of this requirements revision.
 | --- | --- | --- |
 | FR-001 | Expose an operation named `unsubscribe` accepting exactly one explicit `subscription_id`, using the identifier returned by registration unchanged. Make it available through local control and alongside registration in the existing bundled agent-facing workflow. Do not infer a target from the caller's conversation or arguments. | UC-001; user's selected interaction |
 | FR-002 | On successful cancellation, terminate the target watch and prevent further delivery attempts for that subscription. Discard its queued events and reject later events from the cancelled watch. Keep the daemon, shared plugins, and other subscriptions running. | UC-001 |
-| FR-003 | Success must also remove the target from saved registration restoration and remove its saved trigger progress, including associated repeated-wait state when present. Normal shutdown must not recreate cancelled state. Normal restart must not restore the cancelled watch. | UC-002 |
+| FR-003 | Success must also remove the target from saved registration restoration and remove its saved trigger progress, including associated legacy repeated-wait state when present. Normal shutdown must not recreate cancelled state. Normal restart must not restore the cancelled watch. | UC-002 |
 | FR-004 | Report success with the target ID only after both the live cancellation and persistent removal obligations are satisfied. If a plugin or storage failure prevents completion, return an identifiable failure and do not claim successful cancellation. Preserve unrelated registrations and their progress. | UC-003 |
 | FR-005 | Reject missing or malformed IDs before changing subscriptions. A well-formed ID with no saved or live registration, including an already-cancelled ID, returns a distinguishable not-found failure. Permit cancellation of a saved registration whose live route has become inactive. | UC-003 |
-| FR-006 | An action attempt already issued before cancellation takes effect may finish and is not recalled or retried by cancellation. A successful response must guarantee that no further attempts for the cancelled subscription can begin. Concurrent registration, automatic notification scheduling, legacy repeated-wait requests, event processing, and normal shutdown must not reactivate or restore a successfully cancelled subscription. | UC-001, UC-002 |
+| FR-006 | An action attempt already issued before cancellation takes effect may finish and is not recalled or retried by cancellation. A successful response must guarantee that no further attempts for the cancelled subscription can begin. Concurrent registration, automatic notification scheduling, event processing, and normal shutdown must not reactivate or restore a successfully cancelled subscription. | UC-001, UC-002 |
 | FR-007 | A later explicit registration using identical watch and destination arguments is a new registration with a new ID and no inherited cancelled progress. Cancellation must release the former watch's resource reservation so that it does not itself prevent the new registration. | UC-001, UC-002 |
 | FR-008 | Provide operator and agent-workflow instructions showing how to retain a registration's ID, submit unsubscribe with it, interpret success and failure, and understand in-flight delivery and restart limits. | UC-001–UC-003 |
 
@@ -103,7 +101,7 @@ be cancellable without re-registration or access to original argument files.
 
 Design must define the plugin cancellation contract and compatibility handling,
 local command/API syntax, synchronization boundary, storage-failure recovery,
-and coordination with repeated waiting and normal shutdown. Partial failure
+and coordination with automatic notifications and normal shutdown. Partial failure
 may leave the target stopped live but still saved; this must be reported as
 failure with actionable recovery guidance, never as successful unsubscribe.
 Design must prevent saved-progress writes or late callbacks from resurrecting
@@ -121,7 +119,7 @@ implementation checks from any actual-agent delivery walkthrough.
 | AC-001 | FR-001, FR-002, NFR-002 | Register A and B through a shared input plugin; retain their returned IDs. Submit unsubscribe for A through local control, then trigger A and B. Include a queued A event. | Response identifies A; A's queued/later events cause no new attempts; B still delivers and the daemon and shared plugins remain running. | Assembled local daemon/client/plugin verification with controlled event ordering |
 | AC-002 | FR-003, FR-007, NFR-002 | Give A and B distinct saved progress, cancel A, stop normally and restart. Explicitly register A's former arguments again. | Only B restores with its original ID and progress. New registration has a new ID, no inherited A progress, and no reservation conflict left by cancellation. | Local restart/state verification and state-association unit checks |
 | AC-003 | FR-004, FR-005 | Submit missing, malformed, unknown, and already-cancelled IDs. Separately cancel a saved inactive route and inject target-plugin and storage failures. | Invalid inputs change nothing; well-formed unknown or already-cancelled IDs yield not-found. Inactive saved route can be removed. Incomplete cancellation reports failure with cause and recovery guidance, never success; unrelated state is preserved. | Validation/failure unit matrices and local boundary checks where plugin or file behavior matters |
-| AC-004 | FR-002, FR-003, FR-006 | Control an A action attempt already issued, a queued event, and overlapping automatic notification scheduling, legacy repeated-wait, equivalent registration, or normal-stop requests around cancellation. | The issued attempt may finish once; no further A attempt begins after success. No concurrent work recreates A's cancelled registration or saved progress. | Controlled concurrency/unit checks and assembled lifecycle checks where process ordering matters |
+| AC-004 | FR-002, FR-003, FR-006 | Control an A action attempt already issued, a queued event, and overlapping automatic notification scheduling, equivalent registration, or normal-stop requests around cancellation. | The issued attempt may finish once; no further A attempt begins after success. No concurrent work recreates A's cancelled registration or saved progress. | Controlled concurrency/unit checks and assembled lifecycle checks where process ordering matters |
 | AC-005 | NFR-001 | Supply event content requesting cancellation of B while A and B are registered. | Neither registration is cancelled by that content; only an explicit local administrative request can cancel the selected ID. | Control-boundary inspection and adversarial event unit checks |
 | AC-006 | FR-001, FR-008 | Follow finalized operator instructions and the bundled agent-facing workflow from registration through ID-based unsubscribe, then inspect results and restart behavior. | The maintainer records returned ID, cancellation request/result, continued unrelated delivery, and absence after restart; instructions explain failures and already-issued output. | Documentation review and maintainer walkthrough; actual-agent evidence allocated during design to delivery |
 
@@ -141,7 +139,7 @@ No existing requirement ID is retired. Adoption replaces the MVP's individual
 cancellation exclusion and extends live deletion beyond the offline recovery
 procedure in trigger runtime state FR-005. Registration persistence FR-004
 continues to restore retained registrations only; cancelled ones are removed.
-Automatic notification scheduling or legacy repeated-wait requests must not revive a cancelled subscription.
+Automatic notification scheduling must not revive a cancelled subscription.
 
 After requirements approval and merge, update the
 [routing design](../design/mvp.md),
