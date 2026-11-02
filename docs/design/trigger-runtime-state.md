@@ -78,12 +78,12 @@ restorable snapshot, and deciding which completed updates that snapshot prevents
 from being emitted again. It performs no state-file access or persistence-service
 calls. The action retains sole authority to report delivery acceptance.
 
-Inputs may additionally select the [repeated-wait profile](pr-watch-rewait.md)
-alongside runtime-state v2. Its notification generations and operation receipts
-are daemon-owned Session control, distinct from plugin-owned logical progress.
-It retains this storage format and checkpoint contract; the profile governs
-preparation/grant ordering against checkpoints and automatic rearming after
-restart. Inputs without that capability retain the behavior below unchanged.
+Inputs may additionally select the [continuous-watch profile](pr-watch-rewait.md)
+alongside runtime-state v2. Its grants and correlations are daemon-owned
+Session control; selected and accepted progress remain plugin-owned.
+It retains checkpoint scheduling and generation formats while adding the
+core-owned active-run marker and its clean-stop/restart fence. Inputs without
+that capability retain the behavior below unchanged.
 
 For a participating watch the core correlates each admitted event with its
 event ID and sends its terminal outcome back to the input. The input consumes
@@ -341,6 +341,10 @@ work before final input checkpointing. Failed notification save is a visible
 continuity failure, never permission for restart retry. Await those saves
 before releasing state exclusion.
 
+For continuous inputs, apply the [final pending-event drain](pr-watch-rewait.md#scheduling-and-ordering)
+within this same final-phase budget: close emission, resolve late discarded
+ranges, snapshot only after their notices, then clear the marker after saves.
+
 Concurrently for each participating input, send all remaining terminal notices
 and `checkpoint` requests with `quiesce: true`. Quiescing prevents further event
 emission for that watch before returning its snapshot and lasts until Session
@@ -365,7 +369,7 @@ diagnostics identify the registration and committed generation without payloads.
 
 The [cancellation design](subscription-cancellation.md) owns the target's
 terminal lifecycle fence. Serialize that fence with admission, activation,
-rewait commits, outcome handling, checkpoint scheduling and every runtime save
+automatic grant dispatch, outcome handling, checkpoint scheduling and every runtime save
 commit. Remove the target from future periodic and final-stop selections.
 An already selected checkpoint or save job must recheck the same registration
 identity and fence before publishing state. Drain any save that already won
@@ -375,7 +379,7 @@ selection or removing the watch from a map is insufficient.
 Cancellation does not need a final target checkpoint: the requested outcome
 is removal of that progress. Late checkpoint results, delivery notices and
 action results may be diagnosed or finish existing outcome correlation, but
-cannot schedule another save, recreate a runtime directory, rearm a generation
+cannot schedule another save, recreate a runtime directory, issue another grant
 or restore a route. An issued action attempt may finish after unsubscribe
 succeeds; this does not make its deleted checkpoint state live again. Keep the
 bounded correlation necessary to finalize that attempt without retaining

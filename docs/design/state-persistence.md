@@ -38,14 +38,11 @@ Sessions and process availability remain volatile. Participating output routes
 use the [notification-delivery design](notification-delivery.md) for retained
 notification evidence and safe automatic retry; its separate records do not
 change registration or trigger-checkpoint formats.
-The optional [repeated-wait profile](pr-watch-rewait.md) also keeps generation
-tokens, pending preparations and operation receipts volatile. Rewait preserves
-the same immutable registration record, ID and destination; it neither rewrites
-arguments nor creates a replacement registration. Restoring that record grants
-a fresh Session notification generation after the existing startup barrier.
-There is no forced-termination or power-loss recovery guarantee, stopped-event
-collection, legacy delivery retry, automatic plugin restart, or service-specific hub
-logic. An older nonpersistent daemon has no registrations to migrate.
+The optional [continuous-watch profile](pr-watch-rewait.md) keeps grants and
+event correlations Session-local. Retained registration IDs and arguments stay
+unchanged; automatic activation resumes saved plugin selection after startup.
+Its active-run marker lives with core-managed runtime progress and is removed
+by successful normal-stop saving or cancellation, never by registration replay.
 
 ## Requirement coverage
 

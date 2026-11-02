@@ -48,10 +48,10 @@ and the other MVP exclusions except individual cancellation, which is governed
 by [subscription cancellation](subscription-cancellation.md). That design owns
 ID-based unsubscribe, selective plugin termination, cancellation fencing,
 persistent removal and migration; this document retains routing authority.
-The optional [repeated-wait profile](pr-watch-rewait.md) retains that continuing
-watch while granting one notification per explicit wait or daemon run. It owns
-the additional same-registration control operation and generation admission
-fences; it does not change equivalent-registration matching or destinations.
+The optional [continuous-watch profile](pr-watch-rewait.md) automatically grants
+bounded notifications on that same monitor, including during recipient work.
+It owns admission fences and retired-operation compatibility, preserving
+equivalent-registration matching and fixed destinations.
 Actual Codex integration and its registration skill are outside this contract.
 Use `hashicorp/go-plugin` v1.8.0, gRPC v1.84.0 and protobuf v1.36.12 for both
 roles. Product code and contracts remain OS neutral; dependency internals may
@@ -146,10 +146,9 @@ sequential ten-second destination and watch operations. There is no automatic
 retry. Request version is the integer token `1`, distinct from plugin protocol
 version 2.
 
-The optional [rewait local operation](pr-watch-rewait.md#local-client-contract)
-uses this same framing, address, deadlines and error envelope. Its operation-ID
-receipts and generation changes are distinct from registration. Inputs without
-the capability retain their existing registration and delivery behavior.
+The retired `rewait` operation is unsupported and returns `invalid_request`
+without changing admission or progress; its CLI command and flags are removed.
+[Continuous notification](pr-watch-rewait.md) needs no replacement client command.
 The [unsubscribe operation](subscription-cancellation.md) shares the same local
 control boundary and framing; its target is exactly one explicit returned ID.
 
@@ -196,7 +195,6 @@ falling back to a different endpoint.
 | `cmd/agent-pulse-hub` | `daemon --config <absolute JSON file> [--state-dir <absolute directory>] [--address <address>] [--runtime-state-max-bytes <bytes>]` runs in foreground. Ctrl+C and local stop share shutdown. |
 | Same command | `register --input-plugin <name> --watch-args-file <absolute JSON file> --output-plugin <name> --destination-args-file <absolute JSON file> [--address <address>]` registers a route. |
 | Same command | `stop [--address <address>]` requests normal shutdown. |
-| Same command | `rewait --subscription-id <id> --operation-id <id> --confirmation-position-file <absolute-file> [--address <address>]` rearms a capable retained registration under the [rewait contract](pr-watch-rewait.md#local-client-contract). |
 | Same command | `unsubscribe --subscription-id <id> [--address <address>]` selectively cancels that registration under the [cancellation contract](subscription-cancellation.md). |
 | `plugins/triggers/manual` | No arguments; manual trigger (public input role) launched through go-plugin. |
 | `plugins/actions/model-output` | Optional valueless `--notification-delivery`, at most once; default legacy model-output action (public output role), launched through go-plugin. |
@@ -326,7 +324,7 @@ Queued events for that ID are discarded, including work already dequeued but
 not yet issued. The final send-issuance decision shares this fence; a prior
 availability check alone cannot authorize a later send. An attempt issued
 before the fence may finish once. Its result can be recorded without restoring
-the cancelled route, saving progress, opening another generation or retrying.
+the cancelled route, saving progress, issuing another grant or retrying.
 Unrelated destinations and attempts retain their existing behavior.
 
 For legacy routes, if output is unavailable before sending begins, record `failed` without a plugin

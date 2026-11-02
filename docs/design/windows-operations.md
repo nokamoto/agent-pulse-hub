@@ -649,13 +649,27 @@ one: the first must not be notified again and the fresh update must be notified
 once. Successful stop acknowledgement alone does not prove checkpoint success.
 Queued, in-progress, failed and unknown outcomes have no completed-notification
 guarantee; neither restoration nor initial-state recovery retries hub work.
+For continuous PR-watch, register once: later changes and bounded suffixes
+notify automatically while the recipient works. Coverage positions are
+informational; `rewait` and position-file handoff are unsupported. Upgrade the
+daemon and trigger together while stopped; keep the existing registration ID
+and arguments. [Continuous admission](pr-watch-rewait.md) and
+[capacity migration](github-pr-watch-capacity.md#legacy-migration) define
+profile compatibility and the selected-versus-accepted progress boundary.
 Stopped-period retrieval follows the trigger's own instructions.
 
 A save failure identifies the input/registration and reason and warns
 `runtime continuity at next restart cannot be guaranteed`. Monitoring and
 notifications continue while the plugin remains healthy. Correct storage
 conditions deliberately; a later successful checkpoint covers its own saved
-progress. Do not claim unsaved progress survives restart. An unreadable,
+progress. Continuous watches retain `runtime/<id>/continuous-active.json`
+until their final quiescing save and notification saves complete. If that
+marker survives stop, startup reports `continuous_progress_unverified` before
+source activation or retained retry issuance. Preserve the stopped tree;
+repair from a verified clean copy that covers all previously selected work,
+or follow the offline deletion/recreation procedure below accepting continuity loss.
+Do not remove the marker alone or resubmit known unknown work. Periodic
+checkpoint success does not replace the required final save. Do not claim unsaved progress survives restart. An unreadable,
 malformed or trigger-incompatible existing checkpoint prevents startup; retain
 the reported state and reason, repair from a valid preserved copy or deliberately
 reset as below. Changing to a nonparticipating input while saved runtime state

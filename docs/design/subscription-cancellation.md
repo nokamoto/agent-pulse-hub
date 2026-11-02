@@ -41,7 +41,7 @@ All unqualified IDs refer to `requirements/subscription-cancellation`.
 | FR-002, NFR-002 | AC-001, AC-004 | Per-subscription fence and selective input cancellation | SC-V01-SELECTIVE; concurrency units |
 | FR-003 | AC-002, AC-004 | Durable intent, save drain, deletion before success | SC-V02-RESTART; SC-V03-FAILURE; lifecycle units |
 | FR-004, FR-005 | AC-003 | Validation, visible partial failure, saved inactive removal | SC-V03-FAILURE; validation/storage units |
-| FR-006 | AC-004 | Attempt-start serialization and rewait/stop fence | SC-V01-SELECTIVE; lifecycle units |
+| FR-006 | AC-004 | Attempt-start serialization and automatic-grant/stop fence | SC-V01-SELECTIVE; lifecycle units |
 | FR-007 | AC-002 | Resource release and fresh UUID after removal | SC-V02-RESTART; identity units |
 | FR-008 | AC-006 | Operation guide and agent skill contract | SC-D01; document review |
 | NFR-001 | AC-005 | Explicit trusted local request, opaque event data | Adversarial event units and control-boundary inspection |
@@ -105,11 +105,10 @@ not-found alone cannot prove which caller removed the subscription.
    are confirmed; mere Session closure is insufficient. For a running legacy
    input reject unsupported cancellation before mutation.
 2. Under lifecycle serialization mark the target cancelling. Close its event,
-   rewait, grant, checkpoint and new-attempt admission; remove unsent grants,
-   preparations and queued deliveries. Equivalent registration now returns
+   automatic-grant, checkpoint and new-attempt admission; remove unsent grants
+   and queued deliveries. Equivalent registration now returns
    `unsubscribe_busy` while cancellation is incomplete. Unrelated requests
-   continue normally. Expire pending rewait preparation correlations and finish
-   their callers unsuccessfully; a late result cannot commit a generation.
+   continue normally. Late grants and terminal callbacks cannot reopen admission.
 3. Drain any target save already admitted to the filesystem, and prevent every
    subsequent save commit. A checkpoint callback must check the same fence at
    commit, not just at snapshot collection. Remove pending checkpoint requests
@@ -153,10 +152,10 @@ are excluded from final checkpoint collection and save. If stop wins before an
 unsubscribe is admitted, the client receives failure/transport uncertainty, not
 a successful cancellation. Restart completion uses the committed intent.
 
-Keep completed rewait operation receipts until their existing expiry: replaying
-a receipt returns its historical result without another grant. New rewait
-intents for a removed ID fail. Do not erase replay-safety records merely because
-the monitor and its logical progress are removed.
+Remove the target's continuous active-run marker with its runtime directory.
+Legacy attempted/comparison/issued-position fields are part of that directory,
+not separately restored control state. Retired rewait requests always fail
+without mutation; no operation receipts survive a Session.
 
 ## Persistent intent and restart
 
@@ -204,14 +203,14 @@ This document owns cancellation ordering, local operation and intent storage.
 [Plugin protocol](plugin-v1.md#optional-individual-watch-cancellation) owns the
 language-neutral `cancel_watch_v1` schemas and deadlines derived here.
 [Persistence](state-persistence.md), [runtime state](trigger-runtime-state.md),
-[rewait](pr-watch-rewait.md) and [routing](mvp.md) reference these boundaries.
+[continuous admission](pr-watch-rewait.md) and [routing](mvp.md) reference these boundaries.
 [Operations](windows-operations.md) and [Codex Queue](codex-queue.md) derive
 operator and bundled skill instructions. No specification is deferred to
 implementation; package names and helper signatures remain routine choices.
 
 Keep application/framework version 2 and registration/runtime record formats.
 The optional input capability composes with either runtime-state revision and
-with valid rewait profiles. Inputs without it still register and monitor; live
+with valid continuous-watch profiles. Inputs without it still register and monitor; live
 cancellation fails explicitly. Ship all bundled inputs with the capability in
 the cancellation implementation. Upgrade daemon and input artifacts together
 while stopped; existing registrations use the same ID without original argument
@@ -230,8 +229,7 @@ watch. Rollback cannot restore removed watches or recall outputs.
 | --- | --- | --- |
 | Optional per-watch cancellation | Kill the input process | Preserves shared watches; legacy inputs need an explicit upgrade. |
 | Durable deletion intent | Delete runtime then registration without a marker | Prevents partial deletion from restoring initial progress; adds one small record and startup cleanup. |
-| Fence before plugin exchange | Wait for plugin before closing admission | Prevents concurrent issuance and rewait from escaping cancellation; failures can leave the target stopped but saved. |
-| Retain existing operation safety receipts | Delete all ID-associated data | Avoids replaying accepted operations; monitoring progress is still deleted. |
+| Fence before plugin exchange | Wait for plugin before closing admission | Prevents concurrent issuance and automatic grants from escaping cancellation; failures can leave the target stopped but saved. |
 
 Use portable Go filesystem and process APIs; no OS-specific permission-failure
 test is required. Retain existing local trust, payload secrecy, storage latency
@@ -262,9 +260,9 @@ progress and cannot recreate a cancelled registration.
 
 Prefer unit tests for strict validation, UUID/not-found matrices, capability
 combinations, every filesystem error, idempotent cleanup, startup intent
-validation, replay receipts, adversarial event text and interleaving decisions.
+validation, adversarial event text and interleaving decisions.
 Mock storage and plugin ports for deterministic fence/commit races: hold a
-save after snapshot, a dequeued attempt before send, rewait before commit, and
+save after snapshot, a dequeued attempt before send, automatic grant before dispatch, and
 normal stop before final snapshot; cancellation must win or lose ordering
 explicitly with no post-success resurrection. This costs less than duplicating
 every interleaving with processes or wall-clock sleeps.

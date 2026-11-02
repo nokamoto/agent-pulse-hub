@@ -9,9 +9,9 @@ sources:
   - id: pr-watch-design
     resource: design/github-pr-watch.md
     title: GitHub pull request watch trigger
-  - id: rewait-design
+  - id: continuous-design
     resource: design/pr-watch-rewait.md
-    title: Repeated waiting on a retained trigger registration
+    title: Continuous notification on a retained trigger registration
   - id: capacity-design
     resource: design/github-pr-watch-capacity.md
     title: GitHub PR watch capacity and continuation
@@ -31,8 +31,8 @@ these signals where the earlier PR-watch design excludes checks or lists
 only discussion, head, and lifecycle fields.
 
 The governing PR-watch design retains selection, credentials, scheduling,
-discussion categories, and registration ownership. [Rewait](pr-watch-rewait.md)
-retains admission generations and the terminal-outcome/checkpoint fence.
+discussion categories, and registration ownership. [Continuous admission](pr-watch-rewait.md)
+owns automatic grants, selected progress and the terminal-outcome/checkpoint fence.
 [Runtime state](trigger-runtime-state.md) retains core-owned storage. This
 specification adds no public RPC, destination selection, agent-assessment
 claim, or GitHub write operation.
@@ -40,12 +40,12 @@ claim, or GitHub write operation.
 Acquisition completeness, retained history, notification continuation, and
 checkpoint capacity are separate concerns. The
 [capacity specification](github-pr-watch-capacity.md) defines FR-012 and
-AC-011/AC-012 acquisition budgets, v2 progress, retained positions and prefix
+AC-011/AC-012 acquisition budgets, v4 selected progress, coverage references and prefix
 continuation; [streamed runtime state](runtime-state-stream.md) defines its
 common checkpoint profile. This document binds signal records to that profile
 in [Saved state and positions](#saved-state-and-positions) and
 [Bounded notification selection](#bounded-notification-selection). The common
-wire protocol, resource controls and rewait operation remain unchanged.
+category acquisition, resource controls and external-data boundaries remain unchanged.
 
 ## Requirement coverage
 
@@ -56,7 +56,7 @@ All local IDs below refer to
 | --- | --- | --- |
 | FR-003, FR-004, FR-013 | AC-002, AC-013, AC-014 | Required acquisition, lifecycle continuity, silent baseline, and independent wake rules; S-U01–S-U04, GPWS-I01/I03 |
 | FR-005, FR-007, FR-013 | AC-013 | Result/episode identity, current state, and grouped context; S-U02–S-U05, GPWS-I01 |
-| FR-006, FR-007, FR-010, FR-013 | AC-014 | Inactive waits, retained episodes, restoration, and explicit positions; S-U05–S-U06, GPWS-I02 |
+| FR-006, FR-007, FR-010, FR-013 | AC-014 | Automatic grants, retained episodes, restoration, and selected coverage; S-U05–S-U06, GPWS-I02 |
 | FR-008, FR-009, FR-013 | AC-014 | Complete pagination, acquisition errors, unknown conflict state; S-U01, S-U03, S-U06, GPWS-I01/I02 |
 | FR-001, FR-002, NFR-002 | AC-013, AC-014 with AC-001/AC-007 host and authentication constraints | Selected-host API origins, credential reuse, redacted errors; S-U01, GPWS-I01, GPWS-D01 |
 | FR-011, NFR-001, NFR-003, NFR-004 | AC-013, AC-014 with AC-010 documentation/evidence constraints | External data, unchanged public interfaces, delivery instructions, separate evidence; S-U05, GPWS-I02, GPWS-D01/D02 |
@@ -74,7 +74,7 @@ Keep github.com and GHES 3.19.x, the selected-host process, and credential
 precedence from the governing design. The process option `--state-profile`
 accepts `signals-v3` (default) or `discussion-v2`; reject other values at
 startup. The former implements this specification. The latter retains the
-capacity specification's discussion-only behavior and v1-to-v2 migration,
+capacity specification's discussion-only behavior and v1/v2-to-v4 migration,
 without acquiring or claiming signal coverage. It exists for explicit upgrade
 compatibility and regression verification, not as a fallback after a failed
 signal acquisition or restore. A process uses one profile for all its watches;
@@ -281,7 +281,7 @@ as a superseded observed failure and show the current selected result
 separately. This preserves an acquired failure without presenting it as the
 current selected failure. A result for a head other than the final H is not
 eligible as a current-head failure. Retained earlier-head episodes can still
-appear as historical changes after a supplied position, explicitly labelled
+appear as historical changes in the unselected journal suffix, explicitly labelled
 with their head and `current_head: false`.
 
 ### Conflict state and compared revisions
@@ -363,27 +363,25 @@ review, comment, or head change is required. A failed observation cannot
 replace the previous value. Closed/merged lifecycle reporting remains in
 the governing design; readiness alone does not imply merge permission.
 
-## Notifications, waits, and logical progress
+## Notifications and logical progress
 
 Commit a complete candidate observation and its new episodes together.
-No-position activation establishes the first complete baseline silently,
+Activation without retained progress establishes the first complete baseline silently,
 including existing failures/conflicts and Ready status. While a notification
-generation is active, any one eligible episode independently requests
+grant is available, any one eligible episode independently requests
 destination work. Group all eligible changes available during preparation
 under the governing batch/continuation contract; do not wait for discussion,
 an actor change, or another category. Non-failure CI changes, resolution,
 and Ready-to-Draft alone do not request work, but update current state.
 
-A consumed generation stops emission, not acquisition. Keep qualifying
-episodes observed while the agent works, including a failure later recovered,
-a resolved conflict, or readiness later changed back. Rewait from P1 must
-expose eligible retained episodes after P1 without new GitHub activity.
-Delivery acceptance and restart suppression remain separate from the caller's
-assessment position. A successful normal checkpoint/restore preserves
-episodes and confirmed delivery coverage: unchanged saved failures do not
-wake solely because restart grants a generation; a later fresh episode can.
-Apply the existing rewait admission and checkpoint fence, not a second poller
-or category-specific notification generation.
+After one event, keep acquiring episodes while awaiting its terminal notice.
+The next automatic grant exposes retained episodes without new GitHub activity,
+including a failure already recovered or a conflict already resolved. No
+assessment position is returned. Successful normal save/restore preserves
+episode identities, selected ranges and accepted evidence separately:
+unchanged selected failures do not wake again, while fresh episodes can.
+Use the shared continuous-admission/checkpoint fence, not another poller or
+category-specific grant.
 
 Every context remains external UTF-8 JSON under the public 8,192-byte limit,
 using the governing `changes`, `current`, `omissions`, observation times,
@@ -408,14 +406,17 @@ all-or-nothing capacity errors as the FR-012 continuation design.
 
 ### Saved state and positions
 
-Require `runtime_state_v2`, `rewait_v1` and `runtime_state_stream_v1`. Write
-schema `github-pr-watch-v3`; its header has `kind: "header"`, `version: 3`
-and `signal_version: 1`. This plugin-specific schema changes no wire message.
+Require `runtime_state_v2`, `continuous_watch_v1`, `runtime_state_stream_v1`
+and `cancel_watch_v1`. Write schema `github-pr-watch-v4`; its header has
+`kind: "header"`, `version: 4`, `profile: "signals-v3"` and `signal_version: 1`.
+This schema changes progress lifetime while retaining the v3 signal records.
 Use the capacity specification's ordered header, items and changes objects,
 32,768-byte compact object bound and complete-generation validation. The
 header retains scope, nonce, observation/change sequences, times, item/change
-counts, retained range, issued positions, comparison position, and attempted/
-confirmed progress. No second cursor or category-specific position is added.
+counts, retained range, issued coverage references, selected progress and
+confirmed evidence under capacity's v4 semantics. No category-specific cursor
+is added. Legacy v3 retains its old comparison/attempted/confirmed fields
+only as conversion input.
 
 Discussion records retain their capacity semantics. Signal items use these
 category keys; IDs are stable strings and are unique within their category:
@@ -460,10 +461,9 @@ result versions or pair state to make it fit. Shorten only optional descriptions
 or body excerpts with digest and explicit omission information. Their complete
 values are hashed before shortening and are not failure-eligibility inputs.
 
-Use the existing `gpw1.` nonce/sequence representation. Retain the latest four
-issued positions and pin the comparison position; prune only a delivered prefix
-not required by any retained position or confirmed/comparison cursor. The same
-rules retain unreported discussion changes and signal episodes. A checkpoint
+Use the existing `gpw1.` nonce/sequence representation. Retain four issued
+coverage references and every unselected discussion change/signal episode.
+Apply capacity's selected-range pruning; no recipient-assessment history is pinned. A checkpoint
 is one immutable cut of comparison items, journal and progress after eligible
 delivery notices. Restore validates schema/version, scope, counts, category/ID
 uniqueness, ordering, contiguous journal sequences, period/episode bounds and
@@ -482,7 +482,7 @@ summary first. Select the oldest eligible entries in sequence order; never
 skip a large signal to send a later discussion entry. Required changed
 identities, exact failed results, heads/pairs and provenance are not shortened.
 If one entry and minimal context cannot fit, report
-`notification_metadata_exhausted` without consuming the wait or issuing a position.
+`notification_metadata_exhausted` without consuming the grant or issuing a position.
 
 The minimal current summary contains head/lifecycle, Draft/Ready, the current
 conflict state and pair (or unavailable reason), plus CI totals grouped by source
@@ -497,11 +497,11 @@ or create change positions and do not create an endless current-only backlog.
 
 Set `confirmation_position` and `continuation.through_sequence` to the last
 represented change; retain the exact suffix. The other continuation fields
-(`has_more`, `remaining_changes`, `observed_through_sequence`, and conditional
-`operation: "rewait"`) have the capacity semantics. Each explicit rewait sends
-the next prefix with no new source activity required, even after acquisition
-failure. A normal restart may send the outstanding suffix from confirmed
-delivery progress but never repeats its confirmed prefix solely due to restart.
+(`has_more`, `remaining_changes`, `observed_through_sequence`) have capacity's
+semantics. Remove `operation`; automatic grants send the suffix without
+recipient actions or another source round, even after acquisition failure.
+Normal restart resumes after selected and cannot replay an earlier failed,
+unknown or accepted prefix under a new notification ID.
 
 ## Compatibility and rollout
 
@@ -511,8 +511,7 @@ including `github-pr-watch-v1` or a discussion-only `github-pr-watch-v2`
 payload, cannot prove a baseline or
 position coverage for these categories. Reject it before activation with
 `signal_state_incompatible`; preserve the saved state and diagnose the
-affected registration. Reject incompatible explicit positions through the
-existing position-rejection path. Do not fill absent signal fields with
+affected registration. Do not fill absent signal fields with
 empty/success values, silently establish a new baseline, or accept an earlier
 position as if it covered the extension.
 
@@ -522,24 +521,25 @@ explicitly follow the existing
 [offline reset/recreation procedure](trigger-runtime-state.md#offline-reset-deletion-and-recreation),
 accepting loss of continuity. New registrations use a new nonce and cannot
 inherit old positions. Rollback to a binary that cannot understand the new
-state must reject it visibly rather than overwrite it. V3 restoration preserves
-its nonce, issued positions and all combined progress. V1-to-v2 migration remains
-available in the discussion-only profile; it cannot synthesize missing signal
-history for v3. This explicit incompatible upgrade is chosen over pretending
+state must reject it visibly rather than overwrite it. V3-to-v4 migration
+preserves nonce, coverage references, episode state and all combined progress;
+selected becomes max(confirmed, attempted); comparison alone is not coverage. Discussion-only
+v1/v2 conversion remains available only in discussion-v2 and cannot synthesize
+missing signal history. V4 profile mismatch fails before activation. This explicit incompatible upgrade is chosen over pretending
 that old positions cover previously unobserved categories.
 
 The existing GPW-I01–I05 expectations remain required for discussion, capacity
 and common-state behavior. Run that scope with the same binary explicitly using
 `--state-profile=discussion-v2`; GPWS-I01/I02/I03 use `signals-v3`. The former's
-legacy-migration branch verifies v1-to-v2 preservation; GPWS-I02 separately
-verifies v3 rejection of state without signal history. Fixtures must request
-the intended profile, not weaken either expectation. A v3 generation is also
+legacy-migration branch verifies v1/v2-to-v4 preservation; GPWS-I02 separately
+verifies v3-to-v4 preservation and rejection of state without signal history. Fixtures must request
+the intended profile, not weaken either expectation. A signal-bearing v3/v4 generation is also
 incompatible with `discussion-v2`; switching profiles preserves the stopped
 state and fails visibly rather than erasing the other profile's progress.
 No migration or live-service decision is delegated to implementation.
 
-The base-revision correction keeps schema version 3 / signal version 1 and
-existing positions. Previously accepted existing-base observations required
+The base-revision comparison contract keeps signal version 1 and existing
+coverage references through v3-to-v4 conversion. Previously accepted existing-base observations required
 equal OIDs, so their saved pair already identifies the current target observed
 then. Restore those pairs, periods, confirmation flags and journal entries
 unchanged. A later complete observation uses the current target; a changed
@@ -559,14 +559,14 @@ can use it; this specification does not change runtime behavior by itself.
 | Failure result versions include execution provenance | New-ID-only detection misses supported same-ID updates; timestamp-only recency is unreliable. This records a visible new failed result without claiming a rerun occurred. Indistinguishable overwritten attempts remain outside polling guarantees. |
 | Unknown conflict is valid current state | Rejecting all UNKNOWN rounds would unnecessarily block independent CI/readiness changes. Treating unknown as conflict or resolution would invent evidence. Keep current uncertainty and confirmed episode identity separately. |
 | Each observed pair period can qualify | Watching only head misses base-only conflicts. Remembering all prior pairs would suppress A-to-B-to-A changes and grow historical suppression state. Period-local confirmation detects each return while UNKNOWN within a period does not duplicate it. |
-| Explicit incompatibility for absent signal history | Automatically adding a silent baseline would misrepresent existing positions. A distinct v3 schema preserves old progress and makes a deliberate reset or compatible v2 restoration visible, at the cost of an explicit upgrade step. |
+| Explicit incompatibility for absent signal history | Automatically adding a silent baseline would misrepresent existing positions. V4's explicit category profile preserves old progress and makes deliberate reset or compatible discussion restoration visible, at the cost of an explicit upgrade step. |
 
 ## Verification strategy
 
 Implementation supplies mocked-capability unit tests; no live service,
 subprocess, server, or filesystem is needed for the broad matrices. Retain
 integration only for actual Session/network serialization and assembled
-rewait/checkpoint/restart boundaries. Reuse existing TLS transport injection,
+automatic-grant/checkpoint/restart boundaries. Reuse existing TLS transport injection,
 public Session launch, real hub/client/model-output, and temporary-state
 fixture mechanisms; do not add a runner, framework, dependency, CI job, public
 test-only API origin, or insecure TLS mode.
@@ -589,8 +589,8 @@ durable prefix/suffix behavior remain required in GPWS-I02.
 | S-U02 | Every result/status enum and unsupported value; same-name distinct IDs, same-ID unchanged result, changed failed execution provenance, link/name-only edits, new failed status records, current selections versus superseded failures, older-head inputs, observed recovery/recurrence and baseline failures. Assert exact eligibility and source/head labels. |
 | S-U03 | Existing/unavailable base, all mergeable enums, unknown baseline, unknown-only repetition, CONFLICTING/UNKNOWN/CONFLICTING, MERGEABLE recurrence, base-only SHA change, retarget, pair mismatch and confirmed A-to-B-to-A. Cross OPEN/CLOSED/MERGED with equal and stably unequal base OIDs; current pair uses the target. Change each fence field independently between metadata/first/final reads, including lifecycle, associated OID, ref ID, deletion and recreation; reject without advancement. Null/malformed required fields remain failures. Reopening or closing alone does not resolve a conflict; a missing base retains prior confirmation. Assert period-local suppression, a fresh returning-A episode, and no invented conflict/resolution. |
 | S-U04 | Draft and Ready baselines, both transition directions, repeated status, failed intermediate observation, and repeated true/false cycles with unchanged actor/discussion/head. Assert only observed Draft-to-Ready episodes qualify. |
-| S-U05 | Each category alone and combined; external marker strings; changed/historical/current distinctions; complete required identities and nullable links; consumed generation followed by rewait without activity; explicit position versus action acceptance. Assert no category depends on discussion or agent assessment and no position acknowledges omitted changes. |
-| S-U06 | V3 header/items/changes validation, stream/object budgets, duplicate IDs, inconsistent membership/counts, false/true baseline shape, signal version, profile selection, old/foreign positions, contiguous mixed-category sequences and retained-prefix boundaries. Restore before/after an accepted prefix and after state-only recovery; assert identical remaining suffix, comparison flags and next episode identity. Fail saving and acquisition independently. V1/v2 cannot restore in signals-v3; discussion-v2 retains its approved migration and rejects v3. No silent reset, lost inactive-wait episode or restart-only duplicate. |
+| S-U05 | Each category alone and combined; external marker strings; changed/historical/current distinctions; complete required identities and nullable links; terminal notice followed by automatic continuation without activity; selection versus action acceptance. Assert no category depends on discussion or agent assessment and no position acknowledges omitted changes. |
+| S-U06 | V3 header/items/changes validation, stream/object budgets, duplicate IDs, inconsistent membership/counts, false/true baseline shape, signal version, profile selection, old/foreign positions, contiguous mixed-category sequences and retained-prefix boundaries. Restore before/after an accepted prefix and after state-only recovery; assert identical remaining suffix, comparison flags and next episode identity. Fail saving and acquisition independently. V1/v2 cannot restore in signals-v3; discussion-v2 retains its approved migration and rejects v3. No silent reset, lost unselected episode or restart-only duplicate. |
 
 ### CI acceptance cases
 
@@ -605,9 +605,9 @@ does not verify product behavior.
 
 | ID and mapping | Concrete inputs and actions | Observable expected results and failure boundaries |
 | --- | --- | --- |
-| GPWS-I03; FR-003–FR-010, FR-013; AC-002/AC-013/AC-014 | Use the actual plugin/public Session and existing verified TLS fixture. First register a MERGED PR with H1, associated B1, existing target B2, UNKNOWN and unchanged discussion/CI; activate, repeat and checkpoint the silent baseline. Separately baseline OPEN H1/B1, then return MERGED with associated B1 and target B2. Make the first/final target differ during one candidate round; recover to stable B2. Accept the lifecycle event, rewait, change only a current-head CI result to failure, and repeat. Checkpoint, stop, restore through public Session, activate and repeat unchanged. | Both registrations succeed. Fresh merged baseline is silent. The racing round emits a diagnostic and leaves complete comparison/journal/positions unchanged. Recovery reports the merge lifecycle with current target B2 and raw UNKNOWN, not a conflict or inferred resolution. CI failure independently notifies despite stable unequal OIDs and merged lifecycle. Context is bounded and positions advance only for represented changes. Accepted events do not repeat after restore; prior pairs/periods and retained positions are preserved. |
-| GPWS-I01; FR-003–FR-005, FR-007–FR-009, FR-013; AC-013/AC-014 | Launch actual plugin through public Session using test-owned verified TLS for GraphQL and REST on selected hostnames. Use acme/widget PR 17, H1/B1, Draft, one successful check/status and unchanged discussion. Fail an initial CI page, then complete and repeat the silent baseline. In independent branches with active generations, fail the H1 check and separately status, move only base to B2 with UNKNOWN then CONFLICTING, and change Draft to Ready. Repeat unchanged; supply an older-head run; independently fail a required status page and PR/conflict retrieval, then recover with the pending change. | No preactivation or baseline event, including after failed initial coverage. Each category alone emits a bounded changed record, current state, PR identity and position; unchanged, unknown-only, older-head-only and non-failure-only rounds do not emit. Failed pages/read reject complete advancement; recovery preserves and reports the outstanding eligible change. Requests use only selected origins/token; no secrets occur in context/logs. Use checkpoint inspection and Session notices to verify progress, not timing guesses. |
-| GPWS-I02; FR-004–FR-010, FR-013; AC-013/AC-014 | Run the actual hub/client/plugin/model-output with signals-v3, 128 CI records carrying 256-byte metadata, and existing failed CI/conflict/Ready for a silent baseline. Recover silently, add conversation comment C1 and accept P1. While consumed, perform three failure/new-base-conflict/Draft-to-Ready cycles, each followed by recovery, retaining nine small signal entries. Freeze GitHub. Rewait P1; accept an eight-entry prefix, checkpoint >32 KiB, stop and restart before the suffix. Then rewait the fully covered P2 unchanged and introduce fresh episodes. Independently restore v1 and discussion-only v2 state. | First prefix ends at P1+8 with has_more=true, remaining_changes=1 and tail P1+9. Every context is <=8,192 bytes, current omitted lists have counts/links, and comparison state records the recovery. Restart delivers only the ninth entry, ending at P2=P1+9; no new source activity, lost suffix or repeated confirmed prefix. Stream objects are <=32,768 bytes and frames <=65,536. Rewaiting P2 unchanged is silent; fresh episodes remain eligible. Destination B is untouched, nonce/positions persist, old schemas block before activation without changing saved data or unrelated registrations, and acceptance is not agent assessment. |
+| GPWS-I03; FR-003–FR-010, FR-013; AC-002/AC-013/AC-014 | Use the actual plugin/public Session and existing verified TLS fixture. First register a MERGED PR with H1, associated B1, existing target B2, UNKNOWN and unchanged discussion/CI; activate, repeat and checkpoint the silent baseline. Separately baseline OPEN H1/B1, then return MERGED with associated B1 and target B2. Make the first/final target differ during one candidate round; recover to stable B2. Accept the lifecycle event, change only a current-head CI result to failure without recipient commands, and repeat. Checkpoint, stop, restore through public Session, activate and repeat unchanged. | Both registrations succeed. Fresh merged baseline is silent. The racing round emits a diagnostic and leaves complete comparison/journal/positions unchanged. Recovery reports the merge lifecycle with current target B2 and raw UNKNOWN, not a conflict or inferred resolution. CI failure independently notifies despite stable unequal OIDs and merged lifecycle. Context is bounded and positions advance only for represented changes. Accepted events do not repeat after restore; prior pairs/periods and retained positions are preserved. |
+| GPWS-I01; FR-003–FR-005, FR-007–FR-009, FR-013; AC-013/AC-014 | Launch actual plugin through public Session using test-owned verified TLS for GraphQL and REST on selected hostnames. Use acme/widget PR 17, H1/B1, Draft, one successful check/status and unchanged discussion. Fail an initial CI page, then complete and repeat the silent baseline. In independent branches with active grants, fail the H1 check and separately status, move only base to B2 with UNKNOWN then CONFLICTING, and change Draft to Ready. Repeat unchanged; supply an older-head run; independently fail a required status page and PR/conflict retrieval, then recover with the pending change. | No preactivation or baseline event, including after failed initial coverage. Each category alone emits a bounded changed record, current state, PR identity and position; unchanged, unknown-only, older-head-only and non-failure-only rounds do not emit. Failed pages/read reject complete advancement; recovery preserves and reports the outstanding eligible change. Requests use only selected origins/token; no secrets occur in context/logs. Use checkpoint inspection and Session notices to verify progress, not timing guesses. |
+| GPWS-I02; FR-004–FR-010, FR-013; AC-004/AC-008/AC-012/AC-013/AC-014 | Actual hub/client/plugin/model-output, signals-v3; baseline 128 CI records with existing failed CI/conflict/Ready, then recover silently. Accept C1 at P1. Keep its following terminal notice gated while completing three signal/recovery cycles to retain nine entries. Release the notice and freeze GitHub. Accept the eight-entry automatic prefix, stop before the suffix grant is dispatched, save and restart. Introduce fresh episodes after exhaustion. Separately restore v3 with attempted above confirmed and a lower comparison; reject discussion-only v1/v2. | First prefix ends at P1+8 with has_more=true, remaining_changes=1, tail P1+9 and no operation field. Restart automatically delivers only entry nine; no source stimulus, recipient command, lost suffix or repeated selected prefix. Contexts <=8,192 bytes, objects <=32,768, frames <=65,536 and state >32 KiB. Migration preserves nonce/episode flags, selection=max(confirmed,attempted) and remaining history; incompatible profiles preserve bytes and block before activation. A/B isolation and assessment separation remain intact. |
 
 For I01 the real plugin HTTP adapter, JSON parsing, comparison, context, and
 public Session run; only GitHub is substituted. I02 adds real hub/client,
@@ -618,7 +618,7 @@ I03 reuses I01's Session/TLS mechanism and checkpoint/restore helpers. In
 implementation, extend only its case-local source state to separate associated
 OID from target OID and to select lifecycle/mergedAt; serve a scripted final-read
 target change using the existing query dispatch and round counters. Inspect
-checkpoints before and after the failed round, and use delivery notices/rewait
+checkpoints before and after the failed round, and use delivery notices/automatic grants
 and restored streamed objects for continuity. No hub restart duplication is
 needed here: I02 retains the real core persistence coverage. Broad closed/reopen,
 ref-deletion and field-race permutations stay in S-U03, reducing process cost.
@@ -631,9 +631,15 @@ begin/chunks/end for checkpoint inspection. Configure the local HTTPS fixture
 with GraphQL cursor responses and REST status `Link` pages on the same trusted
 origin. Reuse completion barriers to freeze the nine-change source. For I02,
 accept the first prefix before requesting a quiescent checkpoint; inspect its
-schema and retained journal, then restart the same core state directory. The
-core's restored confirmed cursor, rather than a fake notification ledger, must
-account for the eight/one split. Schema-rejection branches use stopped copies
+schema and retained journal, then restart the same core state directory.
+Extend the existing plugin test launcher's gRPC stream interceptor only to hold
+chosen terminal notices/grants before the plugin handles them; never alter
+payloads. After the public stop closes admission, release the held grant.
+If an in-flight event crosses stop, require its discarded notice and selection
+rollback before the final quiescent snapshot. This tests the actual shutdown
+fence, without substituting a product scheduler. The
+core-managed snapshot's restored selection cursor, rather than a fake
+notification ledger, must account for the eight/one split. Schema-rejection branches use stopped copies
 of that directory and replace only the opaque saved payload with a valid
 discussion-only fixture; retain the common ownership/manifest envelope.
 
@@ -660,7 +666,7 @@ go run build/mage.go -d build -w . integration cmd/github-pr-watch-signals-verif
 ```
 
 All three approved IDs must pass; Pending, skipped, missing, filtered or deleted
-cases do not satisfy completion. Existing approved PR-watch/rewait scopes
+cases do not satisfy completion. Existing approved PR-watch/common-admission scopes
 must also pass on the integrated implementation. Design checks compile and
 register tagged cases and run guardrails, without claiming acceptance.
 
@@ -669,7 +675,7 @@ register tagged cases and run guardrails, without claiming acceptance.
 | ID and mapping | Actual stimulus and expected result | Evidence and evaluator |
 | --- | --- | --- |
 | GPWS-D01; AC-013/AC-014, FR-001/FR-002/FR-009/FR-011/FR-013, NFR-002/NFR-004 | On github.com and GHES 3.19.x, use maintainer-owned PRs and the supported selected-host credential profile. Establish silent baselines with existing CI/conflict/Ready state. Independently fail current-head checks and statuses, rerun a failed check, change only base to create conflict, and convert Draft to Ready without discussion/head changes. Repeat unchanged, recover and recur, observe calculation pending where available, and verify a failed required retrieval cannot advance progress. | Maintainer records host/patch/API version, repository visibility, credential source/scopes without secrets, actual field/endpoint capability and permission evidence, stimuli/observations, head/base SHA, source/run/status IDs and execution provenance, current versus superseded results, contexts/positions and limitations. Missing host/category access remains unexecuted; mock or pending evidence cannot replace it. |
-| GPWS-D02; AC-014 with AC-010, FR-005–FR-007/FR-010/FR-011, NFR-001/NFR-004 | Through real hub, trigger, action and receiving agent, observe each signal while the agent works, rewait from P1 without further service activity, and perform successful normal save/restart followed by a fresh signal. Include non-failure current state and any continuation/omissions from the integrated contract. | Maintainer records separate standalone-trigger results, action acceptance, actual agent act/wait decision, retained-position continuity, same destination, restart behavior and explicit external-data limits. README explains classification, permissions, polling/attempt limits, unknown states, rewait and deliberate incompatible-state recovery. |
+| GPWS-D02; AC-014 with AC-010, FR-005–FR-007/FR-010/FR-011, NFR-001/NFR-004 | Through real hub, trigger, action and receiving agent, observe each signal while the agent works and automatic bounded continuation without recipient operations or further service activity, and perform successful normal save/restart followed by a fresh signal. Include non-failure current state and any continuation/omissions from the integrated contract. | Maintainer records separate standalone-trigger results, action acceptance, actual agent act/wait decision, retained-position continuity, same destination, restart behavior and explicit external-data limits. README explains classification, permissions, polling/attempt limits, unknown states, continuous notification and deliberate incompatible-state recovery. |
 
 Execute these checks in delivery after approved implementation merge. They
 are not design or implementation live-service execution requirements.
@@ -693,7 +699,7 @@ The plugin adds REST read acquisition, additional GraphQL fields and explicit
 state-profile selection; its
 selected arguments, executable/example paths, public Session and action
 destination stay governed by the earlier design. Update plugin developer
-contracts to follow this specification and the unchanged common stream/rewait
+contracts to follow this specification and the common stream/continuous-admission
 contracts. Delivery updates the lowercase plugin README and
 examples where necessary. No service-neutral hub schema is allowed to learn
 GitHub result enums or actor policy.
