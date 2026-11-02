@@ -188,7 +188,7 @@ For compatibility with existing saved bytes, the
 [frozen v1 decoder and record declarations](https://github.com/nokamoto/agent-pulse-hub/blob/c71823fd817277a68f4860abc777e6f5487b6ece/plugins/triggers/github-pr-watch/internal/domain/tracker.go)
 and its [item/aggregate declarations](https://github.com/nokamoto/agent-pulse-hub/blob/c71823fd817277a68f4860abc777e6f5487b6ece/plugins/triggers/github-pr-watch/internal/domain/observation.go)
 define the legacy field layout and accepted readback forms. These fixed
-references identify compatibility input bytes, not the authority for new v2
+references identify compatibility input bytes, not the authority for new v4
 behavior. Do not substitute a later decoder or add new mandatory nested fields
 to legacy state during migration. The following constraints retain the v1
 validation boundary.
@@ -224,11 +224,11 @@ and exactly encode the retained nonce and sequence using `gpw1`.
 | Complete `{schema,payload}` envelope | <=32,768 bytes. |
 
 Use the frozen v1 encoding/measurement behavior when validating existing
-legacy bytes; the stream and v2 representation use their own compact encoding
+legacy bytes; the current streamed representation uses its own compact encoding
 rules. Oversized or inconsistent legacy state blocks restoration. The old
 notification batch bound is not an additional saved-state validation rule.
 Successful conversion preserves every retained transition and position; these
-legacy bounds do not constrain new v2 acquisition or journal growth.
+legacy bounds do not constrain current acquisition or journal growth.
 
 ## Bounded continuation
 
@@ -371,9 +371,8 @@ approval/merge and does not gate implementation completion.
 ## Risks and rollout
 
 Implementation changes the API reader, tracker, context encoder, schema decoder
-and Session adapter plus core streamed storage/protocol. It changes no product
-behavior in the design PR. Retain existing review-request and legacy-profile
-verification; unrelated later requirements remain separate work.
+and Session adapter plus core streamed storage/protocol. Retain existing
+review-request and nonparticipating-profile verification.
 
 Full enumeration consumes more API calls. Large backlogs and bodies
 can exhaust adjustable budgets; preserve progress and expose the error.

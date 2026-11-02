@@ -218,7 +218,7 @@ common stream/position/continuation contracts.
 
 This document and the [capacity specification](github-pr-watch-capacity.md)
 are the plugin contract for implementers and verification authors. The latter
-owns capacity, v2 state records, compatible positions and continuation and
+owns capacity, v4 state records, coverage references and continuation and
 takes precedence over the original v1 allocations. The
 [stream specification](runtime-state-stream.md) owns its common wire/storage
 profile. [Continuous admission](pr-watch-rewait.md) owns automatic control, ordering,
@@ -402,9 +402,7 @@ continuation, versioned progress and the active-run restart fence. The
 governing shared documents define compatibility with existing registrations
 and nonparticipating plugins. Existing request-discovery behavior, URL-only
 events, and service-free model tests remain intact. Delivery removes rewait and
-position-file procedures from plugin usage and agent-facing instructions;
-this design PR changes no user-facing delivery files. No product implementation
-or delivery instructions are part of this design phase.
+position-file procedures from plugin usage and agent-facing instructions.
 
 ## Open questions and risks
 
