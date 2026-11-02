@@ -169,7 +169,7 @@ Trigger progress may advance when the action confirms acceptance under the
 [existing trigger-progress contract](trigger-runtime-state.md#functional-requirements).
 Tracking or retrying the resulting notification must not fabricate another
 trigger event, reinterpret a
-[PR-watch confirmation position](github-pr-watch.md#terms-and-workflow) marking
+[PR-watch coverage position](github-pr-watch.md#terms-and-workflow) marking
 covered source changes as a delivery receipt, or claim recipient work
 completion.
 
