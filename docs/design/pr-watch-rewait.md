@@ -1,345 +1,210 @@
 ---
 type: Design
-title: Repeated waiting on a retained trigger registration
-description: Rearm one continuing registration through daemon-owned notification generations without changing its arguments or destination.
+title: Continuous notification on a retained trigger registration
+description: Automatically continue bounded notifications on one route while preserving coverage, terminal outcomes and cancellation fences.
 sources:
   - id: pr-watch-requirements
     resource: requirements/github-pr-watch.md
-  - id: mvp-requirements
-    resource: requirements/mvp.md
-  - id: runtime-state-requirements
-    resource: requirements/trigger-runtime-state.md
-  - id: subscription-cancellation-requirements
+  - id: notification-requirements
+    resource: requirements/notification-delivery.md
+  - id: cancellation-requirements
     resource: requirements/subscription-cancellation.md
-  - id: notification-design
-    resource: design/notification-delivery.md
+  - id: runtime-design
+    resource: design/trigger-runtime-state.md
 ---
 
-# Repeated waiting on a retained trigger registration
+# Continuous notification on a retained trigger registration
 
 ## Purpose and authority
 
-This design supplies the common control needed by
-[GitHub PR watch](../requirements/github-pr-watch.md) FR-006, FR-010,
-AC-004 and AC-008. It governs notification lifetime, explicit rewaiting,
-admission fencing and compatibility. The
-[routing design](mvp.md) continues to own registration identity, destinations
-and local control. The [public plugin specification](plugin-v1.md) incorporates
-the optional message profile below. The
-[runtime-state design](trigger-runtime-state.md) continues to own checkpoint
-storage and shutdown. A plugin-specific design owns confirmation-position
-meaning, bounded history, observation and notification content.
+This stable path replaces the retired repeated-wait contract. It implements
+[PR-watch](../requirements/github-pr-watch.md) FR-006/FR-010/FR-012,
+AC-004/AC-008/AC-012/AC-014 and resolves Q-004's common-control decisions.
+It owns automatic admission, public compatibility and the restart safety fence.
+[Capacity](github-pr-watch-capacity.md) owns coverage and migration;
+[signals](github-pr-watch-signals.md) owns category-specific comparison.
+[Routing](mvp.md), [runtime state](trigger-runtime-state.md),
+[notification delivery](notification-delivery.md) and
+[cancellation](subscription-cancellation.md) retain their respective authority.
+These specifications serve implementers and verification authors; no additional
+specification is deferred to implementation.
 
-The daemon owns service-independent operations and notification admission,
-preserving MVP C-002. Plugins perform requested monitoring and position
-comparison. A rewait never cancels a subscription, deletes a registration,
-replaces a route, changes its destination, or transfers another registration's
-saved state. Explicit deletion instead follows
-[subscription cancellation](subscription-cancellation.md), including its
-coordination with this profile. No delivery retries or recipient-processing
-guarantee are introduced by rewait. The independent
-[notification-delivery design](notification-delivery.md) owns retained evidence
-and safe retry for participating outputs; it does not rearm source generations
-or reinterpret confirmation positions as receipts.
+The daemon owns service-neutral admission and the fixed destination. The input
+owns observation, journal selection and opaque progress. The action alone
+reports delivery acceptance. None of these facts proves recipient assessment.
 
-## Chosen lifetime
+## Continuous admission
 
-A participating registration retains one continuing monitor. The daemon grants
-one **notification generation** at initial activation, at each successful
-explicit rewait, and at activation after daemon restart. One valid admitted
-event consumes that generation, regardless of its eventual delivery outcome.
-The monitor continues acquiring data and retaining eligible differences after
-consumption, but cannot admit another notification until rearmed. A generation
-is a daemon-owned admission token, not an assessment position or GitHub cursor.
+One registration has one monitor and at most one emitted event awaiting its
+terminal notice. Observation continues while delivery or recipient work runs.
+The daemon grants initial activation after the existing registration/startup
+commit barrier. A valid event consumes that grant; after serializing its terminal
+notice the daemon automatically grants the next event. No recipient command,
+position, assessment acknowledgement, registration or restart participates.
+`accepted`, `failed`, `unknown` and `discarded` all release this admission slot
+while the route remains available. Only `accepted` advances accepted evidence.
+`discarded` proves no action attempt for that valid event and restores its
+provisional range to the unselected suffix; it does not claim delivery.
 
-The observable rule is **one admitted notification per explicit wait or daemon
-run**. An equivalent `register` request still returns the existing subscription
-ID and does not rearm it. Users normally receive context, assess or perform
-work, then explicitly rewait with the position they assessed. Restart rearms
-the retained monitor automatically, using saved delivery progress to suppress
-previously confirmed notifications. This restart behavior is intentional and
-must be explained in plugin usage materials.
+The input selects the oldest unselected contiguous journal prefix, at most
+eight changes and 8,192 decoded context bytes. It marks that range selected
+provisionally when emitting, before another checkpoint can snapshot it. A later grant selects
+only the remaining suffix or newly observed changes. It never reselects a failed
+or unknown range as a new event. Retrying an admitted notification belongs
+exclusively to the core policy, under its original notification ID.
+Intermediate retryable unsubmitted outcomes are not terminal and issue no grant.
+A terminal failure does not disable later distinct changes on a healthy route.
 
-The plugin keeps these facts separate:
+### Scheduling and ordering
 
-- Its latest complete observation and bounded differences still eligible for
-  an explicitly supplied position.
-- Confirmed delivery progress used to prevent restart-only repetition.
-- The position supplied by the caller for the current explicit wait.
+Serialize event admission, notices, grants, checkpoints, cancellation and stop
+per registration. Each terminal notice queues at most one fresh grant after it
+on the same ordered host stream. Bound pending grants by the existing 1,024
+registrations, with one pending/in-flight grant per watch. Use the existing
+ten-second per-input dispatch deadline and unavailability handling. Schedule
+ready watches fairly; never build an unbounded grant or notification queue.
+Existing admitted-work capacity (128) and the single delivery worker still
+apply. A valid event rejected before action admission receives `discarded`. Restore
+its provisional selection and delay the next automatic grant five seconds,
+using one coalesced timer per watch. This avoids capacity/storage-error hot loops
+without requiring new source activity. It retries no admitted notification.
 
-Delivery acceptance can advance the second fact; it never proves assessment
-or changes the third. An earlier supplied confirmation position can therefore
-include changes observed while the agent worked even if a separate delivery
-had been accepted. The
-plugin must reject positions outside its supported retention or compatibility
-boundary instead of silently advancing them. A consumed generation is not
-restored: each new Session gets a fresh generation and retains logical service
-progress through the existing checkpoint contract.
+On each matching grant the input first checks retained eligible work, even
+during retrieval failure and without another GitHub observation. With none,
+keep that grant idle until a complete round supplies changes. Repeated identical
+grants are no-ops. New complete rounds group changes available when the next
+context is prepared; every distinct observed transition retains its sequence.
+No intentional delay is added between bounded prefixes. Polling/backoff remains
+independent and never overlaps source rounds. This is no latency promise.
 
-## Local client contract
+A periodic checkpoint may precede or follow a queued grant, but cannot split
+the input's selected-range mutation from its emitted event. Snapshots are
+immutable and include earlier notices and already selected ranges. A checkpoint
+in progress need not delay observation or automatic notification.
+Normal stop closes automatic grants first and retains event/notice handling
+until quiescence. A continuous input receiving `checkpoint(quiesce:true)` stops
+emitting and cancels acquisition immediately, then waits for any emitted event's
+terminal notice before sending its immutable final snapshot. Keep receiving
+notices while waiting; the core discards late fresh events after admission
+closes and sends their notices, even during this final phase. A discarded
+unadmitted suffix is therefore restored before final saving. Preserve the common
+ten-second final protocol budget; unresolved correlation fails the snapshot
+and leaves the active-run marker. A late grant cannot restart a quiesced watch.
+Unsubscribe checks the same fence at final dispatch and attempt issuance:
+remove unsent grants/queued events, reject late events, cancel retained retries
+and delete runtime progress before success. Previously issued action work may
+finish once; late evidence cannot restore a watch or issue another grant.
 
-Use the existing loopback control connection, strict version-1 JSON framing,
-65,536-byte record bound, 25-second read/write deadlines and stdout/exit rules
-from [MVP local control](mvp.md#commands). Add this exact request shape:
+## Public interface and compatibility
 
-```json
-{"version":1,"op":"rewait","subscription_id":"<registered ID>","operation_id":"<unix-ms>:<32 lowercase hex digits>","confirmation_position":"<opaque position>"}
-```
+Remove the CLI `rewait` command, its flags/help and local-control operation.
+An old invocation fails usage validation before connecting; an old wire request
+returns existing `invalid_request`, with no route, coverage or activation mutation.
+Do not retain a no-op success alias. Remove operation receipts, position-file
+parsing and resume preparation. Registration identity, equivalent `register`,
+`unsubscribe`, inspection, framing, addresses, deadlines and error envelopes
+are otherwise unchanged.
 
-Both IDs and the position are nonempty strings. The position is at most 4,096
-decoded UTF-8 bytes. The daemon checks shape and bounds, never interprets the
-position or derives a destination from it. Success is exactly:
+Replace input capability `rewait_v1` with `continuous_watch_v1`, allowed only
+with `runtime_state_v2`. It may compose with `runtime_state_stream_v1` and
+`cancel_watch_v1`; the bundled PR watcher requires all four. Reject duplicate
+or unknown capabilities, runtime-state v1 combinations and any `rewait_v1`
+advertisement before activation. Older strict hosts reject the new capability:
+upgrade daemon and input together while stopped. Nonparticipating inputs keep
+their existing runtime-state and multi-event behavior. Output capabilities
+and application protocol version 2 are unchanged.
 
-```json
-{"ok":true,"subscription_id":"<same registered ID>","operation_id":"<same operation ID>"}
-```
-
-Add the command:
-
-```sh
-agent-pulse-hub rewait --subscription-id <id> --operation-id <id> --confirmation-position-file <absolute-file> [--address <address>]
-```
-
-The position file contains exactly one strict UTF-8 JSON string, without BOM,
-not a watch-argument object. Apply the existing absolute regular-file and
-flag rules. The client validates the operation-ID syntax and position bound
-before connecting. It never retries automatically or substitutes `register`.
-It does not need the original argument files, a new destination, or agent APIs.
-
-Failures use the existing exact error object and 1,024-byte message bound.
-Existing JSON/version/structure, resource and unavailable-plugin codes apply.
-Additional codes are:
-
-| Code | Meaning and effect |
-| --- | --- |
-| `unknown_subscription` | No retained active route with this ID; no state is borrowed from another route. |
-| `rewait_unsupported` | The input did not advertise this profile; its existing operation is unchanged. |
-| `wait_active` | The current generation has not been consumed; do not supersede an active admission token. |
-| `rewait_busy` | A previous admitted event has no terminal outcome, its notice has not been serialized, a checkpoint is outstanding, or another rewait is pending. No preparation was sent. |
-| `position_rejected` | The trigger rejected the supplied position, including foreign, malformed, incompatible or expired positions. No reset or activation occurs. |
-| `operation_expired` | The operation ID falls outside the Session/time window below. No preparation is sent. |
-| `operation_conflict` | A retained operation ID was reused for a different subscription or position. No preparation is sent. |
-
-Use actionable bounded messages without positions, context bodies or secrets.
-The public operation cannot change waiting context: it remains the immutable
-registration's supplied context. A different context requires a separately
-selected registration and does not supersede this registration.
-
-### Explicit retry and bounded receipts
-
-An operation ID contains a canonical nonnegative Unix-millisecond integer,
-colon, and 128 random bits written as 32 lowercase hexadecimal digits. It is
-caller-generated and identifies one explicit intent, not a plugin event.
-The time must be strictly later than this daemon Session's start millisecond,
-no later than the current millisecond, and no more than 300,000 milliseconds
-old. Clock changes can reject an operation visibly; never infer a new ID.
-
-Keep at most 1,024 operation receipts across the daemon, retaining each through
-its five-minute validity window. A receipt records the ID, subscription ID,
-SHA-256 of the exact decoded position bytes, and terminal response. Reserve a
-slot before preparation. If none is available, reject with `resource_exhausted`
-without changing the watch. Expire receipts only when their IDs can no longer
-pass time validation. A duplicate pending request shares its eventual response;
-an identical completed request returns its receipt without a second generation
-or plugin operation. Conflicting reuse fails. Pre-preparation validation/busy
-errors need no receipt and can be retried explicitly with the same ID.
-
-Receipts are volatile. After restart, prior operation IDs fail the Session-start
-test; they must not silently execute again. This supplies bounded explicit
-same-Session retry without another persistent format. A lost response can be
-resolved by an explicit same-ID request within this window. Outside the window,
-the result remains uncertain; a new ID is a deliberate new wait, subject to
-`wait_active`/`rewait_busy`, rather than recovery of an old response. No automatic
-retry or exactly-once guarantee across failures is claimed.
-
-Unsubscribe does not prematurely expire these safety receipts. Retain terminal
-responses through their existing validity window even after removal of the
-associated route, and resolve an identical existing receipt before requiring
-a live route. A replay of an earlier successful rewait reports that historical
-commit only; it issues no grant and does not assert that the subscription is
-still active. A new operation ID for a cancelled subscription returns
-`unknown_subscription`. Expiry and conflicting reuse retain their normal rules.
-
-## Optional public input profile
-
-Add capability `rewait_v1`, permitted only alongside `runtime_state_v2`:
-
-```json
-{"version":2,"type":"ready","role":"input","capabilities":["runtime_state_v2","rewait_v1"]}
-```
-
-Array order is immaterial. The optional `runtime_state_stream_v1` follows
-[stream capability rules](runtime-state-stream.md#capability-and-compatibility).
-The independent `cancel_watch_v1` may also accompany this profile, including
-its streamed-state combination, under [subscription cancellation](subscription-cancellation.md).
-Duplicate, unknown or otherwise invalid combinations remain malformed.
-Each optional profile changes only its own conditional messages; inputs without
-it retain the corresponding existing message shapes. Rewait does not change
-output readiness, which follows the independent profiles in the
-[public plugin specification](plugin-v1.md). An older strict host may reject the new capability;
-there is no fallback that weakens this profile's lifetime.
-
-For this capability only, replace these additional-field schemas. Every
-message retains `version: 2`, existing ownership/encoding rules and the
-65,536-byte application bound:
+Only these conditional fields extend the public runtime-state messages:
 
 | Direction / type | Exact additional fields | Meaning |
 | --- | --- | --- |
-| Host to input / `activate_watch` | `subscription_id`, `generation`: nonempty strings | Grant initial, restored or prepared activation for this generation. |
-| Input to host / `state_event` | Existing `subscription_id`, `event_id`, `context`; `generation`: nonempty string | Attribute an event to one granted generation. Event IDs remain strictly increasing across generations in this Session. |
-| Host to input / `resume_watch` | `request_id`, `subscription_id`, `generation`, `confirmation_position`: nonempty strings | Prepare the supplied position for a future generation without activating it. |
-| Input to host / `resume_result` | `request_id`: nonempty string; `accepted`: boolean; `error`: bounded nonempty string only when false | Accept or reject preparation. A positive result does not grant event emission. |
+| Host to input / `activate_watch` | `subscription_id`, `generation`: nonempty strings | Initial or automatic single-event grant, using a fresh daemon UUID. |
+| Input to host / `state_event` | Existing `subscription_id`, `event_id`, `context`; `generation`: nonempty string | Attribute one selected range to the current grant. |
 
-The daemon generates a fresh opaque UUID generation for each grant, and a fresh
-request ID for each preparation. Plugins never manufacture these tokens.
-Rewait itself leaves `state_watch`, `watch_result`, delivery notices and
-checkpoint shapes unchanged. An input additionally selecting
-`runtime_state_stream_v1` uses that profile's state-transfer replacements;
-its delivery notices and `watch_result` stay unchanged. Initial/restored
-`activate_watch` uses a fresh generation after the
-existing complete registration/startup commit barrier. Rewait grants follow
-the ordering below. Only one generation is current; no generation history or
-second poller is required in the daemon.
+Every message includes existing `version:2` and `type`, strict encoding and
+the 65,536-byte bound. Event IDs strictly increase per watch within a Session;
+they are not coverage positions. `resume_watch` and `resume_result` are removed
+and become protocol errors. The input applies a fresh grant only initially or
+after its matching terminal notice; a fresh grant before that notice is a
+protocol error. A grant never resets its selection cursor.
 
-## Rewait ordering and failure atomicity
+The daemon verifies ownership, fresh event ID, current generation and an
+unconsumed grant atomically with admission. Valid fresh stale-generation or
+consumed-grant events receive one diagnosed `discarded` notice, without
+creating a grant or advancing acceptance. Such invalid events cannot release
+the actual outstanding event. Repeated/malformed IDs keep the no-second-notice
+rule. Stream restore, watch acceptance, notices and checkpoints keep their
+exact schemas. Generations and correlations are Session-only.
 
-Serialize this state machine with admission, terminal delivery outcomes,
-checkpoints, individual cancellation, stop and plugin unavailability for the
-affected registration:
+## Progress and restart safety
 
-1. Validate the local request, capability and retained route. Resolve an existing
-   receipt before checking `wait_active`. Require a consumed generation and no
-   admitted event without a terminal outcome. Intermediate retryable unsubmitted
-   results in notification mode leave that outstanding event pending and keep
-   rewait busy until its notification receives a terminal outcome. Serialize that event's terminal
-   notice before preparation. Do not withdraw queued/in-flight deliveries to
-   make a rewait possible; return `rewait_busy` instead.
-2. Reserve the operation receipt and a new generation. The old generation is
-   already consumed and cannot admit another event. Defer periodic checkpoints
-   for this watch while preparation is pending. Send `resume_watch` after all
-   earlier notices. Other registrations remain usable.
-3. The input validates the explicit position against the immutable watch and
-   its supported retained observations. It stages the new comparison position
-   without replacing its current logical progress, starting another monitor,
-   or emitting an event. Finish sending `resume_result` before applying a grant.
-4. On a negative result, discard the staged position, retain the consumed old
-   generation/progress and record `position_rejected`. On an accepted result,
-   recheck stop, the cancellation fence and both plugins under lifecycle
-   serialization, install the new admission token, record success in the receipt,
-   then dispatch exactly one
-   matching `activate_watch`. This installation is the rewait commit point.
-5. On its matching grant the input applies the staged position, discards the
-   preparation and reconciles already retained/observable changes without
-   requiring another GitHub stimulus. It resumes event eligibility through the
-   same monitor. Repeated identical grants are no-ops. Stale/foreign grants or
-   events are diagnosed and cannot create a generation or reset progress.
+Keep three plugin facts separate: latest complete observation, highest contiguous
+range selected for notification, and accepted delivery evidence. Coverage means
+represented changes; neither selection nor acceptance says omitted text was
+read or the context assessed. Successful normal save retains selection and the
+unselected suffix. Restore continues after selection even if an earlier result
+was failed or unknown. Late results or resumed retries update the ledger only,
+never a new Session's cursor or grant.
+[Capacity migration](github-pr-watch-capacity.md#legacy-migration) defines
+old-state interpretation without inventing acceptance.
 
-Use one ten-second preparation deadline, including send and result. A negative
-result is an ordinary rejection. A timeout, failed send or lost Session makes
-that input unavailable under existing cleanup: otherwise a late prepared result
-could conflict with a later operation. Retain the registration and old saved
-progress. Record an unavailable/uncertain response; never claim rollback of an
-unconfirmed plugin exchange. Stop before commit cancels the preparation and
-permits no grant. After commit, grant-send failure follows the existing
-post-commit input-unavailability rule and keeps the receipt's committed result;
-client success promises installation, not successful source polling or delivery.
+A stale checkpoint must not cause known unknown work to receive a new ID.
+Use one core-owned **active-run marker** per continuous watch. After dormant
+watch acceptance and before the registration/startup commit barrier, exclusively
+create and close
+`runtime/<subscription_id>/continuous-active.json` containing exactly
+`version:1`, `subscription_id` and `session_id` (both UUID strings). Bound it
+to 1,024 bytes; validate identity, strict JSON, regular-file type and ownership.
+The runtime directory may contain this reserved file beside generations;
+it is not a generation. A marker-only directory is valid only in its owning
+live run, never as restorable initial progress.
 
-If cancellation wins before a preparation commits, finish that pending receipt
-with an identifiable failure, expire its request correlation and issue no grant.
-If rewait commits first, cancellation still closes the newly installed token
-and prevents any not-yet-issued grant from restarting the watch. The plugin's
-selective cancellation discards staged positions and permanently terminates
-that watch; late resume results or grants cannot recreate it. A completed
-receipt keeps its committed response under the replay rule above. Cancellation
-does not discard other registrations' preparations or receipts.
+Marker creation failure prevents activation through existing startup/registration
+failure handling. Equivalent register does not recreate it. Failed pre-commit
+cleanup removes only this run's newly created marker and any newly created empty
+runtime directory, since no grant was dispatched. Once created it remains through periodic saves, so save
+failure still permits healthy live monitoring and notifications with the common
+continuity warning. After final quiescence, earlier terminal notices, a successful
+final runtime commit and notification-store saves, remove it under per-watch
+storage serialization before releasing exclusion. Failure leaves it present
+and reports unsuccessful continuity. Cancellation deletes it with the entire
+runtime directory. Before activation, a newly created marker may be removed
+only when no grant was dispatched.
 
-Process `state_event` under the same admission ordering. Verify ownership,
-fresh event ID, current generation and an armed token before admitting. Consume
-the token atomically with admission, preserving one notification and the
-registered recipient. A valid fresh stale-generation or consumed-token event
-is discarded, diagnosed and receives the existing terminal `discarded` notice;
-it neither opens a token nor advances confirmed delivery progress. Invalid or
-repeated event IDs retain the existing no-second-notice rule. The input emits
-at most one event for a grant, then keeps monitoring without event emission.
-No notification queue or event replay is added by this profile.
+At startup complete cancellation intents first. A surviving marker on any
+remaining registration blocks restoration before grants or retained retry
+issuance, with `continuous_progress_unverified`, registration/path and bounded
+reason. Never delete it automatically or fall back to an older generation.
+This conservative rule also covers interrupted runs; it adds no crash-recovery
+guarantee. Operators preserve the stopped tree and repair from a verified clean
+backup, or follow offline deletion/recreation accepting continuity loss.
+Removing the marker alone or republishing unknown context is unsupported.
+Successful normal stop/restart needs no re-registration or intervention.
+A clean backup must include selection covering all earlier possibly submitted
+work; an older checkpoint alone does not establish that fact.
+One marker per run avoids synchronous progress saves on every event and keeps
+service coverage opaque to the core.
 
-## Checkpoints, restoration and operations
+## Verification and decisions
 
-Use the existing opaque registration-bound runtime envelope and save schedule.
-For an input also advertising `runtime_state_stream_v1`, use the optional
-[ordered-object stream](runtime-state-stream.md) instead of a single envelope;
-the save schedule, grant ordering and logical-state ownership remain unchanged.
-No registration file is rewritten by rewait. A checkpoint contains sufficient
-plugin-owned observation, retention and confirmed-delivery progress for its
-declared continuity, plus any explicit comparison position whose meaning must
-survive. Generations, pending preparations and operation receipts are Session
-control and are not restored. A checkpoint never applies a staged ungranted
-position. Checkpoints cannot overtake a pending preparation/grant; process
-the grant send before the next checkpoint request on the same host stream.
-The exception is final quiescence after stop cancels an uncommitted preparation:
-expire its request correlation, serialize the quiescing checkpoint after any
-already sent preparation, and ignore its late result. On quiescence the input
-discards any staged ungranted position and snapshots only committed logical
-progress. No grant or preparation can restart a quiesced watch.
+The parent [verification plan](github-pr-watch.md#verification-strategy) governs
+stable GPW/GPWS cases, inventories, harnesses and delivery checks.
+GPW-I02 covers consecutive automatic notifications, failed/unknown outcomes,
+retired requests and cancellation dispatch fencing. GPW-I03 covers clean restart,
+save warning and marker-blocked restart. GPW-I05 and GPWS-I02 cover frozen-source
+continuation, migration and restart between accepted prefix and suffix.
+Unit tests cover capability/message shapes, grant duplication/order, bounded
+fair dispatch, full-capacity rejection, terminal-notice races, marker
+write/close/remove failures and immutable snapshots. Existing notification
+and cancellation suites retain their distinct policy coverage.
 
-After restoration the first new generation uses confirmed-delivery progress
-to avoid repeating successfully saved accepted notifications. A fresh change
-is eligible without client re-registration or rewait. An explicit older
-position still means assessment through that supplied position; restoration
-must not replace it with the
-delivery cursor. Invalid restored state blocks startup under the existing
-rule. Save failure reports the existing continuity warning and does not stop
-monitoring; fresh notification requires an armed generation, including explicit
-rewait after a prior generation was consumed. Rewait failure recovery itself
-adds neither automatic delivery retries nor unfinished-notification guarantees.
-Notification-profile retries resumed after restart update only their retained
-ledger; they send no old Session notice or successful-progress checkpoint
-update. The new Session still receives its ordinary fresh activation generation
-and source deduplication behavior. Distinct new source events remain independent
-notifications, not retries of the retained record.
+| Decision | Alternative | Rationale and tradeoff |
+| --- | --- | --- |
+| Automatically replenish single-event grants | Unbounded emission or recipient rearming | Reuses admission fences and bounds outstanding work; terminal delivery can delay context, recipient work cannot. |
+| Selection independent of acceptance | Resume from accepted cursor | Prevents failed/unknown prefix replay; failed work has no eventual-delivery promise. |
+| New capability and versioned state | Reinterpret old capability/decoder | Makes mixed-version failure explicit and preserves unrelated plugins. |
+| Active-run marker | Per-event durable transaction or stale-checkpoint replay | Constant per-run cost and continued live operation on save failure; incomplete final saves require deliberate recovery. |
 
-Normal stop closes rewait admission along with registration/event admission,
-finishes any already serialized commit decision, sends no further grants after
-stop wins ordering, then follows the existing terminal-notice/final-checkpoint
-shutdown. All consumed and armed generation tokens expire with the Session.
-Offline reset/deletion remains an explicit operator procedure. A recreated or
-unrelated registration receives no old progress; a position is useful only
-when explicitly supplied and accepted by the plugin's position contract.
-Live ID-based unsubscribe follows the cancellation design. It removes this
-watch's staged and committed progress and notification token, while preserving
-the bounded historical receipts needed to prevent replay. Normal stop excludes
-the fenced registration from grants, checkpoint saves and restoration.
-Cancellation also fences notification retry scheduling and durably cancels
-retained work before removal under its governing design. A delayed ACK may
-advance retained evidence only; it cannot resurrect a generation or watch.
-
-Positions and checkpoints are trusted local opaque data, not routing authority.
-Keep both out of diagnostics. External GitHub text cannot select a subscription,
-operation, destination or permission. Existing local-user and trusted-plugin
-boundaries remain unchanged.
-
-## Verification and alternatives
-
-The plugin-specific governed verification mapping supplies the command-level
-cases for this profile. Combine a notification with position P1, a later
-comment C2 and head H2 observed while the agent works, same-ID
-rewait, no-further-stimulus delivery and restart/fresh-change observations in
-the selected repeated-wait/restart scenarios. Observe one monitor, unchanged
-registration/destination, generation fencing and no duplicate event admission.
-Use unit tests for capability combinations, ID/time/receipt bounds, operation
-reuse, busy/terminal ordering, malformed/foreign/stale generations, preparation
-rejection/timeout, stop races, exact message limits and save-failure semantics.
-Independent runtime-state and model cases remain required; this profile does
-not establish real GitHub or receiving-agent acceptance.
-
-One continuing registration avoids per-wait cancellation, state transfer and an
-accumulation of superseded retained routes. Session-scoped receipts avoid a
-new core persistence format. Continuous multi-notification generations would
-need a more complex reconciliation policy for notifications already delivered
-while the agent works. Per-wait registration replacement would require explicit
-supersession/deletion and state association decisions. The selected simpler
-lifetime instead makes its one-notification and restart-rearm behavior visible.
-
-No shared CI, test harness, product implementation, new storage service or
-delivery procedure is introduced by this design. Human approval of this design
-and its plugin-specific verification precedes dependent implementation.
+No unresolved implementation decision remains. Human review evaluates these
+compatibility and availability tradeoffs. Live GitHub/GHES and receiving-agent
+evidence belongs to delivery; design approval and merge precede implementation.

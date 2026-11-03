@@ -31,15 +31,10 @@ message encoding, exchange ordering, and application deadlines.
 The optional runtime-state extension derives from
 [trigger runtime state](trigger-runtime-state.md), which owns state storage,
 checkpoint scheduling, coordinated shutdown, and recovery.
-The optional [repeated-wait profile](pr-watch-rewait.md) owns daemon-controlled
-notification generations and same-registration rewait. Its exact capability,
-conditional message schemas and ordering supplement this specification.
-The optional [notification-delivery design](notification-delivery.md) owns
-notification identity, retained evidence, retry decisions and operator status.
-The output profile below owns its public message schemas and correlations.
-The optional [streamed-state profile](runtime-state-stream.md) owns multi-message
-opaque state handoff, complete-generation storage and migration. Its conditional
-schemas replace only the state-transfer path for inputs advertising it.
+The optional [continuous-watch profile](pr-watch-rewait.md) owns automatic
+single-event grants, terminal ordering, retired-operation rejection and
+compatibility. Its exact capability and conditional schemas are authoritative
+extensions to the runtime-state tables below.
 
 The daemon owns integration-independent control and decisions. Plugins carry
 out requested service-specific operations and report results. An input plugin
@@ -250,7 +245,7 @@ to its registered output and arguments.
 This profile derives from [individual cancellation](subscription-cancellation.md),
 which owns local control, persistence and lifecycle fencing. A capable input
 includes `cancel_watch_v1` in `ready.capabilities`, alone or with the valid
-runtime-state/rewait combinations below. This input capability does not select
+runtime-state/continuous-watch combinations below. This input capability does not select
 the output notification profile.
 
 | Direction / type | Exact additional fields | Meaning |
@@ -261,12 +256,12 @@ the output notification profile.
 Both messages include `version:2` and `type` and follow existing strict encoding,
 ownership and bounds. The host sends this request only for an ID owned by that
 input. Use a fresh request ID on each explicit attempt. An input must process
-cancellation concurrently with its monitor, stop emission and staged rewait,
+cancellation concurrently with its monitor, stop emission and pending automatic grants,
 discard watch-owned logical progress, and release equivalent-watch reservations
 before sending a positive result. Other watches and the Session remain live.
 Cancelling an already-absent watch is a positive no-op; local unknown-ID control
 requests still fail before any plugin exchange. IDs cannot be reused within the
-Session, so a late grant/preparation must never recreate a removed watch.
+Session, so a late grant must never recreate a removed watch.
 
 One ten-second deadline covers queuing, send and result. A negative result or
 timeout keeps the target fenced in the host. Timeout alone expires that request
@@ -277,10 +272,9 @@ requests must converge on the same termination. Actual stream/send failure
 retains normal instance-unavailability handling. No automatic retry is added.
 
 The host sends already-owed delivery notices before cancellation on the same
-ordered stream. A checkpoint/preparation already transmitted may finish before
+ordered stream. A checkpoint already transmitted may finish before
 cancellation, but its late result cannot save or grant a cancelled watch. After
-positive cancellation the host sends no further checkpoint, notice, preparation
-or grant for that watch. Already-issued action outcomes remain correlated in
+positive cancellation the host sends no further checkpoint, notice or grant for that watch. Already-issued action outcomes remain correlated in
 the core and do not require reviving the input watch.
 
 An unchanged input remains usable but live unsubscribe returns
@@ -304,25 +298,25 @@ messages only to participating inputs. Old v2 inputs keep their exact artifacts
 and message shapes. A participating input requires a host supporting this
 extension; old strict hosts can reject the additional readiness field.
 
-An additional allowed combination is `runtime_state_v2` with `rewait_v1`,
-in either array order. The [rewait public profile](pr-watch-rewait.md#optional-public-input-profile)
-defines its exact readiness, `resume_watch`/`resume_result`, and conditional
-`generation` fields on `activate_watch` and `state_event`. That profile replaces
-the two affected table rows and one-grant-per-Session rule only for inputs
-advertising it. All other messages, deadlines and existing input profiles keep
-their current shapes. Rewait retains one continuing monitor and grants one
-notification per explicit wait or daemon run; it introduces no cancellation.
+An additional allowed combination is `runtime_state_v2` with
+`continuous_watch_v1`, in either order. The
+[continuous public profile](pr-watch-rewait.md#public-interface-and-compatibility)
+owns the conditional `generation` fields on `activate_watch` and `state_event`.
+It replaces one-grant-per-Session with automatic grants after terminal notices.
+No recipient position or control request is involved. `rewait_v1`,
+`resume_watch` and `resume_result` are retired and rejected; there is no
+silent fallback to their old semantics.
 
 An input may also combine `runtime_state_v2` with `runtime_state_stream_v1`,
-with or without `rewait_v1`, in any array order. The
+with or without `continuous_watch_v1`, in any array order. The
 [stream profile](runtime-state-stream.md#capability-and-compatibility) defines
 the additional allowed capability, exact restore/checkpoint messages and
 compatibility rules. It replaces `state_watch` and successful checkpoint
 responses only for that profile. It retains the 65,536-byte application bound,
-8,192-byte event context and all activation, rewait and delivery rules. Inputs
+8,192-byte event context and all applicable activation, automatic-grant and delivery rules. Inputs
 without `runtime_state_stream_v1` keep every existing schema and state bound.
 The independent `cancel_watch_v1` capability above may appear alone or alongside
-either runtime-state revision and any otherwise valid rewait combination.
+either runtime-state revision and any otherwise valid continuous-watch combination.
 It does not relax duplicate, role, unknown-capability or incompatible-revision
 validation. Array order is immaterial.
 

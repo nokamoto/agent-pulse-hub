@@ -20,14 +20,13 @@ This specification extends [GitHub PR watch](github-pr-watch.md) for
 acquisition budgets, progress representation, legacy migration, notification
 continuation and their verification. The parent design retains authentication,
 original review/discussion categories, actor neutrality, scheduling, external
-data protection and ordinary wait behavior. FR-013/AC-013/AC-014 CI failure,
-conflict and readiness additions require another design revision. Cancellation
-and action confirmation/retry are not introduced by capacity work.
+data protection. [Signals](github-pr-watch-signals.md) adds CI failure,
+conflict and readiness records using these same capacity and coverage rules.
 
 The plugin owns GitHub semantics; the core owns persistence and routing.
 [Streamed runtime state](runtime-state-stream.md) defines bounded messages,
-complete generation commits and restoration. [Rewait](pr-watch-rewait.md)
-defines one admitted event per explicit wait or daemon run. This specification
+complete generation commits and restoration. [Continuous admission](pr-watch-rewait.md)
+defines automatic grants, terminal-outcome ordering and restart safety. This specification
 does not change either delivery acceptance into agent assessment or create
 automatic delivery retries. Implementers and verification authors must read
 these linked contracts; no additional specification is deferred.
@@ -73,13 +72,16 @@ Retain each distinct observed transition, including an edit later reverted.
 
 ## State representation and retention
 
-Require `runtime_state_v2`, `rewait_v1` and `runtime_state_stream_v1` together.
-Persist `github-pr-watch-v2` as an ordered sequence of JSON objects:
+Require `runtime_state_v2`, `continuous_watch_v1`, `runtime_state_stream_v1`
+and `cancel_watch_v1`. Write schema `github-pr-watch-v4`, an ordered sequence
+of JSON objects. Header `version: 4` and `profile` distinguish `discussion-v2`
+from `signals-v3`; the latter also requires `signal_version: 1`. The CLI profile
+names remain unchanged to select acquisition categories, not notification lifetime.
 
-1. A header object has `kind: "header"`, `version: 2`, selected PR identity,
+1. A header object has `kind: "header"`, `version: 4`, selected PR identity,
    registration nonce, observation/change sequences, latest complete observation
-   times, scalar head/lifecycle metadata, attempted/confirmed delivery progress,
-   committed comparison position and issued-position list. Include total item
+   times, scalar head/lifecycle metadata, `selected` and `confirmed` progress,
+   and issued-position list. Include total item
    and change counts and first/last retained change sequences.
 2. Objects with `kind: "items"` and an `items` array contain current snapshot
    records sorted by category then stable ID. Variable-length review/request/
@@ -109,35 +111,76 @@ snapshot or sequence. Never split one semantic record across objects.
 
 Keep the existing `gpw1.` position: unpadded base64url of version byte 1,
 16-byte registration nonce and eight-byte big-endian covered sequence.
-Sequence exhaustion fails visibly. Positions are independent of Session event
-IDs and generation IDs. Accept only an exactly issued retained position for
-this registration. Preserve the latest four issued positions without a time
-TTL and pin the active comparison position separately. An expired older
-position yields `continuity_expired`, never substitution with the present.
-Do not expire the newest position merely to fit new changes.
+Sequence exhaustion fails visibly. Positions are informational coverage references,
+independent of Session event and generation IDs; no public operation accepts them.
+Preserve the latest four issued references without a time TTL. Their existence
+does not pin replay history or authorize re-emission.
 
-There is no 32-record journal bound. Retain every unreported transition and
-history after the earliest retained issued position, committed comparison
-position or confirmed delivery cursor. Prune only a prefix covered by accepted
-delivery and no longer needed by those positions. If a candidate would exceed
-the history budget, reject it and report the error. Existing continuation stays
-available during acquisition failure. Successful checkpoint/restart preserves
-all outstanding entries, positions and the nonce. Attempted, accepted and
-explicitly assessed positions remain separate facts.
+There is no 32-record journal bound. `selected` is the highest contiguous change
+sequence represented in emitted contexts, initialized to the silent baseline
+sequence. `confirmed` retains the greatest endpoint with an accepted notice
+(or baseline); it does not claim acceptance of intervening failed/unknown
+ranges. Require baseline sequence <= confirmed <= selected <= sequence after baseline,
+and zero progress before baseline. Positions cannot exceed selected.
+Do not derive selection from acceptance or recipient assessment.
+
+At emission selected is provisional until the matching terminal notice.
+Accepted/failed/unknown commit that boundary; discarded restores its prior value
+and retains the complete range for a later automatic grant. Reference issuance
+is also provisional: discarded restores the prior issued-reference list,
+including any reference displaced by the four-reference limit. A checkpoint may
+include the provisional selection, but clean final saving requires its outcome
+under the shared quiescence fence. An interrupted/failed final save leaves the
+active-run marker and cannot restore such state automatically.
+
+Retain every unselected transition. Already selected records may be pruned
+without replay after their non-discarded terminal outcome; issued references are coverage
+metadata, not assessment promises. An emitted range awaiting its notice stays
+retained in the live Session; checkpoints may retain it, but restore does not
+replay selected work. Validate a contiguous journal suffix through sequence,
+with no gap after selected; selected historical entries may precede it.
+One pending event correlation maps its represented range to terminal evidence.
+A failed/unknown notice releases admission but does not advance confirmed.
+Resource failure rejects the candidate, not outstanding retained continuation.
+Successful save/restart preserves the nonce, selection, unselected suffix,
+current comparison records and coverage references.
 
 ### Legacy migration
 
-A stream-capable host returns a legacy envelope as one object with its original
-`github-pr-watch-v1` schema. Validate the legacy readback contract below,
-then convert in memory without changing nonce, sequences, issued positions,
-attempted/confirmed/comparison progress or retained history. Conversion is
-neither a new baseline nor a change. The next successful checkpoint writes v2;
-failed migration leaves the legacy commit intact and blocks restoration.
+Read existing v1 envelopes and v2/v3 streams with their original strict
+decoders before conversion. V1 keeps the frozen readback rules below. For v2/v3,
+the [frozen stream decoder/header declarations](https://github.com/nokamoto/agent-pulse-hub/blob/4f3b7dcf4c28acccf9d3738e2c6aa0d5f85992e7/plugins/triggers/github-pr-watch/internal/domain/stream.go),
+[signal validation](https://github.com/nokamoto/agent-pulse-hub/blob/4f3b7dcf4c28acccf9d3738e2c6aa0d5f85992e7/plugins/triggers/github-pr-watch/internal/domain/signal_records.go)
+and their [domain record declarations at that revision](https://github.com/nokamoto/agent-pulse-hub/tree/4f3b7dcf4c28acccf9d3738e2c6aa0d5f85992e7/plugins/triggers/github-pr-watch/internal/domain)
+define accepted legacy field layouts and validation. These references govern
+conversion input bytes, not new v4 behavior. Do not strengthen
+legacy validation or fill missing signal history. Only discussion-v2 accepts
+v1/v2; only signals-v3 accepts v3. Cross-profile state fails before activation.
 
-No fallback to a smaller envelope is permitted. Older hosts/plugins cannot
-consume new streamed v2 generations and fail closed. Preserve compatible
-binaries and the stopped tree for rollback; restoring an older tree knowingly
-loses intervening progress and is an explicit operator recovery decision.
+In memory, preserve scope, nonce, snapshot, observation/change sequences,
+journal records and issued references. Set selected to
+`max(confirmed, attempted)`; retain confirmed unchanged. Validate legacy
+comparison with the original decoder, but never use assessment/control position
+alone as represented coverage. This also preserves accepted legacy forms where
+comparison exceeds attempted: their unrepresented journal suffix remains eligible.
+Attempted progress is not inferred acceptance. An older comparison cannot cause
+attempted work to replay.
+The first automatic grant offers only the suffix above selected; no rewait,
+reset or new GitHub activity is required. Existing legacy history remains in
+the conversion and can subsequently be pruned by the new selected-range rule.
+
+The next successful checkpoint writes v4 with the chosen profile. Failed
+conversion leaves the old committed bytes intact and blocks restoration.
+Do not reuse Session generation tokens or pending operation receipts.
+An upgrade starts from a normally stopped, successfully saved old daemon;
+uncertain prior source progress is not repaired by migration.
+
+V4 rejects profile mismatch, invalid progress/coverage, absent unselected
+history and all existing malformed-record conditions before applying state.
+Older binaries reject v4 and the new capability. Preserve matching stopped
+binaries and the entire state tree for rollback; an old backup deliberately
+loses intervening progress and must never be used to resubmit known unknown work.
+There is no fallback to a smaller envelope or a new baseline.
 
 ### Legacy readback contract
 
@@ -145,7 +188,7 @@ For compatibility with existing saved bytes, the
 [frozen v1 decoder and record declarations](https://github.com/nokamoto/agent-pulse-hub/blob/c71823fd817277a68f4860abc777e6f5487b6ece/plugins/triggers/github-pr-watch/internal/domain/tracker.go)
 and its [item/aggregate declarations](https://github.com/nokamoto/agent-pulse-hub/blob/c71823fd817277a68f4860abc777e6f5487b6ece/plugins/triggers/github-pr-watch/internal/domain/observation.go)
 define the legacy field layout and accepted readback forms. These fixed
-references identify compatibility input bytes, not the authority for new v2
+references identify compatibility input bytes, not the authority for new v4
 behavior. Do not substitute a later decoder or add new mandatory nested fields
 to legacy state during migration. The following constraints retain the v1
 validation boundary.
@@ -181,33 +224,36 @@ and exactly encode the retained nonce and sequence using `gpw1`.
 | Complete `{schema,payload}` envelope | <=32,768 bytes. |
 
 Use the frozen v1 encoding/measurement behavior when validating existing
-legacy bytes; the stream and v2 representation use their own compact encoding
+legacy bytes; the current streamed representation uses its own compact encoding
 rules. Oversized or inconsistent legacy state blocks restoration. The old
 notification batch bound is not an additional saved-state validation rule.
 Successful conversion preserves every retained transition and position; these
-legacy bounds do not constrain new v2 acquisition or journal growth.
+legacy bounds do not constrain current acquisition or journal growth.
 
 ## Bounded continuation
 
 Select a nonempty contiguous prefix of eligible journal entries after the
-current comparison position, in sequence order. Keep at most eight entries per
+selected cursor, in sequence order. Keep at most eight entries per
 notification and the existing 8,192 decoded UTF-8 byte context maximum.
 Reserve identity, waiting context, times, current summary, position and
 continuation metadata, then select as many entries as fit, shortening bodies
 first. Eight is a message selection bound, not a lifetime/history limit.
 A suffix that does not fit remains eligible rather than failing the batch.
 
-The returned `confirmation_position` covers exactly the last represented entry.
-The `continuation` object contains `has_more`, `remaining_changes`,
-`through_sequence` (prefix end), `observed_through_sequence` (complete journal
-tail at preparation), and `operation: "rewait"` only when more remain. Counts
-refer to that preparation; subsequent observations may add entries. The caller
-assesses the context and supplies its position to the existing rewait command
-on the same subscription. The next prefix is available without another GitHub
-activity or successful observation. Never automatically rearm or emit multiple
-events for one generation. Restart rearms through confirmed delivery progress:
-it may emit a remaining suffix, but cannot repeat a confirmed prefix solely
-because of restart.
+Keep the JSON key `confirmation_position` for consumer compatibility; it is
+only a coverage reference to the last represented entry. The `continuation`
+object retains `has_more`, `remaining_changes`, `through_sequence` (prefix end)
+and `observed_through_sequence` (complete journal tail at preparation).
+Remove `operation`; no recipient command follows. Counts describe that
+preparation; later observations can add entries.
+
+After the event's terminal notice, the next automatic grant selects the retained
+suffix without another source round, including during acquisition failure.
+Advance selected only through represented changes when emitting the context;
+never advance it over entirely omitted entries. Acceptance updates confirmed
+evidence separately and cannot rewind selected. On successful normal restart,
+resume after saved selected, retaining any suffix and suppressing accepted,
+failed and unknown prefixes without manufacturing new notification IDs.
 
 Current state comes from the latest complete observation, which can be newer
 than the covered prefix; include its time and mark that distinction. Keep
@@ -224,7 +270,7 @@ when necessary. An explicitly represented change with such a body limitation
 can advance its change position; this never asserts the omitted text was read
 or assessed. Entirely omitted entries are a retained suffix outside the
 position. If one entry's mandatory metadata plus minimal context cannot fit,
-report `notification_metadata_exhausted`, retain the wait/progress and issue
+report `notification_metadata_exhausted`, retain the grant/progress and issue
 no position. Do not skip it to send later entries. Allocation/encoding failure
 has the same non-advancement rule.
 
@@ -234,14 +280,14 @@ has the same non-advancement rule.
 | --- | --- | --- |
 | Complete paginated comparison | Recent window or updated-since cursor only | Detects old edits/removals across all required categories; API cost grows with current content. |
 | Streamed core-owned state | Larger fixed envelope, compression only, plugin files | Fixed envelopes only postpone a ceiling; streams preserve ownership and bounded messages but add transfer/commit coordination. |
-| Explicit prefix continuation | Automatic multi-event wait or reject large batches | Reuses admission fences and lets the agent assess each part; large backlogs require more explicit waits. |
+| Automatic prefix continuation | Recipient rearming or rejecting large batches | Bounded grants drain retained work without agent commands; selected and accepted progress must remain separate. |
 | Configurable byte budgets | Fixed item maximum or unlimited resource use | Makes actual resource failures visible without treating checkpoint capacity as PR lifetime capacity. |
 
 ## Verification selection
 
 All requirement IDs below refer to `requirements/github-pr-watch.md`.
 FR-003–FR-010 and FR-012 map to AC-011 through full comparison, retention,
-rewait and restart. FR-005–FR-008 and FR-012 map to AC-012 through prefix
+automatic notification and restart. FR-005–FR-008 and FR-012 map to AC-012 through prefix
 coverage and durable continuation. NFR-001–NFR-004 remain applicable to external
 data, secrecy, core ownership and separated evidence. The parent design's
 other mappings and cases remain authoritative.
@@ -249,7 +295,8 @@ other mappings and cases remain authoritative.
 Use mocked unit matrix U02 for conversation-only and mixed 31/32/33/100/1,000
 inputs, growth between sizes, old edits/removals and head changes. U03 covers
 more than 32 changes, exact encoded-byte selection, body/current omissions,
-position expiry and migration. U04 retains pagination, authentication and
+informational coverage references and migration, including legacy comparison
+above attempted without skipped unrepresented changes. U04 retains pagination, authentication and
 retry checks. New U05 covers stream capability combinations, strict frame
 validation, unknown/duplicate/foreign/late chunks, unchanged deadlines,
 immutable snapshots/notice fences, budget reduction, mixed-format selection,
@@ -258,7 +305,7 @@ write/close/rename/cleanup failures and legacy compatibility using mocks.
 Select only two additional process cases. One large mixed case catches real
 pagination/serialization/restore wiring, avoiding subprocess permutations for
 every size. One continuation/restart case combines overlapping notification,
-control and filesystem boundaries. Unit mocks cannot establish those actual
+automatic-grant and filesystem boundaries. Unit mocks cannot establish those actual
 boundaries. Preserve GPW-I01's existing non-capacity checks; its old expected
 33-item and nine-change rejection is superseded by I04/I05 success. No approved
 coverage is dropped to make current implementation pass.
@@ -266,7 +313,7 @@ coverage is dropped to make current implementation pass.
 | Case | Inputs and actions | Required observations |
 | --- | --- | --- |
 | GPW-I04; AC-011 | Public Session, selected host, 1,000 mixed items over first:25 pages. Silent baseline; repeat; add C1001, edit C0001, remove C0002, H1 to H2. Fail later comments and nested-thread pages, recover, checkpoint >32 KiB through several chunks and restore a new plugin process. | No count error, false deletion or failed-round advance. Exact recovered transitions and relations. Every wire frame <=64 KiB and object <=32 KiB. Restore has no unchanged duplicate; another old-item edit notifies. |
-| GPW-I05; AC-008/AC-011/AC-012 | Actual hub/client/plugin/model action; baseline 100 items, seed P0, then 40 changes including >8 KiB and empty bodies. Interrupt acquisition, recover and freeze source; rewait through prefixes, save/restart between accepted prefixes. Separately migrate legacy state, remove/corrupt a saved chunk and obstruct saving. | Contexts <=8 KiB, contiguous represented sequences and explicit suffix, no new source activity needed. Restart preserves suffix without repeating confirmed prefix. Migration preserves issued positions. Bad newest state blocks without fallback; save failure warns while monitoring continues. |
+| GPW-I05; AC-004/AC-008/AC-011/AC-012 | Actual hub/client/plugin/model action; baseline 100 items, seed P0, then 40 changes including >8 KiB and empty bodies. Interrupt acquisition, recover and freeze source; drain automatic prefixes, save/restart between accepted prefixes. Separately migrate legacy state, remove/corrupt a saved chunk and obstruct saving. | Contexts <=8 KiB, contiguous represented sequences and explicit suffix, no new source activity needed. Restart preserves suffix without repeating confirmed prefix. Migration preserves coverage references and selects beyond legacy attempted progress. Bad newest state blocks without fallback; save failure warns while monitoring continues. |
 
 The governed cases/suite are tagged files directly in
 `cmd/github-pr-watch-verification/`; inventory is
@@ -284,8 +331,8 @@ waiting. Keep real comparison, context, Session, hub commands, model action,
 filesystem and normal-stop coordination. No production insecure API option,
 new dependency, runner or CI setup is required.
 
-Retain the existing two-minute scoped suite budget: 45 seconds shared build,
-10 each for I01/I02/I04, 15 for I03, 20 for I05 and 10 cleanup. Run serially with
+Retain the two-minute scoped suite budget: 45 seconds shared build,
+10 each for I01/I04, 15 each for I02/I03, 20 for I05 and five cleanup. Run serially with
 at most one hub/input/output/TLS service at a time, observable bounded waits,
 temporary state and process exit before cleanup. Unit and protocol failure
 matrices avoid repeated expensive restarts. Minimal feasibility checks exercise
@@ -309,8 +356,8 @@ On github.com and GHES 3.19.x separately, a maintainer runs the actual plugin
 through public Session on a PR already above 32 items, establishes a silent
 baseline, and adds, edits and removes an old item. Through the real hub/action
 and receiving agent, accumulate more than 32 changes, follow bounded prefixes
-with explicit rewait, and restart between accepted prefixes without new source
-activity. Require all outstanding changes available, no repeat of a confirmed
+automatically, and restart between accepted prefixes without new source
+activity or recipient operations. Require all outstanding changes available, no repeat of a confirmed
 prefix, explicit body omissions and unchanged destination/authority.
 
 Record revision, host/patch, counts, times, redacted contexts/positions,
@@ -324,11 +371,10 @@ approval/merge and does not gate implementation completion.
 ## Risks and rollout
 
 Implementation changes the API reader, tracker, context encoder, schema decoder
-and Session adapter plus core streamed storage/protocol. It changes no product
-behavior in the design PR. Retain existing review-request and legacy-profile
-verification; unrelated later requirements remain separate work.
+and Session adapter plus core streamed storage/protocol. Retain existing
+review-request and nonparticipating-profile verification.
 
-Full enumeration consumes more API calls. Long inactive waits and large bodies
+Full enumeration consumes more API calls. Large backlogs and bodies
 can exhaust adjustable budgets; preserve progress and expose the error.
 Snapshots still share the existing ten-second checkpoint window. A timeout
 leaves prior committed state and a continuity warning, never partial success.

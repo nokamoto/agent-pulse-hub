@@ -288,8 +288,8 @@ limit, not proof that old work never reached its destination.
 
 For a usable input Session with the watch correlation still present and no
 cancellation fence, send one terminal outcome per notification, not per attempt.
-Intermediate retryable unsubmitted results keep the event and rewait
-outstanding flag pending. Accepted sends accepted; unknown sends unknown;
+Intermediate retryable unsubmitted results keep the source event outstanding;
+continuous-watch routes receive their next grant only after a terminal notice. Accepted sends accepted; unknown sends unknown;
 permanent/exhausted/rejected/expired unaccepted work sends failed; pre-admission
 rejection sends discarded. While issuance remains available, the finite policy
 and attempt deadlines bound retry waiting. Storage and plugin gates follow the
@@ -306,9 +306,10 @@ release. After stop, late evidence cannot change the completed trigger fence.
 Resumed notification work has no old event ID in the new input Session. Its later
 acceptance updates only the ledger, not an old terminal notice or checkpoint.
 Likewise late accepted evidence after a terminal unknown does not send a second
-notice. Existing source deduplication/failed-event recovery remains unchanged:
-an input may later emit a distinct event for similar source data. General
-suppression of distinct events is excluded. PR-watch continuation remains distinct.
+notice. General suppression of distinct source events is excluded. Continuous PR-watch
+selects each represented range once, independently of acceptance; a failed or
+unknown prefix cannot be relabelled as a new source event. Later distinct
+changes remain eligible under [continuous admission](pr-watch-rewait.md).
 
 Use [cancellation ordering](subscription-cancellation.md#cancellation-ordering)
 and its sender-handoff attempt boundary. Its fence closes every retry path,
@@ -482,6 +483,7 @@ Actual executable/server compatibility and independent destination observations
 remain delivery checks. Unknown can remain unresolved and distinct source events
 can produce similar notifications. The approved
 [streamed-state profile](runtime-state-stream.md) changes only source checkpoint
-transfer and storage; it preserves the single terminal delivery notice and
-explicit rewait rules used here. Its source-state capacity does not enlarge the
+transfer and storage; it preserves the single terminal delivery notice.
+The [continuous-watch contract](pr-watch-rewait.md) uses that notice to grant
+later distinct notifications without changing retry safety or acceptance. Its source-state capacity does not enlarge the
 notification ledger or admitted-work limits defined above.

@@ -29,14 +29,14 @@ schemas, multi-chunk storage, migration and resource controls. It supplements
 [the public plugin specification](plugin-v1.md) and
 [the runtime-state design](trigger-runtime-state.md). Their unchanged transport,
 strict JSON, delivery-notice, activation, checkpoint scheduling and normal-stop
-rules remain authoritative. [Rewait](pr-watch-rewait.md) continues to own
-notification generations and explicit comparison positions. Plugin-specific
+rules remain authoritative. [Continuous admission](pr-watch-rewait.md) owns
+notification grants and the active-run restart fence. Plugin-specific
 designs own each state schema and how its ordered objects reconstruct progress.
 
 ## Capability and compatibility
 
 An input opts in with both `runtime_state_v2` and `runtime_state_stream_v1`.
-It may additionally advertise `rewait_v1` and the independent
+It may additionally advertise `continuous_watch_v1` and the independent
 `cancel_watch_v1` from [subscription cancellation](subscription-cancellation.md);
 array order is immaterial. Their existing semantics remain unchanged. The stream
 capability alone, with `runtime_state_v1`, duplicate capabilities or unknown
@@ -46,12 +46,17 @@ An older strict host rejects the new capability visibly; do not fall back to
 a smaller state, a fresh baseline or plugin-owned files.
 
 The stream profile changes only state handoff and storage. `delivery_notice`,
-`state_event`, `activate_watch`, `resume_watch`, `resume_result` and their
-generation rules retain their existing shapes. Existing `checkpoint` requests
+`state_event`, `activate_watch` and applicable continuous-grant rules retain
+their profile-defined shapes; no resume messages remain supported. Existing `checkpoint` requests
 also retain their shape. Participating plugins use the streamed success
 messages below instead of positive `checkpoint_result`; a negative
 `checkpoint_result` remains valid. Ordinary `state_watch` is replaced by
 `state_stream_watch` only for this profile.
+
+The [active-run marker](pr-watch-rewait.md#progress-and-restart-safety) is a
+reserved sibling of generation files/directories only for continuous watches.
+It never participates in generation selection or cleanup. A surviving marker
+blocks restoration even if the highest generation otherwise validates.
 
 ## State representation and bounds
 
@@ -137,7 +142,7 @@ use a bounded immutable view or copy-on-write internally. For `quiesce: false`,
 later observation/notification work may continue after that cut. For
 `quiesce: true`, stop producing events before snapshot extraction and remain
 quiescent through timeout, transfer failure and Session closure. No late grant
-or rewait restarts a quiesced watch.
+or automatic grant restarts a quiesced watch.
 
 The existing single ten-second batch deadline covers notice/request sending,
 begin, every chunk and end for all watches in that batch. It is not ten seconds
@@ -312,7 +317,7 @@ failure matrices at unit level rather than repeating subprocess scenarios.
 
 The governed [PR-watch verification](github-pr-watch.md#verification-strategy)
 uses GPW-I04 for large complete acquisition and public Session stream restore,
-and GPW-I05 for bounded notification/rewait, core-owned multi-chunk save/restart,
+and GPW-I05 for bounded automatic notification, core-owned multi-chunk save/restart,
 remaining continuation and compatible
 legacy-position migration through the real host/plugin/storage boundary.
 These cases do not replace existing runtime-state or legacy-profile cases.
