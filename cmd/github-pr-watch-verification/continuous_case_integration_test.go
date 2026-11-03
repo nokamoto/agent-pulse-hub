@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -25,6 +26,14 @@ func gpwContinuousCase() {
 	python := os.Getenv("APH_PLUGIN_PYTHON")
 	if python == "" {
 		python = "python3"
+	}
+	python, err := exec.LookPath(python)
+	if err != nil {
+		t.Fatal(err)
+	}
+	python, err = filepath.Abs(python)
+	if err != nil {
+		t.Fatal(err)
 	}
 	actionDir := filepath.Join(directory, "action")
 	if err := os.Mkdir(actionDir, 0o700); err != nil {
