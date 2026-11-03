@@ -152,7 +152,7 @@ func gpwCheckPrefix(t mvpReporter, context map[string]any, next *uint64, seen ma
 		t.Fatalf("bad continuation %v", continuation)
 	}
 	more := continuation["has_more"].(bool)
-	if int(continuation["remaining_changes"].(float64)) != 40-len(seen) || (more && continuation["operation"] != "rewait") {
+	if int(continuation["remaining_changes"].(float64)) != 40-len(seen) || continuation["operation"] != nil {
 		t.Fatalf("suffix lost: %v", continuation)
 	}
 	return context["confirmation_position"].(string), more
@@ -166,7 +166,7 @@ func gpwStreamFiles(t mvpReporter, state, id string) (string, []string) {
 	}
 	manifest := manifests[0]
 	var record map[string]any
-	if json.Unmarshal([]byte(readMVPFile(manifest)), &record) != nil || record["schema"] != "github-pr-watch-v2" || record["subscription_id"] != id {
+	if json.Unmarshal([]byte(readMVPFile(manifest)), &record) != nil || record["schema"] != "github-pr-watch-v4" || record["subscription_id"] != id {
 		t.Fatalf("bad manifest %s", readMVPFile(manifest))
 	}
 	count, err := strconv.ParseUint(record["chunk_count"].(string), 10, 64)
@@ -198,10 +198,20 @@ func gpwContinuationCase() {
 	daemon, output, _, state := gpwNewDaemon(t, f, directory)
 	id := gpwRegister(t, daemon, output, gpwArgs("github.com"))
 	f.waitRounds(t, 2)
+	noticeGate := filepath.Join(directory, "gate-delivery_notice-1")
+	gate := filepath.Join(directory, "gate-activate_watch-3")
+	for _, path := range []string{noticeGate, gate} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	f.set(1, "complete")
-	seed := gpwContext(t, gpwRecords(t, output, 1)[0]["context"])
-	p0 := seed["confirmation_position"].(string)
-	gpwWaitAccepted(t, directory, id)
+	gpwRecords(t, output, 1)
+	if !waitMVP(t, time.Second, func() bool {
+		return strings.Contains(readMVPFile(filepath.Join(directory, "protocol.jsonl")), "delivery_notice_held")
+	}) {
+		t.Fatal("seed terminal notice was not held")
+	}
 	f.set(2, "failed-comments")
 	if !waitMVP(t, time.Second, func() bool { return strings.Contains(readMVPFile(daemon.logPath), "service") }) {
 		t.Fatal("missing interrupted acquisition diagnostic")
@@ -211,18 +221,25 @@ func gpwContinuationCase() {
 	}
 	f.set(2, "complete")
 	f.waitRounds(t, f.count()+2)
-	_, result := gpwRewaitEventually(t, daemon, id, p0)
-	if result.code() != 0 {
-		t.Fatalf("first continuation %s", result.stdout)
+	if err := os.Remove(noticeGate); err != nil {
+		t.Fatal(err)
 	}
 	next := uint64(3)
 	seen := map[string]bool{}
-	position, more := gpwCheckPrefix(t, gpwContext(t, gpwRecords(t, output, 2)[1]["context"]), &next, seen)
+	_, more := gpwCheckPrefix(t, gpwContext(t, gpwRecords(t, output, 2)[1]["context"]), &next, seen)
 	if !more {
 		t.Fatal("first prefix lost continuation")
 	}
 	gpwWaitAcceptedCount(t, directory, id, 2)
+	if !waitMVP(t, time.Second, func() bool {
+		return strings.Contains(readMVPFile(filepath.Join(directory, "protocol.jsonl")), "activate_watch_held")
+	}) {
+		t.Fatal("suffix grant was not held")
+	}
 	daemon.stop(t, gpwSuite.hub)
+	if err := os.Remove(gate); err != nil {
+		t.Fatal(err)
+	}
 	manifest, files := gpwStreamFiles(t, state, id)
 	olderName := filepath.Base(filepath.Dir(manifest))
 	olderFiles := map[string][]byte{}
@@ -241,13 +258,9 @@ func gpwContinuationCase() {
 	rows := 3
 	for {
 		context := gpwContext(t, gpwRecords(t, output, rows)[rows-1]["context"])
-		position, more = gpwCheckPrefix(t, context, &next, seen)
+		_, more = gpwCheckPrefix(t, context, &next, seen)
 		if !more {
 			break
-		}
-		_, result = gpwRewaitEventually(t, daemon, id, position)
-		if result.code() != 0 {
-			t.Fatalf("continuation %s", result.stdout)
 		}
 		rows++
 	}
@@ -337,7 +350,8 @@ func gpwContinuationCase() {
 			t.Fatal("oversized object")
 		}
 	}
-	gpwMigrationCase(t)
+	gpwMigrationCase(t, false)
+	gpwMigrationCase(t, true)
 	t.Logf("GPW-I05 execution: %s", time.Since(started))
 }
 
@@ -356,7 +370,7 @@ func gpwWaitAcceptedCount(t mvpReporter, directory, id string, count int) {
 	}
 }
 
-func gpwMigrationCase(t mvpReporter) {
+func gpwMigrationCase(t mvpReporter, streamed bool) {
 	t.Helper()
 	directory := gpwSuite.newCase(t)
 	f := newGPWFixture(t)
@@ -366,15 +380,22 @@ func gpwMigrationCase(t mvpReporter) {
 	f.waitRounds(t, 2)
 	f.set(1, "complete")
 	pold := gpwContext(t, gpwRecords(t, output, 1)[0]["context"])["confirmation_position"].(string)
+	gpwWaitAcceptedCount(t, directory, id, 1)
+	noticeGate := filepath.Join(directory, "gate-delivery_notice-2")
+	if err := os.WriteFile(noticeGate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	f.mu.Lock()
 	f.edit = 1
 	f.mu.Unlock()
-	f.waitRounds(t, f.count()+2)
-	_, result := gpwRewaitEventually(t, daemon, id, pold)
-	if result.code() != 0 {
-		t.Fatalf("migration preparation %s", result.stdout)
-	}
 	gpwRecords(t, output, 2)
+	f.set(1, "failed-comments")
+	if !waitMVP(t, time.Second, func() bool { return strings.Contains(readMVPFile(daemon.logPath), "service") }) {
+		t.Fatal("legacy fixture did not freeze comparison")
+	}
+	if err := os.Remove(noticeGate); err != nil {
+		t.Fatal(err)
+	}
 	gpwWaitAcceptedCount(t, directory, id, 2)
 	daemon.stop(t, gpwSuite.hub)
 	manifests := gpwSavedFiles(t, state, id)
@@ -384,17 +405,26 @@ func gpwMigrationCase(t mvpReporter) {
 	manifest := manifests[0]
 	header := gpwSavedHeader(t, manifest)
 	legacy := map[string]any{}
-	for _, key := range []string{"scope", "nonce", "sequence", "baseline", "aggregate", "started_at", "ended_at", "confirmed", "attempted", "comparison", "positions"} {
+	for _, key := range []string{"scope", "nonce", "sequence", "baseline", "aggregate", "started_at", "ended_at", "positions"} {
 		legacy[key] = header[key]
 	}
+	legacy["confirmed"] = header["positions"].([]any)[0].(map[string]any)["sequence"]
+	legacy["attempted"] = header["selected"]
+	legacy["comparison"] = legacy["confirmed"]
 	fingerprints, metadata, journal := []any{}, []any{}, []any{}
+	streamFiles := map[string][]byte{}
 	paths, err := filepath.Glob(filepath.Join(filepath.Dir(manifest), "*.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		streamFiles[filepath.Base(path)] = raw
 		var chunk map[string]any
-		if json.Unmarshal([]byte(readMVPFile(path)), &chunk) != nil {
+		if json.Unmarshal(raw, &chunk) != nil {
 			t.Fatalf("bad migration input %s", path)
 		}
 		if chunk["kind"] == "items" {
@@ -428,55 +458,84 @@ func gpwMigrationCase(t mvpReporter) {
 		t.Fatal(err)
 	}
 	oldPath := filepath.Join(runtimePath, "00000000000000000001.json")
-	if err := os.WriteFile(oldPath, encoded, 0o600); err != nil {
-		t.Fatal(err)
+	writeLegacy := func() {
+		if !streamed {
+			if err := os.WriteFile(oldPath, encoded, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		path := filepath.Join(runtimePath, "00000000000000000001.stream")
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		header["version"], header["attempted"] = 2, legacy["attempted"]
+		header["confirmed"], header["comparison"] = legacy["confirmed"], legacy["comparison"]
+		delete(header, "profile")
+		delete(header, "selected")
+		raw, err := json.Marshal(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		streamFiles["00000000000000000000.json"] = raw
+		total := 0
+		for name, data := range streamFiles {
+			if name != "manifest.json" {
+				total += len(data)
+				if err := os.WriteFile(filepath.Join(path, name), data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		record := map[string]any{"version": 2, "subscription_id": id, "input_plugin": "pr", "generation": "1", "schema": "github-pr-watch-v2", "chunk_count": strconv.Itoa(len(streamFiles) - 1), "data_bytes": strconv.Itoa(total)}
+		raw, err = json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "manifest.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
+	writeLegacy()
 	daemon = gpwSuite.startDaemonWithState(t, directory, daemon.config, freeMVPAddress(t), state)
 	DeferCleanup(daemon.cleanup)
-	f.waitRounds(t, f.count()+2)
-	if len(modelRecords(t, output)) != 2 {
-		t.Fatal("legacy migration repeated a confirmed notification")
+	if !waitMVP(t, time.Second, func() bool { return strings.Contains(readMVPFile(daemon.logPath), "service") }) {
+		t.Fatal("restored legacy watch did not reach the frozen source")
 	}
-	// Normal restart reopens a wait. Consume it with a fresh old-item edit
-	// before explicitly asking to compare from the retained legacy position.
+	if len(modelRecords(t, output)) != 2 {
+		t.Fatal("legacy migration repeated selected progress")
+	}
+	f.set(1, "complete")
 	f.mu.Lock()
 	f.edit = 2
 	f.mu.Unlock()
 	gpwRecords(t, output, 3)
 	gpwWaitAcceptedCount(t, directory, id, 3)
-	_, result = gpwRewaitEventually(t, daemon, id, pold)
-	if result.code() != 0 {
-		t.Fatalf("legacy position lost: %s", result.stdout)
-	}
-	gpwRecords(t, output, 4)
-	gpwWaitAcceptedCount(t, directory, id, 4)
 	daemon.stop(t, gpwSuite.hub)
 	manifests = gpwSavedFiles(t, state, id)
 	if len(manifests) != 1 || filepath.Base(manifests[0]) != "manifest.json" {
 		t.Fatalf("migration did not commit stream: %v", manifests)
 	}
 	var committed map[string]any
-	if json.Unmarshal([]byte(readMVPFile(manifests[0])), &committed) != nil || committed["schema"] != "github-pr-watch-v2" {
+	if json.Unmarshal([]byte(readMVPFile(manifests[0])), &committed) != nil || committed["schema"] != "github-pr-watch-v4" {
 		t.Fatal("migration schema incorrect")
 	}
 	generation, _ := strconv.ParseUint(committed["generation"].(string), 10, 64)
 	if generation <= 1 {
 		t.Fatal("migration did not increase generation")
 	}
-	if err := os.WriteFile(oldPath, encoded, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeLegacy()
 	daemon = gpwSuite.startDaemonWithState(t, directory, daemon.config, freeMVPAddress(t), state)
 	DeferCleanup(daemon.cleanup)
 	f.waitRounds(t, f.count()+2)
-	if len(modelRecords(t, output)) != 4 {
+	if len(modelRecords(t, output)) != 3 {
 		t.Fatal("mixed formats selected old progress")
 	}
 	f.mu.Lock()
 	f.edit = 3
 	f.mu.Unlock()
-	gpwRequireContains(t, gpwContext(t, gpwRecords(t, output, 5)[4]["context"]), "C1")
-	gpwWaitAcceptedCount(t, directory, id, 5)
+	gpwRequireContains(t, gpwContext(t, gpwRecords(t, output, 4)[3]["context"]), "C1")
+	gpwWaitAcceptedCount(t, directory, id, 4)
 	daemon.stop(t, gpwSuite.hub)
 	// A restored old issued position stays valid while its history is retained.
 	gpwRequireContains(t, gpwSavedHeader(t, gpwSavedFiles(t, state, id)[0])["positions"], pold)

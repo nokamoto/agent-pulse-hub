@@ -15,7 +15,7 @@ func notificationPolicyHub(t *testing.T) (*Hub, *MockNotificationStore, *time.Ti
 	t.Helper()
 	now := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
 	store := NewMockNotificationStore(gomock.NewController(t))
-	h := &Hub{logger: slog.Default(), queueReady: make(chan struct{}, 1), rewaitNow: func() time.Time { return now }, admissionOpen: true, plugins: map[string]*pluginState{"source": {available: true}, "action": {available: true}}, registrations: map[domain.SubscriptionID]domain.Subscription{}, cancellations: map[domain.SubscriptionID]*cancellationState{}, notificationWaits: map[domain.SubscriptionID]*notificationWait{}}
+	h := &Hub{logger: slog.Default(), queueReady: make(chan struct{}, 1), notificationClock: func() time.Time { return now }, admissionOpen: true, plugins: map[string]*pluginState{"source": {available: true}, "action": {available: true}}, registrations: map[domain.SubscriptionID]domain.Subscription{}, cancellations: map[domain.SubscriptionID]*cancellationState{}, notificationWaits: map[domain.SubscriptionID]*notificationWait{}}
 	h.registrations["22222222-2222-4222-8222-222222222222"] = domain.Subscription{ID: "22222222-2222-4222-8222-222222222222", Active: true}
 	h.notifications = &notificationState{store: store, records: map[string]domain.Notification{}, work: map[string]queuedEvent{}, lastTime: now, earlyEvidence: map[string]domain.AttemptEvidence{}, evidenceUntil: map[string]time.Time{}, cutoff: map[string]bool{}}
 	return h, store, &now

@@ -147,18 +147,11 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 				return
 			}
 			life := h.lifecycleLocked(watch.registration.ID)
-			if notification := h.notificationWaits[watch.registration.ID]; notification != nil {
-				if notification.preparing || notification.checkpointBusy {
-					h.mu.Unlock()
-					return
-				}
-				notification.checkpointBusy = true
-			}
+
 			h.mu.Unlock()
 			watch.mu.Lock()
 			if !quiesce && life.ctx.Err() != nil {
 				watch.mu.Unlock()
-				h.finishRewaitCheckpoint(watch)
 				return
 			}
 			flushed, err := h.flushRuntimeOutcomesLocked(ctx, watch)
@@ -173,6 +166,13 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 			if !quiesce {
 				stopCancel = context.AfterFunc(life.ctx, checkpointCancel)
 			}
+			// Continuous inputs keep processing terminal notices while their
+			// immutable periodic snapshot is in flight. The adapter orders the
+			// request and notices on the same stream.
+			unlocked := watch.continuousSession != "" && !quiesce
+			if unlocked {
+				watch.mu.Unlock()
+			}
 			if port, ok := watch.inputPort.(StreamPluginPort); ok {
 				h.mu.Lock()
 				stream := h.plugins[watch.inputName] != nil && h.plugins[watch.inputName].capabilities["runtime_state_stream_v1"]
@@ -181,7 +181,9 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 					result := h.runStreamCheckpoint(checkpointCtx, quiesce, watch, port, store)
 					stopCancel()
 					checkpointCancel()
-					watch.mu.Unlock()
+					if !unlocked {
+						watch.mu.Unlock()
+					}
 					h.releasePendingEvents(flushed)
 					results <- result
 					return
@@ -192,7 +194,9 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 			})
 			stopCancel()
 			checkpointCancel()
-			watch.mu.Unlock()
+			if !unlocked {
+				watch.mu.Unlock()
+			}
 			h.releasePendingEvents(flushed)
 			results <- runtimeCheckpointResult{watch: watch, state: state, err: err, operation: "checkpoint"}
 		}()
@@ -213,17 +217,18 @@ func (h *Hub) runRuntimeCheckpointBatchForWatches(parent context.Context, quiesc
 			defer saves.Done()
 			for result := range jobs {
 				if result.stream != nil {
-					h.saveStreamResult(result)
-					h.finishRewaitCheckpoint(result.watch)
+					if h.saveStreamResult(result) && quiesce {
+						h.clearContinuousRun(result.watch)
+					}
 					continue
 				}
 				if result.err != nil {
 					h.reportCheckpointError(ctx, quiesce, result)
-					h.finishRewaitCheckpoint(result.watch)
 					continue
 				}
-				h.saveRuntimeState(result.watch, result.state)
-				h.finishRewaitCheckpoint(result.watch)
+				if h.saveRuntimeState(result.watch, result.state) && quiesce {
+					h.clearContinuousRun(result.watch)
+				}
 			}
 		}()
 	}
@@ -272,21 +277,11 @@ func (h *Hub) flushRuntimeOutcomesLocked(ctx context.Context, watch *runtimeWatc
 		watch.outcomes[0] = RuntimeNotice{}
 		watch.outcomes = watch.outcomes[1:]
 		h.mu.Lock()
-		if wait := h.notificationWaits[watch.registration.ID]; wait != nil {
-			wait.outstanding = false
-		}
+		h.continueWatchLocked(watch.inputName, watch.inputPort, notice)
 		h.mu.Unlock()
 		flushed++
 	}
 	return flushed, nil
-}
-
-func (h *Hub) finishRewaitCheckpoint(watch *runtimeWatch) {
-	h.mu.Lock()
-	if wait := h.notificationWaits[watch.registration.ID]; wait != nil {
-		wait.checkpointBusy = false
-	}
-	h.mu.Unlock()
 }
 
 func (h *Hub) finishRuntimeOutcome(item queuedEvent, status string) {
@@ -406,14 +401,14 @@ func (h *Hub) reportCheckpointError(ctx context.Context, stopping bool, result r
 	h.reportRuntimeStateError(result.watch, result.operation, result.err)
 }
 
-func (h *Hub) saveRuntimeState(watch *runtimeWatch, state *jsonvalue.Value) {
+func (h *Hub) saveRuntimeState(watch *runtimeWatch, state *jsonvalue.Value) bool {
 	h.runtimeSaveGate <- struct{}{}
 	defer func() { <-h.runtimeSaveGate }()
 	h.mu.Lock()
 	_, exists := h.registrations[watch.registration.ID]
 	if !exists || h.runtimeWatches[watch.registration.ID] != watch || h.cancellations[watch.registration.ID] != nil {
 		h.mu.Unlock()
-		return
+		return false
 	}
 	life := h.lifecycleLocked(watch.registration.ID)
 	h.mu.Unlock()
@@ -424,11 +419,11 @@ func (h *Hub) saveRuntimeState(watch *runtimeWatch, state *jsonvalue.Value) {
 	fenced := h.cancellations[watch.registration.ID] != nil
 	h.mu.Unlock()
 	if fenced || !exists {
-		return
+		return false
 	}
 	if state == nil {
 		h.reportRuntimeStateError(watch, "save", errors.New("checkpoint returned no state"))
-		return
+		return false
 	}
 	done := make(chan streamSaveResult, 1)
 	_ = h.runtimeFS.submit(context.Background(), watch.registration.ID, func() {
@@ -442,7 +437,7 @@ func (h *Hub) saveRuntimeState(watch *runtimeWatch, state *jsonvalue.Value) {
 			err = errors.New("runtime state store returned no committed generation")
 		}
 		h.reportRuntimeStateError(watch, "save", err)
-		return
+		return false
 	}
 	watch.mu.Lock()
 	watch.state = state
@@ -451,6 +446,7 @@ func (h *Hub) saveRuntimeState(watch *runtimeWatch, state *jsonvalue.Value) {
 	if err != nil {
 		h.logger.Warn("runtime_state_cleanup_error", "input_plugin", watch.inputName, "subscription_id", watch.registration.ID, "generation", generation, "reason", safeError(err))
 	}
+	return true
 }
 
 func (h *Hub) releasePendingEvents(count int) {

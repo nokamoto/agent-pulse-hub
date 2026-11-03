@@ -63,6 +63,11 @@ func (s *Store) LoadRuntime(registrations []domain.Subscription) (map[domain.Sub
 		if !isDirectory(directoryInfo) {
 			return nil, fmt.Errorf("runtime state path %s must be a real directory", directory)
 		}
+		if owned {
+			if err := s.rejectContinuousRun(directory, id); err != nil {
+				return nil, err
+			}
+		}
 		generations, err := s.runtimeGenerations(directory)
 		if err != nil {
 			if owned {
@@ -135,7 +140,9 @@ func (s *Store) CommitRuntime(registration domain.Subscription, state *jsonvalue
 		return 0, s.removeNewRuntimeDirectory(ownerDirectory, createdDirectory, err)
 	}
 	if !createdDirectory && len(generations) == 0 {
-		return 0, errors.New("existing runtime state directory has no committed generation")
+		if !s.ownsContinuousRun(registration.ID, ownerDirectory) {
+			return 0, errors.New("existing runtime state directory has no committed generation")
+		}
 	}
 	var latest uint64
 	if len(generations) != 0 {
@@ -192,6 +199,12 @@ func (s *Store) runtimeGenerations(directory string) ([]runtimeGeneration, error
 	generations := make([]runtimeGeneration, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
+		if name == continuousMarker {
+			if _, err := s.readContinuousRun(filepath.Join(directory, name), filepath.Base(directory)); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		streamed := strings.HasSuffix(name, ".stream")
 		parseName := name
 		if streamed {

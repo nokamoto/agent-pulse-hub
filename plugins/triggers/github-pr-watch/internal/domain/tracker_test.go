@@ -274,42 +274,6 @@ func TestRestoreRejectsMissingUnreportedHistory(t *testing.T) {
 	}
 }
 
-func TestPreparedOlderPositionPinsHistoryUntilGrant(t *testing.T) {
-	tr := tracker(t)
-	observe(t, tr, testObservation())
-	for i := 0; i < 31; i++ {
-		observe(t, tr, testObservation(comment("C1", fmt.Sprint(i))))
-		_, seq := notification(t, tr)
-		tr.Notice(seq, "accepted")
-	}
-	prepared := tr.Saved.Positions[0]
-	tr.Prepare(prepared.Sequence)
-	for i := 31; i < 33; i++ {
-		observe(t, tr, testObservation(comment("C1", fmt.Sprint(i))))
-	}
-	if tr.Saved.Journal[0].Sequence != prepared.Sequence+1 {
-		t.Fatalf("prepared history pruned: first=%d position=%d", tr.Saved.Journal[0].Sequence, prepared.Sequence)
-	}
-	if _, err := tr.ValidatePosition(prepared.Value); err != nil {
-		t.Fatal(err)
-	}
-	state, err := tr.Checkpoint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(state.Marshal()), "prepared") {
-		t.Fatal("staged position persisted")
-	}
-	if tr.Saved.Comparison != nil {
-		t.Fatal("preparation changed committed comparison")
-	}
-	tr.Resume(prepared.Sequence)
-	text, _ := notification(t, tr)
-	if strings.Count(text, `"kind":"edited"`) != 5 {
-		t.Fatalf("retained changes missing: %s", text)
-	}
-}
-
 func TestRestoreRejectsConfirmationWithoutAttempt(t *testing.T) {
 	tr := tracker(t)
 	observe(t, tr, testObservation())

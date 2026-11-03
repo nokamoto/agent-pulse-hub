@@ -16,10 +16,9 @@ func (p *Process) FenceWatch(id domain.SubscriptionID) error {
 	if watch := p.watches[string(id)]; watch != nil {
 		watch.cancelling = true
 		watch.activationClosed = true
-		watch.stagedGeneration = ""
 	}
 	for requestID, pending := range p.pending {
-		if pending.subscriptionID != string(id) || (pending.kind != "checkpoint_result" && pending.kind != "resume_result") {
+		if pending.subscriptionID != string(id) || pending.kind != "checkpoint_result" {
 			continue
 		}
 		delete(p.pending, requestID)

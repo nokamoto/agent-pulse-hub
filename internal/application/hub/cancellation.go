@@ -139,13 +139,6 @@ func (h *Hub) Unsubscribe(subscriptionID string) *Error {
 	if targetWatch != nil {
 		stream = targetWatch.stream
 	}
-	for _, receipt := range h.rewaitReceipts {
-		if receipt.subscriptionID == subscriptionID && !receipt.completed {
-			receipt.result = &Error{Code: "unknown_subscription", Message: "Subscription cancellation closed rewait preparation."}
-			receipt.completed = true
-			close(receipt.done)
-		}
-	}
 	h.cancellationWait.Add(1)
 	if port != nil && !terminated {
 		_ = port.FenceWatch(id)

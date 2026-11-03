@@ -261,7 +261,7 @@ func (s *Store) cancellationRuntimeFiles(id domain.SubscriptionID) ([]string, er
 				return nil, fmt.Errorf("inspect cancelled stream generation %s: %w", path, err)
 			}
 			paths = append(paths, files...)
-		} else if _, valid := parseGenerationName(entry.Name()); !valid || !isRegularFile(info) {
+		} else if _, valid := parseGenerationName(entry.Name()); (!valid && entry.Name() != continuousMarker) || !isRegularFile(info) {
 			return nil, fmt.Errorf("cancelled runtime entry %s must be a regular generation file", path)
 		}
 		paths = append(paths, path)
@@ -280,6 +280,7 @@ func (s *Store) removeCancelled(owner domain.Subscription) (cleanupErr error, er
 			return nil, fmt.Errorf("remove cancelled state %s: %w", path, err)
 		}
 	}
+	delete(s.continuousRuns, owner.ID)
 	path := s.cancellationPath(owner.ID)
 	if err := s.files.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove cancellation intent housekeeping %s: %w", path, err), nil

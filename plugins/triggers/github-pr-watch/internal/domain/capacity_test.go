@@ -235,8 +235,8 @@ func TestContinuationAndImmutableStreamAcrossRestart(t *testing.T) {
 		if through != next-1 || context.Continuation.Through != through || context.Continuation.Tail != 41 || context.Continuation.Remaining != int(41-through) || context.Continuation.HasMore != (through < 41) {
 			t.Fatalf("wrong continuation: %s", text)
 		}
-		if context.Continuation.HasMore && context.Continuation.Operation != "rewait" {
-			t.Fatal("missing continuation operation")
+		if context.Continuation.Operation != "" {
+			t.Fatal("continuation contained a retired operation")
 		}
 		tr.Notice(through, "accepted")
 		objects, err := tr.StreamCheckpoint()

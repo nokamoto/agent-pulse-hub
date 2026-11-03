@@ -59,6 +59,7 @@ func (osFileSystem) OpenFile(path string, flags int, mode os.FileMode) (writeFil
 // Store owns the exclusive state-directory marker until Close. The caller
 // keeps it open until configured plugins have stopped.
 type Store struct {
+	continuousRuns  map[domain.SubscriptionID]string
 	notifications   *notificationStoreState
 	runtimeLocks    map[string]*sync.Mutex
 	runtimeLockRefs map[string]int
@@ -279,6 +280,20 @@ func (s *Store) Load() ([]domain.Subscription, error) {
 // Commit writes a complete record through a unique staging file. The final
 // rename is the commit point.
 func (s *Store) Commit(registration domain.Subscription) error {
+	return s.commit(registration, "")
+}
+
+func (s *Store) CommitContinuous(registration domain.Subscription, sessionID string) error {
+	if !validID(string(registration.ID)) || !validID(sessionID) {
+		return errors.New("invalid continuous run identity")
+	}
+	lock := s.ownerLock(registration.ID)
+	lock.Lock()
+	defer func() { lock.Unlock(); s.releaseOwnerLock(registration.ID, lock) }()
+	return s.commit(registration, sessionID)
+}
+
+func (s *Store) commit(registration domain.Subscription, sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -313,8 +328,17 @@ func (s *Store) Commit(registration domain.Subscription) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return errors.Join(fmt.Errorf("inspect registration file %s: %w", finalPath, err), s.removeStaging(stagePath))
 	}
+	if sessionID != "" {
+		if err := s.beginContinuousRunLocked(registration.ID, sessionID); err != nil {
+			return errors.Join(err, s.removeStaging(stagePath))
+		}
+	}
 	if err := s.files.Rename(stagePath, finalPath); err != nil {
-		return errors.Join(fmt.Errorf("commit registration file %s: %w", finalPath, err), s.removeStaging(stagePath))
+		cause := errors.Join(fmt.Errorf("commit registration file %s: %w", finalPath, err), s.removeStaging(stagePath))
+		if sessionID != "" {
+			cause = errors.Join(cause, s.endContinuousRunLocked(registration.ID, sessionID))
+		}
+		return cause
 	}
 	return nil
 }

@@ -281,7 +281,7 @@ func (h *Hub) runStreamCheckpoint(ctx context.Context, quiesce bool, watch *runt
 	return runtimeCheckpointResult{watch: watch, stream: sink, err: err, operation: "checkpoint"}
 }
 
-func (h *Hub) saveStreamResult(result runtimeCheckpointResult) {
+func (h *Hub) saveStreamResult(result runtimeCheckpointResult) bool {
 	saved := <-result.stream.done
 	h.mu.Lock()
 	if result.watch.stream == result.stream {
@@ -290,12 +290,13 @@ func (h *Hub) saveStreamResult(result runtimeCheckpointResult) {
 	h.mu.Unlock()
 	if saved.generation == 0 {
 		h.reportRuntimeStateError(result.watch, "save", saved.err)
-		return
+		return false
 	}
 	h.logger.Info("runtime_state_saved", "input_plugin", result.watch.inputName, "subscription_id", result.watch.registration.ID, "generation", saved.generation)
 	if saved.err != nil {
 		h.logger.Warn("runtime_state_cleanup_error", "input_plugin", result.watch.inputName, "subscription_id", result.watch.registration.ID, "generation", saved.generation, "reason", safeError(saved.err))
 	}
+	return true
 }
 
 func streamWatchFits(args *jsonvalue.Value, id, request string) bool {

@@ -23,7 +23,7 @@ const (
 type cancellationTestInput struct {
 	*MockPluginPort
 	*MockCancellationPluginPort
-	*MockRewaitPluginPort
+
 	terminated atomic.Bool
 }
 
@@ -41,7 +41,7 @@ type cancellationTestStore struct {
 func newCancellationUnit(t *testing.T) (*Hub, *cancellationTestInput, *cancellationTestOutput, *cancellationTestStore) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
-	input := &cancellationTestInput{MockPluginPort: NewMockPluginPort(ctrl), MockCancellationPluginPort: NewMockCancellationPluginPort(ctrl), MockRewaitPluginPort: NewMockRewaitPluginPort(ctrl)}
+	input := &cancellationTestInput{MockPluginPort: NewMockPluginPort(ctrl), MockCancellationPluginPort: NewMockCancellationPluginPort(ctrl)}
 	output := &cancellationTestOutput{NewMockPluginPort(ctrl), NewMockguardedDeliveryPort(ctrl)}
 	store := &cancellationTestStore{NewMockRegistrationStore(ctrl), NewMockRuntimeStateStore(ctrl), NewMockCancellationStore(ctrl)}
 	h := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -385,51 +385,19 @@ func TestCancellationFreshEquivalentRegistrationUsesNewIDAndNoOldProgress(t *tes
 	}
 }
 
-func TestCancellationExpiresPendingRewaitButKeepsCompletedReceiptsAndLateActionOutcome(t *testing.T) {
+func TestCancellationDoesNotReviveWatchAfterLateActionOutcome(t *testing.T) {
 	h, input, output, store := newCancellationUnit(t)
 	h.mu.Lock()
-	h.plugins["source"].capabilities["rewait_v1"] = true
+	h.plugins["source"].capabilities["continuous_watch_v1"] = true
 	h.plugins["source"].capabilities["runtime_state_v2"] = true
 	h.notificationWaits[cancellationTestA] = &notificationWait{generation: "old"}
 	h.runtimeWatches[cancellationTestA] = &runtimeWatch{registration: h.registrations[cancellationTestA], inputName: "source", inputPort: input}
-	h.sessionStartMillis = 1000
-	h.rewaitNow = func() time.Time { return time.UnixMilli(2000) }
-	h.mu.Unlock()
-	entered, release := make(chan struct{}), make(chan struct{})
-	input.MockRewaitPluginPort.EXPECT().ResumeWatch(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, _ ResumeWatchRequest) error {
-		close(entered)
-		<-ctx.Done()
-		<-release
-		return nil
-	})
-	operation := rewaitTestID(42)
-	rewaitResult := make(chan *Error, 1)
-	go func() { rewaitResult <- h.Rewait(string(cancellationTestA), operation, "position") }()
-	cancellationAwait(t, entered)
-	completed := rewaitTestID(43)
-	done := make(chan struct{})
-	close(done)
-	h.mu.Lock()
-	h.rewaitReceipts[completed] = &rewaitReceipt{subscriptionID: string(cancellationTestA), positionDigest: h.rewaitReceipts[operation].positionDigest, timestamp: 1500, done: done, completed: true}
 	h.pendingEvents = 1
 	h.mu.Unlock()
 	late := cancellationItem(h, input, output, cancellationTestA, "1", "already-issued")
 	expectCancellationSuccess(input, store, cancellationTestA)
 	if err := h.Unsubscribe(string(cancellationTestA)); err != nil {
 		t.Fatal(err)
-	}
-	close(release)
-	if err := cancellationAwait(t, rewaitResult); err == nil || err.Code != "unknown_subscription" {
-		t.Fatalf("pending rewait = %v", err)
-	}
-	if err := h.Rewait(string(cancellationTestA), completed, "position"); err != nil {
-		t.Fatalf("completed receipt replay = %v", err)
-	}
-	if err := h.Rewait(string(cancellationTestA), operation, "position"); err == nil || err.Code != "unknown_subscription" {
-		t.Fatalf("expired preparation replay = %v", err)
-	}
-	if err := h.Rewait(string(cancellationTestA), rewaitTestID(44), "position"); err == nil || err.Code != "unknown_subscription" {
-		t.Fatalf("new rewait = %v", err)
 	}
 	h.finishRuntimeOutcome(late, "accepted")
 	if h.pendingEvents != 0 || len(h.runtimeWatches) != 0 || !h.plugins["source"].available {

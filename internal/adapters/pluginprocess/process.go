@@ -61,7 +61,6 @@ type watchState struct {
 	activationClosed   bool
 	granted            bool
 	generation         string
-	stagedGeneration   string
 	lastEvent          uint64
 	pending            map[string]bool
 	notices            map[string]*noticeSend
@@ -351,13 +350,13 @@ func (p *Process) activateGeneration(ctx context.Context, id domain.Subscription
 		p.releaseWrite()
 		return &hub.RuntimeError{Code: "invalid_watch", Message: "activation requires an accepted runtime-state v2 watch"}
 	}
-	rewait := p.capabilities[pluginprotocol.RewaitCapability]
-	if rewait != (generation != "") || (rewait && watch.generation != "" && generation != watch.generation && generation != watch.stagedGeneration) {
+	continuous := p.capabilities[pluginprotocol.ContinuousWatchCapability]
+	if continuous != (generation != "") {
 		p.mu.Unlock()
 		p.releaseWrite()
-		return &hub.RuntimeError{Code: "invalid_watch", Message: "activation generation has no matching preparation"}
+		return &hub.RuntimeError{Code: "invalid_watch", Message: "activation generation does not match the input capability"}
 	}
-	if (watch.granted && (!rewait || generation == watch.generation)) || watch.activationClosed || watch.quiesced {
+	if (watch.granted && (!continuous || generation == watch.generation)) || watch.activationClosed || watch.quiesced {
 		p.mu.Unlock()
 		p.releaseWrite()
 		return nil
@@ -366,7 +365,6 @@ func (p *Process) activateGeneration(ctx context.Context, id domain.Subscription
 	// handing the grant to gRPC; a failed send invalidates this whole Session.
 	watch.granted = true
 	watch.generation = generation
-	watch.stagedGeneration = ""
 	// FenceWatch and issuance share p.mu. Starting the ordered sender while this
 	// lock is held prevents an admitted but still-unsent grant from escaping a
 	// fence between the final watch/context checks and sender issuance.
@@ -384,32 +382,6 @@ func (p *Process) activateGeneration(ctx context.Context, id domain.Subscription
 		return &hub.RuntimeError{Code: "activation_send", Message: "activation grant could not be sent", Unavailable: !errors.Is(sendErr, context.Canceled), Cause: sendErr}
 	}
 	p.releaseWrite()
-	return nil
-}
-
-func (p *Process) ResumeWatch(ctx context.Context, request hub.ResumeWatchRequest) error {
-	p.mu.Lock()
-	watch := p.watches[string(request.SubscriptionID)]
-	if !p.capabilities[pluginprotocol.RewaitCapability] || watch == nil || !watch.active || watch.quiesced || watch.activationClosed || watch.cancelling {
-		p.mu.Unlock()
-		return &hub.RuntimeError{Code: "rewait_unsupported", Message: "input watch is unavailable for preparation"}
-	}
-	p.mu.Unlock()
-	frame, err := p.request(ctx, pluginprotocol.Frame{Type: "resume_watch", RequestID: request.RequestID, SubscriptionID: string(request.SubscriptionID), Generation: request.Generation, ConfirmationPosition: request.ConfirmationPosition}, "resume_result", 10*time.Second, nil)
-	if err != nil {
-		return &hub.RuntimeError{Code: "resume_failed", Message: "rewait preparation could not be confirmed", Unavailable: isUnavailable(err), Cause: err}
-	}
-	if frame.Accepted == nil || !*frame.Accepted {
-		return &hub.PositionRejectedError{}
-	}
-	p.mu.Lock()
-	if p.watches[string(request.SubscriptionID)] == watch && !watch.cancelling && !watch.quiesced && !watch.activationClosed {
-		watch.stagedGeneration = request.Generation
-	} else {
-		p.mu.Unlock()
-		return &hub.RuntimeError{Code: "resume_failed", Message: "watch was cancelled during preparation"}
-	}
-	p.mu.Unlock()
 	return nil
 }
 
@@ -561,7 +533,7 @@ func (p *Process) requestExtended(parent context.Context, frame pluginprotocol.F
 		p.mu.Unlock()
 		return pluginprotocol.Frame{}, &requestError{message: "plugin is unavailable", cause: cause, unavailable: true}
 	}
-	if target := p.watches[frame.SubscriptionID]; target != nil && target.cancelling && (frame.Type == "checkpoint" || frame.Type == "resume_watch") {
+	if target := p.watches[frame.SubscriptionID]; target != nil && target.cancelling && frame.Type == "checkpoint" {
 		p.mu.Unlock()
 		return pluginprotocol.Frame{}, &requestError{message: "watch cancellation closed request admission"}
 	}
@@ -590,7 +562,7 @@ func (p *Process) requestExtended(parent context.Context, frame pluginprotocol.F
 	stream := p.stream
 	available := !p.failed && !p.stopping && ctx.Err() == nil && p.pending[frame.RequestID] == pending
 	fenced := false
-	if target := p.watches[frame.SubscriptionID]; target != nil && target.cancelling && (frame.Type == "checkpoint" || frame.Type == "resume_watch") {
+	if target := p.watches[frame.SubscriptionID]; target != nil && target.cancelling && frame.Type == "checkpoint" {
 		available = false
 		fenced = true
 	}
@@ -638,13 +610,13 @@ func (p *Process) requestExtended(parent context.Context, frame pluginprotocol.F
 		if !pendingSend {
 			p.releaseWrite()
 		}
-		if resultType != "checkpoint_result" && !(resultType == "cancel_result" && errors.Is(sendErr, ctx.Err())) && !(resultType == "resume_result" && errors.Is(sendErr, context.Canceled)) {
+		if resultType != "checkpoint_result" && !(resultType == "cancel_result" && errors.Is(sendErr, ctx.Err())) {
 			p.fail(fmt.Errorf("send plugin request: %w", sendErr))
 		}
 		p.removePending(frame.RequestID, pending)
 		return pluginprotocol.Frame{}, &requestError{
 			message: "plugin request send failed", cause: sendErr, sent: true,
-			unavailable: (resultType != "checkpoint_result" || !errors.Is(sendErr, ctx.Err())) && !(resultType == "resume_result" && errors.Is(sendErr, context.Canceled)),
+			unavailable: (resultType != "checkpoint_result" || !errors.Is(sendErr, ctx.Err())),
 		}
 	}
 	if onSent != nil {
@@ -679,10 +651,10 @@ func (p *Process) requestExtended(parent context.Context, frame pluginprotocol.F
 				return pluginprotocol.Frame{}, &requestError{message: "plugin became unavailable while committing its result", cause: p.failureCause(), sent: sent, unavailable: true}
 			}
 		}
-		if stillPending && sent && resultType != "checkpoint_result" && resultType != "cancel_result" && !(resultType == "resume_result" && errors.Is(ctx.Err(), context.Canceled)) {
+		if stillPending && sent && resultType != "checkpoint_result" && resultType != "cancel_result" {
 			p.fail(ctx.Err())
 		}
-		return pluginprotocol.Frame{}, &requestError{message: "plugin response deadline expired", cause: ctx.Err(), sent: sent, unavailable: sent && resultType != "checkpoint_result" && !(resultType == "resume_result" && errors.Is(ctx.Err(), context.Canceled))}
+		return pluginprotocol.Frame{}, &requestError{message: "plugin response deadline expired", cause: ctx.Err(), sent: sent, unavailable: sent && resultType != "checkpoint_result"}
 	case <-p.doneCh:
 		p.removePending(frame.RequestID, pending)
 		return pluginprotocol.Frame{}, &requestError{message: "plugin exited before its response", cause: p.failureCause(), sent: pending.sent, unavailable: true}
@@ -722,7 +694,8 @@ func (p *Process) notifyDeliveryLocked(ctx context.Context, watch *watchState, n
 	p.mu.Lock()
 	_, pending := watch.pending[notice.EventID]
 	attempt := watch.notices[notice.EventID]
-	available := p.ready && !p.failed && !p.stopping && watch.active && !watch.quiesced && !watch.cancelSent && p.watches[string(notice.SubscriptionID)] == watch && pending
+	lateDiscard := p.capabilities[pluginprotocol.ContinuousWatchCapability] && notice.Status == "discarded"
+	available := p.ready && !p.failed && !p.stopping && watch.active && (!watch.quiesced || lateDiscard) && !watch.cancelSent && p.watches[string(notice.SubscriptionID)] == watch && pending
 	stream := p.stream
 	p.mu.Unlock()
 	if !available {
@@ -758,7 +731,7 @@ func (p *Process) notifyDeliveryLocked(ctx context.Context, watch *watchState, n
 		return &hub.RuntimeError{Code: "notice_send", Message: "delivery notice could not be sent before its deadline", Unavailable: !errors.Is(err, ctx.Err()), Cause: err}
 	}
 	p.mu.Lock()
-	available = p.stream == stream && !p.failed && !p.stopping && watch.active && !watch.quiesced && !watch.cancelSent && p.watches[string(notice.SubscriptionID)] == watch
+	available = p.stream == stream && !p.failed && !p.stopping && watch.active && (!watch.quiesced || lateDiscard) && !watch.cancelSent && p.watches[string(notice.SubscriptionID)] == watch
 	p.mu.Unlock()
 	if !available {
 		p.releaseWrite()
@@ -965,14 +938,15 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 		}
 		if frame.Type == "state_event" {
 			p.mu.Lock()
-			if p.capabilities[pluginprotocol.RewaitCapability] != (frame.Generation != "") {
+			continuous := p.capabilities[pluginprotocol.ContinuousWatchCapability]
+			if continuous != (frame.Generation != "") {
 				p.mu.Unlock()
 				p.rejectEvent(frame, "state event generation does not match the capability profile")
 				p.callbackMu.Unlock()
 				return
 			}
 			current := p.watches[frame.SubscriptionID]
-			if current != watch || !watch.active || !watch.stateful || watch.quiesced || watch.cancelling {
+			if current != watch || !watch.active || !watch.stateful || (watch.quiesced && !continuous) || watch.cancelling {
 				p.mu.Unlock()
 				p.rejectEvent(frame, "state event does not belong to an active participating watch")
 				p.callbackMu.Unlock()
@@ -989,7 +963,7 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 			watch.orderMu.Lock()
 			p.mu.Lock()
 			current = p.watches[frame.SubscriptionID]
-			if current != watch || !watch.active || !watch.stateful || watch.quiesced || watch.cancelling || eventID <= watch.lastEvent {
+			if current != watch || !watch.active || !watch.stateful || (watch.quiesced && !continuous) || watch.cancelling || eventID <= watch.lastEvent {
 				p.mu.Unlock()
 				watch.orderMu.Unlock()
 				p.rejectEvent(frame, "state event does not belong to an active participating watch")
@@ -1005,12 +979,12 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 			}
 			handler := p.handlers.Event
 			generationHandler := p.handlers.StateEvent
-			rewait := p.capabilities[pluginprotocol.RewaitCapability]
+
 			p.mu.Unlock()
 			status := "discarded"
-			if !overflow && !dormant && ((rewait && generationHandler != nil) || (!rewait && handler != nil)) {
+			if (!overflow || continuous) && !dormant && ((continuous && generationHandler != nil) || (!continuous && handler != nil)) {
 				terminal := ""
-				if rewait {
+				if continuous {
 					terminal = generationHandler(frame.SubscriptionID, frame.EventID, frame.Generation, frame.Context)
 				} else {
 					terminal = handler(frame.SubscriptionID, frame.EventID, frame.Context)
@@ -1030,10 +1004,14 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 			var noticeErr error
 			if status != "" {
 				noticeCtx, cancel := context.WithTimeout(context.Background(), registrationTimeout)
-				noticeErr = p.notifyDeliveryLocked(noticeCtx, watch, hub.RuntimeNotice{
+				notice := hub.RuntimeNotice{
 					SubscriptionID: domain.SubscriptionID(frame.SubscriptionID), EventID: frame.EventID, Status: status,
-				})
+				}
+				noticeErr = p.notifyDeliveryLocked(noticeCtx, watch, notice)
 				cancel()
+				if noticeErr == nil && continuous && p.handlers.StateNotice != nil {
+					p.handlers.StateNotice(notice)
+				}
 				if noticeErr != nil {
 					p.logger.Warn("runtime_state_persistence_error", "input_plugin", p.config.Name, "subscription_id", safeText(frame.SubscriptionID, 256), "operation", "delivery notice", "reason", safeText(noticeErr.Error(), 256), "message", "runtime continuity at next restart cannot be guaranteed")
 				}
@@ -1071,7 +1049,7 @@ func (p *Process) handleFrame(frame pluginprotocol.Frame) {
 		}
 		return
 	}
-	if frame.Type != "watch_result" && frame.Type != "destination_result" && frame.Type != "delivery_result" && frame.Type != "checkpoint_result" && frame.Type != "resume_result" && frame.Type != "cancel_result" {
+	if frame.Type != "watch_result" && frame.Type != "destination_result" && frame.Type != "delivery_result" && frame.Type != "checkpoint_result" && frame.Type != "cancel_result" {
 		p.mu.Unlock()
 		p.callbackMu.Unlock()
 		p.rejectFrame("invalid direction")

@@ -74,21 +74,20 @@ func waitFor(ctx context.Context, delay time.Duration) bool {
 }
 
 type watch struct {
-	validated          application.Validated
-	ctx                context.Context
-	cancel             context.CancelFunc
-	done               chan struct{}
-	started            bool
-	quiesced           bool
-	cancelling         bool
-	armed              bool
-	generation         string
-	preparedGeneration string
-	preparedSequence   uint64
-	eventCounter       uint64
-	correlations       map[string]uint64
-	checkpointCancel   context.CancelFunc
-	checkpointDone     chan struct{}
+	validated        application.Validated
+	ctx              context.Context
+	cancel           context.CancelFunc
+	done             chan struct{}
+	started          bool
+	quiesced         bool
+	cancelling       bool
+	armed            bool
+	generation       string
+	eventCounter     uint64
+	correlations     map[string]uint64
+	checkpointCancel context.CancelFunc
+	checkpointDone   chan struct{}
+	finalCheckpoint  *pluginprotocol.Frame
 }
 type incoming struct {
 	frame pluginprotocol.Frame
@@ -158,7 +157,7 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 		p.active = false
 		p.mu.Unlock()
 	}()
-	if err := send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.RuntimeStateV2Capability, pluginprotocol.RewaitCapability, pluginprotocol.RuntimeStateStreamCapability, pluginprotocol.CancelWatchCapability}}); err != nil {
+	if err := send(stream, pluginprotocol.Frame{Type: "ready", Role: "input", Capabilities: []string{pluginprotocol.RuntimeStateV2Capability, pluginprotocol.ContinuousWatchCapability, pluginprotocol.RuntimeStateStreamCapability, pluginprotocol.CancelWatchCapability}}); err != nil {
 		return err
 	}
 	frames := make(chan incoming, 16)
@@ -193,8 +192,6 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 			if w != nil {
 				w.quiesced = true
 				w.cancelling = true
-				w.preparedGeneration = ""
-				w.validated.Tracker.CancelPreparation()
 				w.cancel()
 				if w.checkpointCancel != nil {
 					w.checkpointCancel()
@@ -340,7 +337,7 @@ func send(stream pluginprotocol.SessionServer, frame pluginprotocol.Frame) error
 	if err != nil {
 		return err
 	}
-	if queued, ok := stream.(*queuedSession); ok && (frame.Type == "watch_result" || frame.Type == "resume_result" || frame.Type == "cancel_result") && frame.Accepted != nil && *frame.Accepted {
+	if queued, ok := stream.(*queuedSession); ok && (frame.Type == "watch_result" || frame.Type == "cancel_result") && frame.Accepted != nil && *frame.Accepted {
 		return queued.sendBarrier(payload)
 	}
 	return stream.Send(payload)
@@ -408,7 +405,7 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 			nonce := make([]byte, 16)
 			_, err := rand.Read(nonce)
 			var validated application.Validated
-			if err == nil && p.signals && r.frame.Schema != "" && r.frame.Schema != domain.SignalStateSchema {
+			if err == nil && p.signals && r.frame.Schema != "" && r.frame.Schema != domain.SignalStateSchema && r.frame.Schema != domain.ContinuousStateSchema {
 				err = errors.New("signal_state_incompatible")
 			}
 			if err == nil && !p.signals && r.frame.Schema == domain.SignalStateSchema {
@@ -424,6 +421,9 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 				if r.frame.Schema != "" {
 					validated.Tracker, err = domain.RestoreStream(validated.Config, r.frame.Schema, r.objects, p.observationBudget, p.historyBudget, p.signals)
 				}
+				if err == nil {
+					validated.Tracker.StartContinuous()
+				}
 			}
 			select {
 			case validations <- validation{frame.RequestID, frame.SubscriptionID, validated, err}:
@@ -431,7 +431,7 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 			}
 		}()
 	case "watch":
-		return send(stream, pluginprotocol.Frame{Type: "watch_result", RequestID: frame.RequestID, Accepted: boolean(false), Error: "github-pr-watch requires runtime_state_v2, rewait_v1 and runtime_state_stream_v1"})
+		return send(stream, pluginprotocol.Frame{Type: "watch_result", RequestID: frame.RequestID, Accepted: boolean(false), Error: "github-pr-watch requires runtime_state_v2, continuous_watch_v1, runtime_state_stream_v1 and cancel_watch_v1"})
 	case "activate_watch":
 		if w == nil || w.quiesced || frame.Generation == "" {
 			return nil
@@ -446,32 +446,12 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 			go p.poll(frame.SubscriptionID, w, observations)
 			return p.emit(stream, frame.SubscriptionID, w)
 		}
-		if frame.Generation != w.preparedGeneration || w.preparedGeneration == "" {
-			p.diagnostic(frame.SubscriptionID, errors.New("stale_generation"))
-			return nil
+		if w.armed || len(w.correlations) != 0 {
+			return errors.New("activation grant arrived before the previous terminal notice")
 		}
-		w.validated.Tracker.Resume(w.preparedSequence)
-		w.preparedGeneration = ""
 		w.generation = frame.Generation
 		w.armed = true
 		return p.emit(stream, frame.SubscriptionID, w)
-	case "resume_watch":
-		err := errors.New("watch_unavailable")
-		var sequence uint64
-		if w != nil && !w.quiesced && w.started && !w.armed && len(w.correlations) == 0 && w.preparedGeneration == "" && frame.Generation != w.generation {
-			sequence, err = w.validated.Tracker.ValidatePosition(frame.ConfirmationPosition)
-		}
-		if err != nil {
-			return send(stream, pluginprotocol.Frame{Type: "resume_result", RequestID: frame.RequestID, Accepted: boolean(false), Error: err.Error()})
-		}
-		// Preparation does not mutate comparison progress; only its matching grant
-		// can commit the position after the positive response has been sent.
-		if err := send(stream, pluginprotocol.Frame{Type: "resume_result", RequestID: frame.RequestID, Accepted: boolean(true)}); err != nil {
-			return err
-		}
-		w.preparedGeneration = frame.Generation
-		w.preparedSequence = sequence
-		w.validated.Tracker.Prepare(sequence)
 	case "delivery_notice":
 		if w == nil {
 			return nil
@@ -481,16 +461,23 @@ func (p *Plugin) handle(ctx context.Context, stream pluginprotocol.SessionServer
 			return nil
 		}
 		delete(w.correlations, frame.EventID)
-		w.validated.Tracker.Notice(sequence, frame.Status)
+		w.validated.Tracker.FinishSelection(sequence, frame.Status)
+		if w.finalCheckpoint != nil {
+			final := *w.finalCheckpoint
+			w.finalCheckpoint = nil
+			return p.handle(ctx, stream, watches, pending, validations, observations, final)
+		}
 	case "checkpoint":
 		if w == nil || w.cancelling {
 			return send(stream, pluginprotocol.Frame{Type: "checkpoint_result", RequestID: frame.RequestID, Accepted: boolean(false), Error: "watch unavailable"})
 		}
 		if frame.Quiesce {
 			w.quiesced = true
-			w.preparedGeneration = ""
-			w.validated.Tracker.CancelPreparation()
 			w.cancel()
+			if len(w.correlations) != 0 {
+				w.finalCheckpoint = &frame
+				return nil
+			}
 		}
 		if w.checkpointCancel != nil {
 			w.checkpointCancel()
@@ -540,10 +527,10 @@ func (p *Plugin) rejectRestore(stream pluginprotocol.SessionServer, pending map[
 }
 
 func (p *Plugin) emit(stream pluginprotocol.SessionServer, id string, w *watch) error {
-	if !w.armed || w.quiesced || w.preparedGeneration != "" {
+	if !w.armed || w.quiesced {
 		return nil
 	}
-	text, sequence, err := w.validated.Tracker.Context()
+	text, sequence, err := w.validated.Tracker.Select()
 	if err != nil {
 		p.diagnostic(id, err)
 		return nil

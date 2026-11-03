@@ -35,7 +35,7 @@ var _ = Describe("PR base revision and lifecycle continuity", Serial, func() {
 	// All contexts remain <=8192 UTF-8 bytes and carry no credential markers.
 	// Use round/checkpoint barriers, await children and close the TLS fixture.
 	// Budget: 10 seconds excluding shared builds; no new runtime/dependencies.
-	It("preserves lifecycle and independent signals with stable unequal base OIDs", Pending, Label("case:GPWS-I03"), func() {})
+	It("preserves lifecycle and independent signals with stable unequal base OIDs", Label("case:GPWS-I03"), signalBaseRevisionCase)
 })
 
 func signalBaseRevisionCase() {
@@ -54,7 +54,7 @@ func signalBaseRevisionCase() {
 	h.noEvent(t)
 	merged := h.checkpoint(t, "merged", "merged-baseline")
 	header := gpwState(t, merged)
-	if header["sequence"] != float64(1) || header["version"] != float64(3) || header["signal_version"] != float64(1) {
+	if header["sequence"] != float64(1) || header["version"] != float64(4) || header["signal_version"] != float64(1) {
 		t.Fatal("merged baseline reset or emitted changes", header)
 	}
 	gpwRequireContains(t, merged, signalBase(2), "UNKNOWN", "MERGED")
@@ -104,8 +104,7 @@ func signalBaseRevisionCase() {
 		t.Fatal("invented conflict or wrong current target", context)
 	}
 	gpwRequireContains(t, context, "MERGED", signalHead(), signalBase(2), "UNKNOWN")
-	position := context["confirmation_position"].(string)
-	signalResume(t, h, "continuity", event, position, 2)
+	signalGrantNext(t, h, "continuity", event, 2)
 	f.waitRounds(t, f.count()+2)
 	h.noEvent(t)
 	f.changeSignals(func(s *signalFixtureState) { s.Failed = true })
@@ -116,8 +115,7 @@ func signalBaseRevisionCase() {
 		t.Fatal("CI failed to notify independently on merged PR", context)
 	}
 	gpwRequireContains(t, context, "MERGED", signalHead(), signalBase(2), "FAILURE", "K000")
-	position = context["confirmation_position"].(string)
-	signalResume(t, h, "continuity", event, position, 3)
+	signalGrantNext(t, h, "continuity", event, 3)
 	f.waitRounds(t, f.count()+2)
 	h.noEvent(t)
 	saved := h.checkpoint(t, "continuity", "saved")

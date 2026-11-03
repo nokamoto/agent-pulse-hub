@@ -102,6 +102,12 @@ func (s *Store) LoadRuntimeSources(registrations []domain.Subscription, budget u
 		if !isDirectory(info) {
 			return nil, errors.New("runtime owner must be a real directory")
 		}
+		registration, owned := owners[id]
+		if owned {
+			if err := s.rejectContinuousRun(path, id); err != nil {
+				return nil, err
+			}
+		}
 		generations, err := s.runtimeGenerations(path)
 		if err != nil {
 			return nil, fmt.Errorf("runtime state registration %s: %w", id, err)
@@ -109,7 +115,6 @@ func (s *Store) LoadRuntimeSources(registrations []domain.Subscription, budget u
 		if len(generations) == 0 {
 			return nil, fmt.Errorf("runtime state registration %s has no committed generation", id)
 		}
-		registration, owned := owners[id]
 		if !owned {
 			continue
 		}
@@ -289,7 +294,12 @@ func (s *Store) BeginRuntimeStream(owner domain.Subscription, schema string, bud
 		return fail(err)
 	}
 	if !t.created && len(t.older) == 0 {
-		return fail(errors.New("existing runtime state has no generation"))
+		s.mu.Lock()
+		owned := s.ownsContinuousRun(owner.ID, t.ownerPath)
+		s.mu.Unlock()
+		if !owned {
+			return fail(errors.New("existing runtime state has no generation"))
+		}
 	}
 	t.generation = 1
 	if len(t.older) > 0 {

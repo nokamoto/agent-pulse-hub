@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -59,10 +61,14 @@ func TestMain(m *testing.M) {
 
 var gpwJournalMu sync.Mutex
 
-type gpwJournalStream struct{ grpc.ServerStream }
+type gpwJournalStream struct {
+	grpc.ServerStream
+	counts  map[string]int
+	pending []*wrapperspb.BytesValue
+}
 
 func gpwJournalSession(server any, stream grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-	return handler(server, &gpwJournalStream{stream})
+	return handler(server, &gpwJournalStream{ServerStream: stream, counts: make(map[string]int)})
 }
 
 func gpwRecord(message any) map[string]any {
@@ -128,9 +134,60 @@ func (s *gpwJournalStream) SendMsg(message any) error {
 }
 
 func (s *gpwJournalStream) RecvMsg(message any) error {
-	if err := s.ServerStream.RecvMsg(message); err != nil {
+	if len(s.pending) != 0 {
+		message.(*wrapperspb.BytesValue).Value = s.pending[0].Value
+		s.pending = s.pending[1:]
+	} else if err := s.ServerStream.RecvMsg(message); err != nil {
 		return err
 	}
-	gpwAppend(gpwRecord(message))
+	row := gpwRecord(message)
+	journal := os.Getenv("APH_GPW_PROTOCOL_JOURNAL")
+	if row != nil && journal != "" && (row["type"] == "activate_watch" || row["type"] == "delivery_notice") {
+		kind := row["type"].(string)
+		s.counts[kind]++
+		gate := filepath.Join(filepath.Dir(journal), "gate-"+kind+"-"+strconv.Itoa(s.counts[kind]))
+		cancelGate := false
+		if kind == "activate_watch" {
+			if id, ok := row["subscription_id"].(string); ok {
+				target := filepath.Join(filepath.Dir(journal), "gate-cancel-"+id)
+				if _, err := os.Stat(target); err == nil {
+					gate, cancelGate = target, true
+				}
+			}
+		}
+		if _, err := os.Stat(gate); err == nil {
+			gpwAppend(map[string]any{"type": kind + "_held", "subscription_id": row["subscription_id"]})
+			if kind == "activate_watch" {
+				// The cancel or quiesce frame proves admission is closed. Keep
+				// the original order at the application boundary.
+				for {
+					if len(s.pending) == 16 {
+						return os.ErrInvalid
+					}
+					next := &wrapperspb.BytesValue{}
+					if err := s.ServerStream.RecvMsg(next); err != nil {
+						return err
+					}
+					s.pending = append(s.pending, next)
+					frame := gpwRecord(next)
+					if frame["subscription_id"] == row["subscription_id"] && (cancelGate && frame["type"] == "cancel_watch" || !cancelGate && frame["type"] == "checkpoint" && frame["quiesce"] == true) {
+						break
+					}
+				}
+			} else {
+				for {
+					if _, err := os.Stat(gate); err != nil {
+						break
+					}
+					select {
+					case <-s.Context().Done():
+						return s.Context().Err()
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			}
+		}
+	}
+	gpwAppend(row)
 	return nil
 }
