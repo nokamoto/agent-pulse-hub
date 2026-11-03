@@ -70,6 +70,9 @@ func (f *gpwFixture) serve(w http.ResponseWriter, r *http.Request) {
 		f.signalReads = 0
 	}
 	s := f.snapshot
+	if strings.Contains(query, "ValidatePullRequest") {
+		s = f.signal
+	}
 	if r.Method == http.MethodGet {
 		if r.URL.Path != "/repos/acme/widget/commits/"+signalHead()+"/statuses" && r.URL.Path != "/api/v3/repos/acme/widget/commits/"+signalHead()+"/statuses" {
 			http.Error(w, "foreign status path", 400)
@@ -116,6 +119,19 @@ func (f *gpwFixture) serve(w http.ResponseWriter, r *http.Request) {
 	pr := map[string]any{"id": "PR17", "url": "https://github.com/acme/widget/pull/17", "headRefOid": signalHead(), "state": lifecycle, "mergedAt": mergedAt, "baseRepository": map[string]any{"id": "repo"}, "baseRefName": "main", "baseRefOid": signalBase(associated), "baseRef": map[string]any{"id": "main-ref", "target": map[string]any{"oid": signalBase(s.Base)}}, "mergeable": s.Conflict, "isDraft": s.Draft}
 	data := map[string]any{}
 	switch {
+	case strings.Contains(query, "ValidatePullRequestChecks"):
+		runs := []any{}
+		if s.CI > 0 {
+			runs = append(runs, map[string]any{"id": "K000", "name": "check-000", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": nil, "completedAt": nil, "detailsUrl": nil, "url": nil})
+		}
+		sample := gpwConnection(runs, s.CI > 1, "ci:1")
+		suite := map[string]any{"id": "suite", "app": map[string]any{"id": "app"}, "commit": map[string]any{"oid": signalHead()}, "all": sample, "latest": sample}
+		data["repository"] = map[string]any{"id": "repo", "object": map[string]any{"oid": signalHead(), "checkSuites": gpwConnection([]any{suite}, false, "")}}
+	case strings.Contains(query, "ValidatePullRequest"):
+		for _, name := range []string{"reviews", "comments", "reviewRequests", "reviewThreads"} {
+			pr[name] = gpwConnection([]any{}, false, "")
+		}
+		data["repository"] = map[string]any{"id": "repo", "pullRequest": pr}
 	case strings.Contains(query, "PullRequestSignals"):
 		f.signalReads++
 		if s.Failure == "pr-read" {

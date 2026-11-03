@@ -24,7 +24,7 @@ func signalObservationCase() {
 	t := GinkgoT()
 	directory := gpwSuite.newCase(t)
 	f := newGPWFixture(t)
-	f.changeSignals(func(s *signalFixtureState) { s.CI = 26 })
+	f.changeSignals(func(s *signalFixtureState) { s.CI = 26; s.Failure = "check-page" })
 	h := startGPWHost(t, directory, "github.com", f, nil)
 	if h.watch(t, "initial", "github.com")["accepted"] != true {
 		t.Fatal("watch rejected")
@@ -32,7 +32,11 @@ func signalObservationCase() {
 	if state := gpwState(t, h.checkpoint(t, "initial", "dormant")); state["baseline"] != false || state["signal_version"] != float64(1) {
 		t.Fatal(state)
 	}
-	f.changeSignals(func(s *signalFixtureState) { s.Failure = "check-page" })
+	calls := f.calls()
+	if len(calls) != 3 || !strings.Contains(calls[0].Query, "ValidatePullRequest(") ||
+		!strings.Contains(calls[1].Query, "ValidatePullRequestChecks(") || calls[2].Query != "REST" {
+		t.Fatal("unexpected preactivation requests", len(calls))
+	}
 	h.send(t, map[string]any{"type": "activate_watch", "subscription_id": "initial", "generation": "initial-1"})
 	if !waitMVP(t, time.Second, func() bool { return strings.Contains(readMVPFile(h.log), "service") }) {
 		t.Fatal("initial failed page not observed")

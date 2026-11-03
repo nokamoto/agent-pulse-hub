@@ -63,11 +63,11 @@ func (c *Client) budget() uint64 {
 }
 
 func (c *Client) Validate(ctx context.Context, config domain.WatchConfig, token string) error {
+	fields, repositoryFields := aggregateFields, ""
 	if c.signals {
-		_, err := c.Observe(ctx, config, token)
-		return err
+		fields, repositoryFields = signalPRFields, "id "
 	}
-	query := `query ValidatePullRequest($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name,followRenames:false){pullRequest(number:$number){` + aggregateFields + ` reviews(first:1){nodes{` + reviewFields + `} ` + pageInfo + `} comments(first:1){nodes{` + discussionFields + `} ` + pageInfo + `} reviewRequests(first:1){nodes{` + requestFields + `} ` + pageInfo + `} reviewThreads(first:1){nodes{` + threadFields + ` comments(first:1){nodes{` + commentFields + `} ` + pageInfo + `}} ` + pageInfo + `}}}}`
+	query := `query ValidatePullRequest($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name,followRenames:false){` + repositoryFields + `pullRequest(number:$number){` + fields + ` reviews(first:1){nodes{` + reviewFields + `} ` + pageInfo + `} comments(first:1){nodes{` + discussionFields + `} ` + pageInfo + `} reviewRequests(first:1){nodes{` + requestFields + `} ` + pageInfo + `} reviewThreads(first:1){nodes{` + threadFields + ` comments(first:1){nodes{` + commentFields + `} ` + pageInfo + `}} ` + pageInfo + `}}}}`
 	total := uint64(0)
 	data, err := c.request(ctx, config, token, query, variables(config), &total)
 	if err != nil {
@@ -77,9 +77,21 @@ func (c *Client) Validate(ctx context.Context, config domain.WatchConfig, token 
 	if err != nil {
 		return err
 	}
-	if _, err := parseAggregate(pr); err != nil {
+	if err := validateDiscussion(pr); err != nil {
 		return err
 	}
+	if c.signals {
+		_, observed, err := parseSignalPR(data)
+		if err != nil {
+			return err
+		}
+		return c.validateSignalAccess(ctx, config, token, observed, &total)
+	}
+	_, err = parseAggregate(pr)
+	return err
+}
+
+func validateDiscussion(pr map[string]json.RawMessage) error {
 	for name, kind := range map[string]string{"reviews": "review", "comments": "conversation", "reviewRequests": "request", "reviewThreads": "thread"} {
 		nodes, _, _, err := connection(pr[name])
 		if err != nil {
