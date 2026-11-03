@@ -21,6 +21,47 @@ func (p *pluginState) participates() bool {
 	return p.capabilities["runtime_state_v1"] || p.capabilities["runtime_state_v2"]
 }
 
+func (h *Hub) continueWatchLocked(name string, port PluginPort, notice RuntimeNotice) {
+	id := notice.SubscriptionID
+	wait := h.notificationWaits[id]
+	if wait == nil || !wait.outstanding || wait.eventID != notice.EventID {
+		return
+	}
+	wait.outstanding = false
+	wait.eventID = ""
+	if h.stopping || h.cancellations[id] != nil {
+		return
+	}
+	regrant := func() {
+		state := h.plugins[name]
+		registration, exists := h.registrations[id]
+		if !h.stopping && h.cancellations[id] == nil && exists && registration.Active && state != nil && state.port == port && state.available && h.notificationWaits[id] == wait {
+			h.queueActivationLocked(name, port, id)
+		}
+	}
+	if notice.Status == "discarded" {
+		life := h.lifecycleLocked(id)
+		h.activationWait.Add(1)
+		go func() {
+			defer h.activationWait.Done()
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-life.ctx.Done():
+				return
+			case <-h.ctx.Done():
+				return
+			case <-timer.C:
+			}
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			regrant()
+		}()
+		return
+	}
+	regrant()
+}
+
 // queueActivationLocked runs under the same lifecycle lock as commit and stop.
 // Each watch is queued once, when committed. Capacity is bounded by the shared
 // registration limit. The deadline begins at enqueue, including stream waits.
@@ -28,7 +69,7 @@ func (h *Hub) queueActivationLocked(name string, port PluginPort, id domain.Subs
 	if h.stopping || h.cancellations[id] != nil {
 		return
 	}
-	if h.plugins[name].capabilities["rewait_v1"] {
+	if h.plugins[name].capabilities["continuous_watch_v1"] {
 		generation, err := newID()
 		if err != nil {
 			go h.pluginUnavailable(name, port, fmt.Errorf("create notification generation: %w", err))
@@ -88,10 +129,12 @@ func (h *Hub) dispatchActivations(name string, batch *activationBatch) {
 		err := batch.ctx.Err()
 		if err == nil {
 			if generation != "" {
-				if capable, ok := batch.port.(RewaitPluginPort); ok {
+				if capable, ok := batch.port.(interface {
+					ActivateGeneration(context.Context, domain.SubscriptionID, string) error
+				}); ok {
 					err = capable.ActivateGeneration(grantCtx, id, generation)
 				} else {
-					err = fmt.Errorf("input does not implement repeated waiting")
+					err = fmt.Errorf("input does not implement generation activation")
 				}
 			} else {
 				err = batch.port.ActivateWatch(grantCtx, id)

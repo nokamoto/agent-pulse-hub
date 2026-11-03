@@ -5,9 +5,8 @@ package main
 import . "github.com/onsi/ginkgo/v2"
 
 // Governed by docs/design/github-pr-watch.md and github-pr-watch-capacity.md.
-// Stable IDs retain category, authentication and capacity coverage. Continuous
-// admission revises all five contracts; static Pending defers their product
-// wiring, not their method, expected behavior or feasibility.
+// Stable IDs retain category, authentication and capacity coverage alongside
+// continuous admission and restart verification.
 var _ = Describe("Continuous GitHub PR watch acceptance", Serial, func() {
 	// Actual plugin/public Session, verified TLS and controlled credentials/time.
 	// Fail initial pagination, then baseline H1/C1/R1/T1/reply silently on two
@@ -17,7 +16,7 @@ var _ = Describe("Continuous GitHub PR watch acceptance", Serial, func() {
 	// Preserve credential precedence/no-fallback and selected-origin secrecy.
 	// Oversized versus empty bodies have explicit omissions; partial GraphQL or
 	// nested-page errors never fabricate deletion or advance complete progress.
-	It("observes a silent complete baseline and bounded changes with host-scoped authentication", Pending, Label("case:GPW-I01"), func() {})
+	It("observes a silent complete baseline and bounded changes with host-scoped authentication", Label("case:GPW-I01"), gpwObservationCase)
 
 	// Actual hub/client/plugin; model-output for normal routing, existing ND
 	// output Session fixture for controlled terminal results. Register A and B.
@@ -30,7 +29,7 @@ var _ = Describe("Continuous GitHub PR watch acceptance", Serial, func() {
 	// no coverage/grant mutation. Hold a later grant at the case-local Session
 	// relay, unsubscribe A, release it and late results; A stays cancelled,
 	// B continues. Use real unsubscribe/files/ledger; never fake core policy.
-	It("automatically notifies later distinct changes across terminal outcomes and fences cancelled grants", Pending, Label("case:GPW-I02"), func() {})
+	It("automatically notifies later distinct changes across terminal outcomes and fences cancelled grants", Label("case:GPW-I02"), gpwContinuousCase)
 
 	// Actual hub/client/plugin/model-output and temporary state. Accept C2/H2,
 	// stop with successful final save, inspect marker absence; restart retained
@@ -41,7 +40,7 @@ var _ = Describe("Continuous GitHub PR watch acceptance", Serial, func() {
 	// no source activation/retry before deliberate recovery. Separate stopped
 	// copy with incompatible payload fails without reset. Delete/recreate:
 	// new ID/nonce and silent baseline, unrelated saved progress stays intact.
-	It("preserves clean restart and blocks ambiguous progress after a failed final save", Pending, Label("case:GPW-I03"), func() {})
+	It("preserves clean restart and blocks ambiguous progress after a failed final save", Label("case:GPW-I03"), gpwRestartCase)
 
 	// Actual plugin/public Session and existing first:25 TLS pagination fixture.
 	// Baseline 1,000 mixed items, repeat, then add C1001, edit C0001, remove
@@ -50,7 +49,7 @@ var _ = Describe("Continuous GitHub PR watch acceptance", Serial, func() {
 	// Save >32 KiB over bounded stream objects and restore actual new process.
 	// Same source is silent; another old-item edit automatically notifies.
 	// Require <=32768-byte objects and <=65536-byte frames; no item-count cap.
-	It("retains thousand-item acquisition and streamed progress through recovery and restore", Pending, Label("case:GPW-I04"), func() {})
+	It("retains thousand-item acquisition and streamed progress through recovery and restore", Label("case:GPW-I04"), gpwLargeCase)
 
 	// Actual hub/client/plugin/model-output, baseline 100 items and seed P0.
 	// Gate the seed's terminal notice using a case-local ordered Session relay;
@@ -67,5 +66,5 @@ var _ = Describe("Continuous GitHub PR watch acceptance", Serial, func() {
 	// without fallback. Live save obstruction warns, monitoring continues.
 	// Relay forwards exact public frames and gates timing only; the product
 	// owns comparisons, grants, ledger, persistence and cancellation.
-	It("automatically drains forty frozen-source changes across streamed restart and legacy migration", Pending, Label("case:GPW-I05"), func() {})
+	It("automatically drains forty frozen-source changes across streamed restart and legacy migration", Label("case:GPW-I05"), gpwContinuationCase)
 })

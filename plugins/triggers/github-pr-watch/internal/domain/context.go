@@ -5,9 +5,7 @@ import (
 	"sort"
 )
 
-// Context selects only a contiguous prefix. Nothing after the returned position
-// is assessed or discarded; another explicit wait can select the retained tail.
-func (t *Tracker) Context() (string, uint64, error) {
+func (t *Tracker) context() (string, uint64, error) {
 	count := 0
 	selected := make([]Change, 0, 8)
 	for _, c := range t.Saved.Journal {
@@ -28,9 +26,6 @@ func (t *Tracker) Context() (string, uint64, error) {
 	encode := func(changes []Change) ([]byte, error) {
 		through := changes[len(changes)-1].Sequence
 		continuation := map[string]any{"has_more": len(changes) < count, "remaining_changes": count - len(changes), "through_sequence": through, "observed_through_sequence": t.Saved.Sequence}
-		if len(changes) < count {
-			continuation["operation"] = "rewait"
-		}
 		views := make([]map[string]any, 0, len(changes))
 		omissions := []any{}
 		for _, c := range changes {

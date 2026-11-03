@@ -10,7 +10,7 @@ func TestCancellationCapabilityComposesWithValidInputProfiles(t *testing.T) {
 		{CancelWatchCapability},
 		{RuntimeStateCapability, CancelWatchCapability},
 		{CancelWatchCapability, RuntimeStateV2Capability},
-		{RewaitCapability, CancelWatchCapability, RuntimeStateV2Capability},
+		{ContinuousWatchCapability, CancelWatchCapability, RuntimeStateV2Capability},
 	} {
 		if _, err := Encode(Frame{Type: "ready", Role: "input", Capabilities: capabilities}); err != nil {
 			t.Fatalf("capabilities %v: %v", capabilities, err)
@@ -19,7 +19,7 @@ func TestCancellationCapabilityComposesWithValidInputProfiles(t *testing.T) {
 	for _, frame := range []Frame{
 		{Type: "ready", Role: "output", Capabilities: []string{CancelWatchCapability}},
 		{Type: "ready", Role: "input", Capabilities: []string{CancelWatchCapability, CancelWatchCapability}},
-		{Type: "ready", Role: "input", Capabilities: []string{CancelWatchCapability, RewaitCapability}},
+		{Type: "ready", Role: "input", Capabilities: []string{CancelWatchCapability, ContinuousWatchCapability}},
 	} {
 		if _, err := Encode(frame); err == nil {
 			t.Fatalf("invalid capability profile encoded: %+v", frame)

@@ -3,10 +3,7 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,7 +21,7 @@ func gpwState(t mvpReporter, checkpoint map[string]any) map[string]any {
 		t.Fatalf("missing streamed snapshot: %v", checkpoint)
 	}
 	header, ok := chunks[0].(map[string]any)
-	if !ok || header["kind"] != "header" || checkpoint["schema"] != "github-pr-watch-v3" {
+	if !ok || header["kind"] != "header" || checkpoint["schema"] != "github-pr-watch-v4" {
 		t.Fatalf("bad snapshot header %v", checkpoint)
 	}
 	return header
@@ -92,32 +89,6 @@ func gpwRecords(t mvpReporter, path string, count int) []map[string]any {
 		t.Fatalf("expected %d records in %s: %v", count, path, modelRecords(t, path))
 	}
 	return modelRecords(t, path)
-}
-
-func gpwOperation() string {
-	bits := make([]byte, 16)
-	_, _ = rand.Read(bits)
-	return fmt.Sprintf("%d:%s", time.Now().UnixMilli(), hex.EncodeToString(bits))
-}
-
-func gpwRewait(t mvpReporter, daemon *mvpDaemon, id, operation, position string) mvpCLIResult {
-	t.Helper()
-	path := writeMVPObject(t, daemon.workRoot, "position-"+strings.ReplaceAll(operation, ":", "-")+".json", position)
-	return gpwSuite.runCLI(t, 3*time.Second, "rewait", "--subscription-id", id, "--operation-id", operation, "--confirmation-position-file", path, "--address", daemon.address)
-}
-
-func gpwRewaitEventually(t mvpReporter, daemon *mvpDaemon, id, position string) (string, mvpCLIResult) {
-	t.Helper()
-	operation := gpwOperation()
-	var result mvpCLIResult
-	if !waitMVP(t, 3*time.Second, func() bool {
-		result = gpwRewait(t, daemon, id, operation, position)
-		response := parseMVPResponse(t, result)
-		return response["code"] != "rewait_busy"
-	}) {
-		t.Fatalf("rewait remained busy: %s log=%s", result.stdout, readMVPFile(daemon.logPath))
-	}
-	return operation, result
 }
 
 func gpwSavedFiles(t mvpReporter, state, id string) []string {

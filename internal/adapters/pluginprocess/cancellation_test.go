@@ -188,36 +188,30 @@ func TestCancellationSendsOwedNoticeFirstAndActualSendFailureInvalidates(t *test
 	}
 }
 
-func TestFenceExpiresCheckpointAndPreparationWithoutWaitingForTheirResults(t *testing.T) {
+func TestFenceExpiresCheckpointWithoutWaitingForItsResult(t *testing.T) {
 	p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{})
 	acceptV2Watch(t, p, session, "a")
 	p.mu.Lock()
-	p.capabilities[pluginprotocol.RewaitCapability] = true
+	p.capabilities[pluginprotocol.ContinuousWatchCapability] = true
 	p.mu.Unlock()
 	checkpointResult := make(chan error, 1)
-	resumeResult := make(chan error, 1)
 	go func() {
 		_, err := p.Checkpoint(context.Background(), hub.RuntimeCheckpointRequest{SubscriptionID: "a"})
 		checkpointResult <- err
 	}()
 	checkpoint := readFrame(t, session)
-	go func() {
-		resumeResult <- p.ResumeWatch(context.Background(), hub.ResumeWatchRequest{RequestID: "resume", SubscriptionID: "a", Generation: "new", ConfirmationPosition: "position"})
-	}()
-	readFrame(t, session)
 	if err := p.FenceWatch("a"); err != nil {
 		t.Fatal(err)
 	}
-	if await(t, checkpointResult) == nil || await(t, resumeResult) == nil {
+	if await(t, checkpointResult) == nil {
 		t.Fatal("fenced operation succeeded")
 	}
 	p.handleFrame(pluginprotocol.Frame{Type: "checkpoint_result", RequestID: checkpoint.RequestID, Accepted: boolPointer(true), State: jsonObject(t, `{"schema":"v1","payload":{}}`)})
-	p.handleFrame(pluginprotocol.Frame{Type: "resume_result", RequestID: "resume", Accepted: boolPointer(true)})
 	p.mu.Lock()
-	staged, failed, pending := p.watches["a"].stagedGeneration, p.failed, len(p.pending)
+	failed, pending := p.failed, len(p.pending)
 	p.mu.Unlock()
-	if staged != "" || failed || pending != 0 {
-		t.Fatalf("late work revived watch: %q %v %d", staged, failed, pending)
+	if failed || pending != 0 {
+		t.Fatalf("late work revived watch: %v %d", failed, pending)
 	}
 }
 
@@ -293,17 +287,16 @@ func TestCancellationExpiresStreamAndIgnoresLateChunks(t *testing.T) {
 }
 
 func TestCancellationFenceWinsQueuedActivationAndPreservesOtherWatch(t *testing.T) {
-	for _, rewait := range []bool{false, true} {
-		t.Run(map[bool]string{false: "v2", true: "rewait"}[rewait], func(t *testing.T) {
+	for _, continuous := range []bool{false, true} {
+		t.Run(map[bool]string{false: "v2", true: "continuous"}[continuous], func(t *testing.T) {
 			p, session := readyProcess(t, domain.InputRole, hub.PluginHandlers{})
 			acceptV2Watch(t, p, session, "a")
 			acceptV2Watch(t, p, session, "b")
 			generation := ""
-			if rewait {
+			if continuous {
 				generation = "next"
 				p.mu.Lock()
-				p.capabilities[pluginprotocol.RewaitCapability] = true
-				p.watches["a"].stagedGeneration = generation
+				p.capabilities[pluginprotocol.ContinuousWatchCapability] = true
 				p.mu.Unlock()
 			}
 			// The stream cannot issue the target grant until after the fence.
@@ -318,10 +311,10 @@ func TestCancellationFenceWinsQueuedActivationAndPreservesOtherWatch(t *testing.
 				t.Fatal("fenced queued grant succeeded")
 			}
 			p.mu.Lock()
-			granted, staged, failed := p.watches["a"].granted, p.watches["a"].stagedGeneration, p.failed
+			granted, failed := p.watches["a"].granted, p.failed
 			p.mu.Unlock()
-			if granted || staged != "" || failed || len(session.outgoing) != 0 {
-				t.Fatal("fenced grant issued, retained preparation, or invalidated input")
+			if granted || failed || len(session.outgoing) != 0 {
+				t.Fatal("fenced grant issued or invalidated input")
 			}
 			if err := p.activateGeneration(context.Background(), "b", generation); err != nil {
 				t.Fatal(err)

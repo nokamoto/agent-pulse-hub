@@ -96,7 +96,7 @@ func (h *Hub) PrepareNotifications() error {
 }
 
 func (h *Hub) notificationNowLocked() time.Time {
-	now := h.rewaitNow().UTC()
+	now := h.notificationClock().UTC()
 	if h.notifications != nil && now.After(h.notifications.lastTime) {
 		h.notifications.lastTime = now
 	}
@@ -163,10 +163,6 @@ func (h *Hub) admitNotificationLocked(item queuedEvent) bool {
 	}
 	ns.work[id] = item
 	h.pendingEvents++
-	if wait := h.notificationWaits[item.event.SubscriptionID]; wait != nil {
-		wait.armed = false
-		wait.outstanding = true
-	}
 	h.signalQueueLocked()
 	h.logger.Info("event_admitted", "subscription_id", n.Event.SubscriptionID, "delivery_id", n.Event.ID)
 	return true

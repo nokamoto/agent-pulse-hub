@@ -16,7 +16,7 @@ var _ = Describe("Independent continuous PR signals", Serial, func() {
 	// UNKNOWN-only and recovery-only rounds are silent. Fail status/conflict
 	// retrieval and recover: no failed-round advancement, pending change reports.
 	// Assert <=8192 bytes, fixed waiting context, selected origins and no secrets.
-	It("automatically notifies each independent signal without advancing failed acquisition", Pending, Label("case:GPWS-I01"), func() {})
+	It("automatically notifies each independent signal without advancing failed acquisition", Label("case:GPWS-I01"), signalObservationCase)
 
 	// Actual hub/client/plugin/model-output and temporary core tree. Baseline
 	// 128 CI records (256-byte metadata), existing failed CI/conflict/Ready;
@@ -33,5 +33,5 @@ var _ = Describe("Independent continuous PR signals", Serial, func() {
 	// replay, retained suffix remains. Reject v1/v2 lacking signal coverage and
 	// mismatched v4 profile before activation without changing saved bytes.
 	// Context/object/frame bounds remain 8192/32768/65536. No private state.
-	It("automatically continues signals across clean restart and preserves legacy selected progress", Pending, Label("case:GPWS-I02"), func() {})
+	It("automatically continues signals across clean restart and preserves legacy selected progress", Label("case:GPWS-I02"), signalRestartCase)
 })

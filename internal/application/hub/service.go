@@ -51,6 +51,7 @@ type PluginHandlers struct {
 	Ready       func(capabilities []string)
 	Event       func(subscriptionID, eventID, context string) (terminalStatus string)
 	StateEvent  func(subscriptionID, eventID, generation, context string) (terminalStatus string)
+	StateNotice func(RuntimeNotice)
 	Unavailable func(error)
 }
 
@@ -124,14 +125,15 @@ type queuedEvent struct {
 }
 
 type runtimeWatch struct {
-	mu           sync.Mutex
-	stream       *runtimeStreamSink // protected by Hub.mu
-	state        *jsonvalue.Value
-	outcomes     []RuntimeNotice
-	inputPort    PluginPort
-	inputName    string
-	registration domain.Subscription
-	unavailable  bool
+	continuousSession string
+	mu                sync.Mutex
+	stream            *runtimeStreamSink // protected by Hub.mu
+	state             *jsonvalue.Value
+	outcomes          []RuntimeNotice
+	inputPort         PluginPort
+	inputName         string
+	registration      domain.Subscription
+	unavailable       bool
 }
 
 // RegistrationStore commits an accepted route before the Hub reports success.
@@ -154,6 +156,7 @@ type Hub struct {
 	pendingByKey         map[string]*pendingRegistration
 	store                RegistrationStore
 	runtimeStore         RuntimeStateStore
+	continuousSession    string
 	restore              []domain.Subscription
 	runtimeStates        map[domain.SubscriptionID]*jsonvalue.Value
 	runtimeWatches       map[domain.SubscriptionID]*runtimeWatch
@@ -171,10 +174,7 @@ type Hub struct {
 	activationBatches    map[string]*activationBatch
 	activationWait       sync.WaitGroup
 	notificationWaits    map[domain.SubscriptionID]*notificationWait
-	rewaitReceipts       map[string]*rewaitReceipt
-	sessionStartMillis   int64
-	rewaitNow            func() time.Time
-	rewaitWait           sync.WaitGroup
+	notificationClock    func() time.Time
 	cancellations        map[domain.SubscriptionID]*cancellationState
 	lifecycles           map[domain.SubscriptionID]*subscriptionLifecycle
 	cancellationWait     sync.WaitGroup
@@ -212,11 +212,9 @@ func New(logger *slog.Logger) *Hub {
 		runtimeSaveGate:      make(chan struct{}, runtimeSaveWorkers),
 		activationBatches:    make(map[string]*activationBatch),
 		notificationWaits:    make(map[domain.SubscriptionID]*notificationWait),
-		rewaitReceipts:       make(map[string]*rewaitReceipt),
 		cancellations:        make(map[domain.SubscriptionID]*cancellationState),
 		lifecycles:           make(map[domain.SubscriptionID]*subscriptionLifecycle),
-		sessionStartMillis:   time.Now().UnixMilli(),
-		rewaitNow:            time.Now,
+		notificationClock:    time.Now,
 		ctx:                  ctx,
 		cancel:               cancel,
 		logger:               logger,
@@ -392,6 +390,23 @@ func (h *Hub) Restore(ctx context.Context) error {
 			return fmt.Errorf("restore registration %s: a referenced plugin became unavailable", registration.ID)
 		}
 	}
+	markers := map[domain.SubscriptionID]string{}
+	for _, registration := range registrations {
+		if !h.plugins[registration.InputPlugin].capabilities["continuous_watch_v1"] {
+			continue
+		}
+		store, session, err := h.continuousRunLocked()
+		if err == nil {
+			err = store.BeginContinuousRun(registration.ID, session)
+		}
+		if err != nil {
+			for id, created := range markers {
+				err = errors.Join(err, store.EndContinuousRun(id, created))
+			}
+			return fmt.Errorf("restore registration %s continuous run marker: %w", registration.ID, err)
+		}
+		markers[registration.ID] = session
+	}
 	for _, registration := range registrations {
 		registration.Active = true
 		key := registrationKey(registration.InputPlugin, registration.WatchArgs, registration.OutputPlugin, registration.DestinationArgs)
@@ -400,7 +415,8 @@ func (h *Hub) Restore(ctx context.Context) error {
 		h.activeByKey[key] = registration.ID
 		if input := h.plugins[registration.InputPlugin]; input.participates() {
 			h.runtimeWatches[registration.ID] = &runtimeWatch{
-				state: h.runtimeStates[registration.ID], inputPort: input.port, inputName: registration.InputPlugin, registration: registration,
+				continuousSession: markers[registration.ID],
+				state:             h.runtimeStates[registration.ID], inputPort: input.port, inputName: registration.InputPlugin, registration: registration,
 			}
 		}
 	}
@@ -454,6 +470,11 @@ func (h *Hub) StartPlugins(ctx context.Context) {
 				},
 				StateEvent: func(subscriptionID, eventID, generation, eventContext string) string {
 					return h.acceptGenerationEvent(item.name, item.port, subscriptionID, eventID, generation, eventContext)
+				},
+				StateNotice: func(notice RuntimeNotice) {
+					h.mu.Lock()
+					defer h.mu.Unlock()
+					h.continueWatchLocked(item.name, item.port, notice)
 				},
 				Unavailable: func(err error) { h.pluginUnavailable(item.name, item.port, err) },
 			}
@@ -722,8 +743,19 @@ func (h *Hub) activate(pending *pendingRegistration) error {
 		Active:          false,
 	}
 	if outputState != nil && outputState.port == pending.output && outputState.available && !h.stopping {
+		var continuousSession string
 		if h.store != nil {
-			if err := h.store.Commit(registration); err != nil {
+			var err error
+			if inputState.capabilities["continuous_watch_v1"] {
+				var store continuousStore
+				store, continuousSession, err = h.continuousRunLocked()
+				if err == nil {
+					err = store.CommitContinuous(registration, continuousSession)
+				}
+			} else {
+				err = h.store.Commit(registration)
+			}
+			if err != nil {
 				message := "Registration could not be saved: " + bounded(safeError(err), defaultOperationMax-34)
 				h.registrations[pending.id] = registration
 				h.finishPendingLocked(pending, &Error{Code: "storage_error", Message: message}, true)
@@ -739,7 +771,8 @@ func (h *Hub) activate(pending *pendingRegistration) error {
 		h.registrations[pending.id] = registration
 		if pending.runtimeState {
 			h.runtimeWatches[pending.id] = &runtimeWatch{
-				inputPort: pending.input, inputName: pending.inputName, registration: registration,
+				continuousSession: continuousSession,
+				inputPort:         pending.input, inputName: pending.inputName, registration: registration,
 			}
 			h.ensureRuntimeLoopLocked(pending.inputName)
 		}
@@ -827,16 +860,23 @@ func (h *Hub) acceptGenerationEvent(pluginName string, port PluginPort, subscrip
 			return discard("discarded")
 		}
 	}
-	if state.capabilities["rewait_v1"] {
+	continuous := state.capabilities["continuous_watch_v1"]
+	if continuous {
 		wait := h.notificationWaits[registration.ID]
 		if wait == nil || generation == "" || wait.generation != generation || !wait.armed {
 			h.logger.Warn("event_rejected", "input_plugin", pluginName, "subscription_id", subscriptionID, "reason", "stale or consumed notification generation")
 			return discard("discarded")
 		}
+		wait.armed = false
+		wait.outstanding = true
+		wait.eventID = eventID
 	}
 	outputState := h.plugins[registration.OutputPlugin]
 	if outputState == nil || outputState.role != domain.OutputRole || !outputState.available {
 		h.logger.Warn("event_rejected", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "reason", "output plugin unavailable")
+		if continuous {
+			return discard("discarded")
+		}
 		return discard("failed")
 	}
 	if h.pendingEvents >= MaxDeliveries {
@@ -875,10 +915,6 @@ func (h *Hub) acceptGenerationEvent(pluginName string, port PluginPort, subscrip
 	select {
 	case h.queue <- queuedEvent{event: event, outputPort: outputState.port, inputPort: port, eventID: eventID}:
 		h.signalQueueLocked()
-		if wait := h.notificationWaits[registration.ID]; wait != nil {
-			wait.armed = false
-			wait.outstanding = true
-		}
 		h.logger.Info("event_admitted", "input_plugin", pluginName, "output_plugin", registration.OutputPlugin, "subscription_id", subscriptionID, "delivery_id", event.ID, "received_at", receivedAt)
 		return ""
 	default:
@@ -1129,7 +1165,6 @@ func (h *Hub) Shutdown() {
 		h.notifications.noticeWait.Wait()
 	}
 	h.activationWait.Wait()
-	h.rewaitWait.Wait()
 	h.cancellationWait.Wait()
 	if runtimeDone != nil {
 		<-runtimeDone

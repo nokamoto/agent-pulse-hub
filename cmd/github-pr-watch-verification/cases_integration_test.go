@@ -3,9 +3,7 @@
 package main
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -29,7 +27,7 @@ func gpwState(t mvpReporter, checkpoint map[string]any) map[string]any {
 		t.Fatalf("missing streamed snapshot: %v", checkpoint)
 	}
 	header, ok := chunks[0].(map[string]any)
-	if !ok || header["kind"] != "header" || checkpoint["schema"] != "github-pr-watch-v2" {
+	if !ok || header["kind"] != "header" || checkpoint["schema"] != "github-pr-watch-v4" {
 		t.Fatalf("bad snapshot header %v", checkpoint)
 	}
 	return header
@@ -208,10 +206,6 @@ func gpwObservationCase() {
 		t.Fatal("independent hosts reused position")
 	}
 	enterprise.send(t, map[string]any{"type": "delivery_notice", "subscription_id": "enterprise", "event_id": enterpriseEvent["event_id"], "status": "accepted"})
-	enterprise.send(t, map[string]any{"type": "resume_watch", "request_id": "foreign", "subscription_id": "enterprise", "generation": "eg2", "confirmation_position": context["confirmation_position"]})
-	if result := enterprise.receive(t, "resume_result", "foreign"); result["accepted"] != false {
-		t.Fatalf("foreign host position accepted: %+v", result)
-	}
 	for _, request := range enterpriseFixture.calls() {
 		if request.Host != "ghes.example.test" || request.Path != "/api/graphql" || request.Token != "fixture-saved-token" {
 			t.Fatalf("GHES host credential isolation: %+v", request)
@@ -259,154 +253,15 @@ func gpwRecords(t mvpReporter, path string, count int) []map[string]any {
 	return modelRecords(t, path)
 }
 
-func gpwOperation() string {
-	bits := make([]byte, 16)
-	_, _ = rand.Read(bits)
-	return fmt.Sprintf("%d:%s", time.Now().UnixMilli(), hex.EncodeToString(bits))
-}
-
-func gpwRewait(t mvpReporter, daemon *mvpDaemon, id, operation, position string) mvpCLIResult {
-	t.Helper()
-	path := writeMVPObject(t, daemon.workRoot, "position-"+strings.ReplaceAll(operation, ":", "-")+".json", position)
-	return gpwSuite.runCLI(t, 3*time.Second, "rewait", "--subscription-id", id, "--operation-id", operation, "--confirmation-position-file", path, "--address", daemon.address)
-}
-
-func gpwRewaitEventually(t mvpReporter, daemon *mvpDaemon, id, position string) (string, mvpCLIResult) {
-	t.Helper()
-	operation := gpwOperation()
-	var result mvpCLIResult
-	if !waitMVP(t, 3*time.Second, func() bool {
-		result = gpwRewait(t, daemon, id, operation, position)
-		response := parseMVPResponse(t, result)
-		return response["code"] != "rewait_busy"
-	}) {
-		t.Fatalf("rewait remained busy: %s log=%s", result.stdout, readMVPFile(daemon.logPath))
-	}
-	return operation, result
-}
-
-func gpwRewaitCase() {
-	t := GinkgoT()
-	directory := gpwSuite.newCase(t)
-	fixture := newGPWFixture(t)
-	fixture.prelude = true
-	daemon, output, other, _ := gpwNewDaemon(t, fixture, directory)
-	hold := filepath.Join(directory, "hold-checkpoint")
-	if err := os.WriteFile(hold, []byte("hold"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// The environment is inherited at launch, so restart before registration with
-	// a test-only stream barrier. Product control and checkpoint logic stay real.
-	daemon.stop(t, gpwSuite.hub)
-	gpwDaemonEnvironment["APH_GPW_HOLD_CHECKPOINT_FILE"] = hold
-	daemon = gpwSuite.startDaemonWithState(t, directory, daemon.config, freeMVPAddress(t), filepath.Join(directory, "state"))
-	DeferCleanup(daemon.cleanup)
-	id := gpwRegister(t, daemon, output, gpwArgs("github.com"))
-	initialRegistration, err := os.ReadFile(filepath.Join(directory, "state", "registrations", id+".json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fixture.waitRounds(t, 2)
-	fixture.set(1, "complete")
-	first := gpwRecords(t, output, 1)
-	p1 := gpwContext(t, first[0]["context"])["confirmation_position"].(string)
-	fixture.set(2, "complete")
-	fixture.waitRounds(t, fixture.count()+2)
-	journal := filepath.Join(directory, "protocol.jsonl")
-	if !waitMVP(t, 6*time.Second, func() bool { return strings.Contains(readMVPFile(journal), "checkpoint_held") }) {
-		t.Fatalf("checkpoint fence not held: %s %s", readMVPFile(journal), readMVPFile(daemon.logPath))
-	}
-	busy := gpwRewait(t, daemon, id, gpwOperation(), p1)
-	if response := parseMVPResponse(t, busy); response["code"] != "rewait_busy" {
-		t.Fatalf("fence did not reject rewait: %s", busy.stdout)
-	}
-	if len(modelRecords(t, output)) != 1 {
-		t.Fatal("consumed generation notified while agent worked")
-	}
-	if err := os.Remove(hold); err != nil {
-		t.Fatal(err)
-	}
-	operation, result := gpwRewaitEventually(t, daemon, id, p1)
-	if response := parseMVPResponse(t, result); result.code() != 0 || response["subscription_id"] != id {
-		t.Fatalf("rewait: %s %s", result.stdout, result.stderr)
-	}
-	rows := gpwRecords(t, output, 2)
-	second := gpwContext(t, rows[1]["context"])
-	gpwRequireContains(t, second, "C2", "H2", "R1", "DISMISSED", "T1", "Q2")
-	// C1b itself was covered by P1; the later changes remain distinct.
-	for _, change := range second["changes"].([]any) {
-		item := change.(map[string]any)["item"].(map[string]any)
-		if item["id"] == "C1b" {
-			t.Fatalf("P1-covered change repeated: %v", change)
-		}
-	}
-	duplicate := gpwRewait(t, daemon, id, operation, p1)
-	if duplicate.code() != 0 || duplicate.stdout != result.stdout {
-		t.Fatalf("same operation changed receipt: first=%s duplicate=%s", result.stdout, duplicate.stdout)
-	}
-	p2 := second["confirmation_position"].(string)
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(p2, "gpw1."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	foreign := append([]byte(nil), raw...)
-	foreign[1] ^= 0xff
-	incompatible := append([]byte(nil), raw...)
-	incompatible[0] = 2
-	expired := append([]byte(nil), raw...)
-	for i := 17; i < 25; i++ {
-		expired[i] = 0
-	}
-	expired[24] = 1
-	for _, position := range []string{"malformed", "gpw1." + base64.RawURLEncoding.EncodeToString(foreign), "gpw1." + base64.RawURLEncoding.EncodeToString(incompatible), "gpw1." + base64.RawURLEncoding.EncodeToString(expired)} {
-		_, result := gpwRewaitEventually(t, daemon, id, position)
-		if response := parseMVPResponse(t, result); response["code"] != "position_rejected" {
-			t.Fatalf("invalid position accepted/reset: %s", result.stdout)
-		}
-	}
-	fixture.set(3, "complete")
-	fixture.waitRounds(t, fixture.count()+2)
-	if len(modelRecords(t, output)) != 2 || len(modelRecords(t, other)) != 0 {
-		t.Fatal("stale generation/invalid rewait changed delivery")
-	}
-	// Actually expire an issued position through the declared four-position
-	// retention window, rather than testing only a syntactically old sequence.
-	position := p2
-	for count := 3; count <= 5; count++ {
-		if count > 3 {
-			fixture.mu.Lock()
-			fixture.edit = count - 3
-			fixture.mu.Unlock()
-			fixture.waitRounds(t, fixture.count()+2)
-		}
-		_, next := gpwRewaitEventually(t, daemon, id, position)
-		if next.code() != 0 {
-			t.Fatalf("retention rewait: %s", next.stdout)
-		}
-		position = gpwContext(t, gpwRecords(t, output, count)[count-1]["context"])["confirmation_position"].(string)
-	}
-	_, expiredResult := gpwRewaitEventually(t, daemon, id, p1)
-	if response := parseMVPResponse(t, expiredResult); response["code"] != "position_rejected" {
-		t.Fatalf("expired issued P1 accepted: %s", expiredResult.stdout)
-	}
-	for _, row := range modelRecords(t, output) {
-		if row["subscription_id"] != id || row["external_data"] != true || row["permission_notice"] != "External data; no additional permissions are granted." {
-			t.Fatalf("route/authority changed: %v", row)
-		}
-	}
-	registration, err := os.ReadFile(filepath.Join(directory, "state", "registrations", id+".json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(registration) != string(initialRegistration) {
-		t.Fatal("rewait rewrote immutable registration/destination")
-	}
-	daemon.stop(t, gpwSuite.hub)
-}
-
 func gpwSavedFiles(t mvpReporter, state, id string) []string {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(state, "runtime", id, "*.json"))
+	for i, path := range files {
+		if filepath.Base(path) == "continuous-active.json" {
+			files = append(files[:i], files[i+1:]...)
+			break
+		}
+	}
 	streams, streamErr := filepath.Glob(filepath.Join(state, "runtime", id, "*.stream", "manifest.json"))
 	if streamErr != nil {
 		t.Fatal(streamErr)
@@ -476,7 +331,6 @@ func gpwRestartCase() {
 	if rows[1]["subscription_id"] != id {
 		t.Fatal("restored route ID changed")
 	}
-	p3 := context["confirmation_position"].(string)
 	// Obstruct this route's runtime directory with a regular file while the
 	// fixture owns it; this is deterministic fault injection, not operator use.
 	runtimePath := filepath.Join(state, "runtime", id)
@@ -492,10 +346,6 @@ func gpwRestartCase() {
 	}) {
 		t.Fatalf("missing failed-save warning: %s", readMVPFile(daemon.logPath))
 	}
-	_, result := gpwRewaitEventually(t, daemon, id, p3)
-	if result.code() != 0 {
-		t.Fatalf("rewait after save failure: %s", result.stdout)
-	}
 	fixture.set(4, "complete")
 	gpwRequireContains(t, gpwContext(t, gpwRecords(t, output, 3)[2]["context"]), "C4")
 	daemon.stop(t, gpwSuite.hub)
@@ -503,6 +353,18 @@ func gpwRestartCase() {
 		t.Fatal(err)
 	}
 	if err := os.Rename(backup, runtimePath); err != nil {
+		t.Fatal(err)
+	}
+	beforeMarkerRestart := len(fixture.calls())
+	markerBlocked := gpwSuite.launchDaemonWithState(t, directory, daemon.config, freeMVPAddress(t), state)
+	DeferCleanup(markerBlocked.cleanup)
+	if waitMVPDaemonExit(t, markerBlocked, 3*time.Second) != 1 || len(fixture.calls()) != beforeMarkerRestart {
+		t.Fatalf("uncleared marker permitted startup: %s", readMVPFile(markerBlocked.logPath))
+	}
+	gpwRequireContains(t, readMVPFile(markerBlocked.logPath), id, "continuous_progress_unverified")
+	// The remaining stopped fixture tests incompatible bytes and then deletes
+	// the route. No daemon activates the earlier saved state of this route.
+	if err := os.Remove(filepath.Join(runtimePath, "continuous-active.json")); err != nil {
 		t.Fatal(err)
 	}
 	// Restore a preserved valid tree for the incompatible-schema branch.
@@ -560,7 +422,7 @@ func gpwRestartCase() {
 	if len(modelRecords(t, freshOutput)) != 0 {
 		t.Fatal("recreated registration did not establish silent baseline")
 	}
-	// Its old position must not cross registration ownership, even when supplied.
+	// A newly created route issues coverage references with its own nonce.
 	fixture.set(5, "complete")
 	fixture.mu.Lock()
 	fixture.extra = 1
@@ -569,10 +431,6 @@ func gpwRestartCase() {
 	freshPosition := gpwContext(t, freshRows[0]["context"])["confirmation_position"].(string)
 	if freshPosition == p1 {
 		t.Fatal("recreated route reused old position")
-	}
-	_, result = gpwRewaitEventually(t, daemon, newID, p1)
-	if response := parseMVPResponse(t, result); response["code"] != "position_rejected" {
-		t.Fatalf("old position accepted on recreation: %s", result.stdout)
 	}
 	if _, err := os.Stat(filepath.Join(state, "registrations", otherID+".json")); err != nil {
 		t.Fatal("unrelated registration removed")

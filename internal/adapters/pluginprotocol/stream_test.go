@@ -13,7 +13,7 @@ func TestStreamCapabilityComposition(t *testing.T) {
 		valid bool
 	}{
 		{[]string{RuntimeStateV2Capability, RuntimeStateStreamCapability}, true},
-		{[]string{RuntimeStateStreamCapability, RewaitCapability, CancelWatchCapability, RuntimeStateV2Capability}, true},
+		{[]string{RuntimeStateStreamCapability, ContinuousWatchCapability, CancelWatchCapability, RuntimeStateV2Capability}, true},
 		{[]string{RuntimeStateStreamCapability}, false},
 		{[]string{RuntimeStateCapability, RuntimeStateStreamCapability}, false},
 		{[]string{RuntimeStateV2Capability, RuntimeStateStreamCapability, RuntimeStateStreamCapability}, false},

@@ -7,19 +7,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 )
 
-func signalResume(t mvpReporter, h *gpwHost, id string, event map[string]any, position string, generation int) {
+func signalGrantNext(t mvpReporter, h *gpwHost, id string, event map[string]any, generation int) {
 	h.send(t, map[string]any{"type": "delivery_notice", "subscription_id": id, "event_id": event["event_id"], "status": "accepted"})
-	request := fmt.Sprintf("resume-%d", generation)
-	h.send(t, map[string]any{"type": "resume_watch", "request_id": request, "subscription_id": id, "generation": request, "confirmation_position": position})
-	if result := h.receive(t, "resume_result", request); result["accepted"] != true {
-		t.Fatal(result)
-	}
+	request := fmt.Sprintf("grant-%d", generation)
 	h.send(t, map[string]any{"type": "activate_watch", "subscription_id": id, "generation": request})
 }
 
@@ -97,12 +94,16 @@ func signalObservationCase() {
 			t.Fatal("category not independent", context)
 		}
 		gpwRequireContains(t, context, "PR17", signalHead(), "current", "waiting_reason")
-		position := context["confirmation_position"].(string)
-		signalResume(t, h, "branch", event, position, 2)
+		signalGrantNext(t, h, "branch", event, 2)
 		f.waitRounds(t, f.count()+2)
 		h.noEvent(t)
 		gpwRequireNoSecrets(t, h.log, "private-status-marker", "private-conflict-marker", "private-token-marker", "private-check-marker", "Bearer high")
 		h.close()
+	}
+	for _, request := range f.calls() {
+		if request.Host != "api.github.com" || request.Token != "high" {
+			t.Fatal("signal request escaped the selected origin or token precedence")
+		}
 	}
 }
 
@@ -163,10 +164,19 @@ func signalRestartCase() {
 	if len(modelRecords(t, output)) != 0 {
 		t.Fatal("recovery woke wait")
 	}
+	noticeGate := filepath.Join(directory, "gate-delivery_notice-1")
+	grantGate := filepath.Join(directory, "gate-activate_watch-3")
+	for _, gate := range []string{noticeGate, grantGate} {
+		if err := os.WriteFile(gate, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	f.changeSignals(func(s *signalFixtureState) { s.Comment = 1 })
-	first := gpwRecords(t, output, 1)
-	p1 := gpwContext(t, first[0]["context"])["confirmation_position"].(string)
-	gpwWaitAccepted(t, directory, id)
+	gpwRecords(t, output, 1)
+	journal := filepath.Join(directory, "protocol.jsonl")
+	if !waitMVP(t, time.Second, func() bool { return strings.Contains(readMVPFile(journal), "delivery_notice_held") }) {
+		t.Fatal("seed terminal notice was not held")
+	}
 	for cycle := 0; cycle < 3; cycle++ {
 		f.changeSignals(func(s *signalFixtureState) {
 			s.Failed = true
@@ -182,14 +192,21 @@ func signalRestartCase() {
 	if len(modelRecords(t, output)) != 1 {
 		t.Fatal("consumed wait emitted")
 	}
-	_, result := gpwRewaitEventually(t, daemon, id, p1)
-	if result.code() != 0 {
-		t.Fatal(result.stdout, result.stderr)
+	var frozen signalFixtureState
+	f.changeSignals(func(s *signalFixtureState) {
+		frozen = *s
+		s.Failure = "pr-read"
+	})
+	if !waitMVP(t, time.Second, func() bool { return strings.Contains(readMVPFile(daemon.logPath), "service") }) {
+		t.Fatal("signal fixture did not freeze comparison")
+	}
+	if err := os.Remove(noticeGate); err != nil {
+		t.Fatal(err)
 	}
 	rows := gpwRecords(t, output, 2)
 	prefix := gpwContext(t, rows[1]["context"])
 	continuation := prefix["continuation"].(map[string]any)
-	if len(prefix["changes"].([]any)) != 8 || continuation["remaining_changes"] != float64(1) || continuation["has_more"] != true || continuation["through_sequence"] != float64(10) || continuation["observed_through_sequence"] != float64(11) {
+	if len(prefix["changes"].([]any)) != 8 || continuation["remaining_changes"] != float64(1) || continuation["has_more"] != true || continuation["through_sequence"] != float64(10) || continuation["observed_through_sequence"] != float64(11) || continuation["operation"] != nil {
 		t.Fatal("wrong prefix", prefix)
 	}
 	if prefix["current"].(map[string]any)["is_draft"] != true {
@@ -207,17 +224,31 @@ func signalRestartCase() {
 	}) {
 		t.Fatal("prefix acceptance missing")
 	}
+	if !waitMVP(t, time.Second, func() bool { return strings.Contains(readMVPFile(journal), "activate_watch_held") }) {
+		t.Fatal("suffix grant was not held")
+	}
 	daemon.stop(t, gpwSuite.hub)
+	if err := os.Remove(grantGate); err != nil {
+		t.Fatal(err)
+	}
 	files := gpwSavedFiles(t, state, id)
 	if len(files) != 1 {
 		t.Fatal(files)
 	}
 	chunks, data := signalSavedChunks(t, files[0])
 	header := chunks[0].(map[string]any)
-	if len(data) <= 32768 || header["version"] != float64(3) || header["signal_version"] != float64(1) || header["confirmed"] != float64(10) {
-		t.Fatal("invalid v3 saved cut", len(data), header)
+	if len(data) <= 32768 || header["version"] != float64(4) || header["signal_version"] != float64(1) || header["confirmed"] != float64(10) {
+		t.Fatal("invalid v4 saved cut", len(data), header)
 	}
 	nonce := header["nonce"]
+	legacyState := filepath.Join(gpwSuite.newCase(t), "state")
+	signalCopyTree(t, state, legacyState)
+	relative, err := filepath.Rel(state, files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signalWriteLegacyV3(t, filepath.Join(legacyState, relative), header)
+	f.changeSignals(func(s *signalFixtureState) { *s = frozen })
 	daemon = gpwSuite.startDaemonWithState(t, directory, daemon.config, freeMVPAddress(t), state)
 	DeferCleanup(daemon.cleanup)
 	rows = gpwRecords(t, output, 3)
@@ -225,14 +256,10 @@ func signalRestartCase() {
 	if len(suffix["changes"].([]any)) != 1 || suffix["continuation"].(map[string]any)["through_sequence"] != float64(11) || suffix["continuation"].(map[string]any)["has_more"] != false {
 		t.Fatal("lost or repeated suffix", suffix)
 	}
-	p2 := suffix["confirmation_position"].(string)
-	_, result = gpwRewaitEventually(t, daemon, id, p2)
-	if result.code() != 0 {
-		t.Fatal(result.stdout)
-	}
+	f.changeSignals(func(s *signalFixtureState) { s.Failure = "" })
 	f.waitRounds(t, f.count()+2)
 	if len(modelRecords(t, output)) != 3 {
-		t.Fatal("rewait of covered P2 repeated")
+		t.Fatal("covered suffix repeated")
 	}
 	f.changeSignals(func(s *signalFixtureState) {
 		s.Failed = true
@@ -317,6 +344,70 @@ func signalRestartCase() {
 		if readMVPFile(chunkPath) != string(payloadBytes) || signalTreeBytes(t, filepath.Join(branchState, "runtime", unrelatedID)) != unrelatedBefore || readMVPFile(filepath.Join(branchState, "registrations", unrelatedID+".json")) != registrationBefore {
 			t.Fatal("restoration changed saved or unrelated state")
 		}
+	}
+	f.changeSignals(func(s *signalFixtureState) { *s = frozen })
+	migrated := gpwSuite.startDaemonWithState(t, directory, daemon.config, freeMVPAddress(t), legacyState)
+	DeferCleanup(migrated.cleanup)
+	rows = gpwRecords(t, output, 5)
+	migratedContext := gpwContext(t, rows[4]["context"])
+	if migratedContext["confirmation_position"] != suffix["confirmation_position"] || len(migratedContext["changes"].([]any)) != 1 {
+		t.Fatal("legacy attempted prefix replayed or retained suffix changed", migratedContext)
+	}
+	migrated.stop(t, gpwSuite.hub)
+	migratedChunks, _ := signalSavedChunks(t, gpwSavedFiles(t, legacyState, id)[0])
+	migratedHeader := migratedChunks[0].(map[string]any)
+	if migratedHeader["version"] != float64(4) || migratedHeader["nonce"] != nonce || migratedHeader["selected"] != float64(11) {
+		t.Fatal("v3 migration did not preserve identity and selected coverage", migratedHeader)
+	}
+	for _, row := range readMVPJournal(journal) {
+		if size, ok := row["wire_bytes"].(float64); ok && size > 65536 {
+			t.Fatal("signal session exceeded the wire frame bound", size)
+		}
+		if size, ok := row["chunk_bytes"].(float64); ok && size > 32768 {
+			t.Fatal("signal checkpoint exceeded the object bound", size)
+		}
+	}
+}
+
+func signalWriteLegacyV3(t mvpReporter, path string, current map[string]any) {
+	t.Helper()
+	var manifest map[string]any
+	if err := json.Unmarshal([]byte(readMVPFile(path)), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	header := make(map[string]any, len(current))
+	for key, value := range current {
+		header[key] = value
+	}
+	header["version"] = 3
+	header["attempted"] = header["selected"]
+	header["confirmed"], header["comparison"] = 2, 2
+	delete(header, "selected")
+	delete(header, "profile")
+	headerBytes, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerPath := filepath.Join(filepath.Dir(path), "00000000000000000000.json")
+	old, err := os.ReadFile(headerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total, err := strconv.Atoi(manifest["data_bytes"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest["schema"] = "github-pr-watch-v3"
+	manifest["data_bytes"] = strconv.Itoa(total - len(old) + len(headerBytes))
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(headerPath, headerBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

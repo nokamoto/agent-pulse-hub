@@ -23,6 +23,9 @@ func isSignalKind(kind string) bool {
 }
 
 func (t *Tracker) StateSchema() string {
+	if t.continuous {
+		return ContinuousStateSchema
+	}
 	if t.SignalProfile {
 		return SignalStateSchema
 	}

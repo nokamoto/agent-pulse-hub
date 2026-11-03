@@ -51,7 +51,8 @@ type Tracker struct {
 	Saved             Saved
 	current           *Observation
 	cursor            uint64
-	prepared          *uint64
+	pendingSelection  *selection
+	continuous        bool
 	ObservationBudget uint64
 	HistoryBudget     uint64
 	RefreshFailure    string
@@ -184,33 +185,6 @@ func (t *Tracker) position(sequence uint64) string {
 	binary.BigEndian.PutUint64(raw[17:], sequence)
 	return "gpw1." + base64.RawURLEncoding.EncodeToString(raw)
 }
-
-func (t *Tracker) ValidatePosition(value string) (uint64, error) {
-	for _, p := range t.Saved.Positions {
-		if p.Value == value {
-			return p.Sequence, nil
-		}
-	}
-	if t.Saved.Comparison != nil && value == t.position(*t.Saved.Comparison) {
-		return *t.Saved.Comparison, nil
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, "gpw1."))
-	if err != nil || !strings.HasPrefix(value, "gpw1.") || len(raw) != 25 || raw[0] != 1 {
-		return 0, errors.New("position_invalid")
-	}
-	if hex.EncodeToString(raw[1:17]) != t.Saved.Nonce {
-		return 0, errors.New("position_foreign")
-	}
-	return 0, errors.New("continuity_expired: inspect the PR and explicitly start a new baseline if lost continuity is acceptable")
-}
-
-func (t *Tracker) Resume(sequence uint64) {
-	t.cursor = sequence
-	t.Saved.Comparison = &sequence
-	t.prepared = nil
-}
-func (t *Tracker) Prepare(sequence uint64) { t.prepared = &sequence }
-func (t *Tracker) CancelPreparation()      { t.prepared = nil }
 
 func (t *Tracker) Reconcile(o Observation) error {
 	var signalState SignalState
@@ -534,27 +508,23 @@ func (t *Tracker) appendChange(kind string, item Item, d, at string, previous *I
 	return nil
 }
 
-func (t *Tracker) Notice(sequence uint64, status string) {
-	if status == "accepted" && sequence > t.Saved.Confirmed {
-		t.Saved.Confirmed = sequence
-		if t.Saved.Comparison == nil {
-			t.cursor = sequence
-		}
-	}
-}
-
 func (t *Tracker) pruneAccepted() {
 	through := t.Saved.Confirmed
-	if t.Saved.Comparison != nil && *t.Saved.Comparison < through {
-		through = *t.Saved.Comparison
-	}
-	for _, position := range t.Saved.Positions {
-		if position.Sequence < through {
-			through = position.Sequence
+	if t.continuous {
+		through = t.cursor
+		if t.pendingSelection != nil {
+			through = t.pendingSelection.prior
 		}
-	}
-	if t.prepared != nil && *t.prepared < through {
-		through = *t.prepared
+	} else {
+		if t.Saved.Comparison != nil && *t.Saved.Comparison < through {
+			through = *t.Saved.Comparison
+		}
+		for _, position := range t.Saved.Positions {
+			if position.Sequence < through {
+				through = position.Sequence
+			}
+		}
+
 	}
 	journal := []Change{}
 	removed := uint64(0)

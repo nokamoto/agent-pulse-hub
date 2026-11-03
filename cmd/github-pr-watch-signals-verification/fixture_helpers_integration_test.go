@@ -249,7 +249,7 @@ func startGPWHost(t mvpReporter, directory, host string, f *gpwFixture, override
 	}()
 	ready := h.receive(t, "ready", "")
 	caps, _ := json.Marshal(ready["capabilities"])
-	if !strings.Contains(string(caps), "rewait_v1") || !strings.Contains(string(caps), "runtime_state_v2") {
+	if !strings.Contains(string(caps), "continuous_watch_v1") || !strings.Contains(string(caps), "runtime_state_v2") {
 		t.Fatalf("missing capabilities: %s", caps)
 	}
 	h.streamed = strings.Contains(string(caps), "runtime_state_stream_v1")

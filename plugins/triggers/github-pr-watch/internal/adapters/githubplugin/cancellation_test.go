@@ -16,7 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
-func TestCancellationDiscardsPreparedRewaitAndJoinsOnlyTargetMonitor(t *testing.T) {
+func TestCancellationFencesLaterGrantsAndJoinsOnlyTargetMonitor(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	credentials, github := NewMockCredentials(ctrl), NewMockGitHub(ctrl)
 	credentials.EXPECT().Token(gomock.Any(), "github.com").Return("token", nil).AnyTimes()
@@ -88,8 +88,6 @@ func TestCancellationDiscardsPreparedRewaitAndJoinsOnlyTargetMonitor(t *testing.
 		t.Fatalf("notification position: %v", err)
 	}
 	sendFrame(t, stream, pluginprotocol.Frame{Type: "delivery_notice", SubscriptionID: "a", EventID: event.EventID, Status: "accepted"})
-	sendFrame(t, stream, pluginprotocol.Frame{Type: "resume_watch", RequestID: "prepare-a", SubscriptionID: "a", Generation: "generation-2", ConfirmationPosition: eventContext.Position})
-	assertResult(t, receiveFrame(t, stream), "resume_result", "prepare-a", true)
 	select {
 	case <-started:
 	case <-time.After(2 * time.Second):
@@ -120,8 +118,6 @@ func TestCancellationDiscardsPreparedRewaitAndJoinsOnlyTargetMonitor(t *testing.
 		t.Fatalf("overlapping cancellation results: %v", seen)
 	}
 	sendFrame(t, stream, pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: "a", Generation: "generation-2"})
-	sendFrame(t, stream, pluginprotocol.Frame{Type: "resume_watch", RequestID: "late-prepare", SubscriptionID: "a", Generation: "generation-3", ConfirmationPosition: eventContext.Position})
-	assertResult(t, receiveFrame(t, stream), "resume_result", "late-prepare", false)
 	sendFrame(t, stream, pluginprotocol.Frame{Type: "checkpoint", RequestID: "a-absent", SubscriptionID: "a"})
 	assertResult(t, receiveFrame(t, stream), "checkpoint_result", "a-absent", false)
 	registerStreamWatch(t, stream, stateWatch(t, "fresh-a"), nil)

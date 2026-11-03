@@ -12,10 +12,15 @@ import (
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
 
-const StreamStateSchema = "github-pr-watch-v2"
+const (
+	StreamStateSchema     = "github-pr-watch-v2"
+	ContinuousStateSchema = "github-pr-watch-v4"
+)
 
 type streamHeader struct {
 	SignalVersion       int         `json:"signal_version,omitempty"`
+	Profile             string      `json:"profile,omitempty"`
+	Selected            *uint64     `json:"selected,omitempty"`
 	Kind                string      `json:"kind"`
 	Version             int         `json:"version"`
 	Scope               WatchConfig `json:"scope"`
@@ -196,6 +201,19 @@ func (t *Tracker) streamObjects(materialize bool) ([]*jsonvalue.Value, error) {
 		h.LastChange = s.Journal[len(s.Journal)-1].Sequence
 	}
 	header, err := compact(h)
+	if err == nil && t.continuous {
+		h.Version = 4
+		h.Profile = streamProfile(t.SignalProfile)
+		h.Selected = &t.cursor
+		raw, encodeErr := compact(h)
+		var fields map[string]json.RawMessage
+		if encodeErr != nil || json.Unmarshal(raw, &fields) != nil {
+			return nil, errors.New("invalid checkpoint header")
+		}
+		delete(fields, "attempted")
+		delete(fields, "comparison")
+		header, err = compact(fields)
+	}
 	if err != nil || len(header) > 32768 {
 		return nil, errors.New("item_metadata_exhausted")
 	}
@@ -272,7 +290,8 @@ func strictDecode(raw []byte, target any) error {
 
 func RestoreStream(scope WatchConfig, schema string, objects []*jsonvalue.Value, observationBudget, historyBudget uint64, signalProfile ...bool) (*Tracker, error) {
 	signals := len(signalProfile) > 0 && signalProfile[0]
-	if signals && schema != SignalStateSchema {
+	continuous := schema == ContinuousStateSchema
+	if signals && schema != SignalStateSchema && !continuous {
 		return nil, errors.New("signal_state_incompatible")
 	}
 	invalid := func() (*Tracker, error) { return nil, errors.New("invalid restored state") }
@@ -311,21 +330,30 @@ func RestoreStream(scope WatchConfig, schema string, objects []*jsonvalue.Value,
 		}
 		return t, nil
 	}
-	if (schema != StreamStateSchema && !(signals && schema == SignalStateSchema)) || len(objects) == 0 {
+	if (!continuous && schema != StreamStateSchema && !(signals && schema == SignalStateSchema)) || len(objects) == 0 {
 		return invalid()
 	}
 	var h streamHeader
-	if !validHeaderShape(objects[0]) {
+	if !validHeaderShape(objects[0], continuous) {
 		return invalid()
 	}
 	version := 2
 	if signals {
 		version = 3
 	}
+	if continuous {
+		version = 4
+	}
 	if objects[0] == nil || objects[0].Kind() != jsonvalue.Object || len(objects[0].Marshal()) > 32768 || strictDecode(objects[0].Marshal(), &h) != nil || h.Kind != "header" || h.Version != version || h.Scope != scope || h.Positions == nil || (signals && h.SignalVersion != 1) || (!signals && h.SignalVersion != 0) {
 		return invalid()
 	}
 	s := Saved{Scope: h.Scope, Nonce: h.Nonce, Sequence: h.Sequence, Baseline: h.Baseline, Aggregate: h.Aggregate, StartedAt: h.StartedAt, EndedAt: h.EndedAt, Confirmed: h.Confirmed, Attempted: h.Attempted, Comparison: h.Comparison, Positions: h.Positions, Fingerprints: []Fingerprint{}, Metadata: []Item{}, Journal: []Change{}}
+	if continuous {
+		if h.Profile != streamProfile(signals) || h.Selected == nil || *h.Selected < h.Confirmed || *h.Selected > h.Sequence {
+			return invalid()
+		}
+		s.Attempted = *h.Selected
+	}
 	phase := 0
 	previous := map[uint64]Item{}
 	legacyItems := map[string]bool{}
@@ -393,6 +421,9 @@ func RestoreStream(scope WatchConfig, schema string, objects []*jsonvalue.Value,
 	}
 	t := &Tracker{Saved: s, cursor: s.Confirmed, ObservationBudget: observationBudget, HistoryBudget: historyBudget, Observations: h.ObservationSequence, previous: previous, legacyItems: legacyItems, legacyChanges: legacyChanges}
 	t.SignalProfile = signals
+	if continuous {
+		t.StartContinuous()
+	}
 	if err := t.validateV2(); err != nil {
 		return invalid()
 	}
@@ -402,18 +433,35 @@ func RestoreStream(scope WatchConfig, schema string, objects []*jsonvalue.Value,
 	return t, nil
 }
 
-func validHeaderShape(value *jsonvalue.Value) bool {
+func streamProfile(signals bool) string {
+	if signals {
+		return "signals-v3"
+	}
+	return "discussion-v2"
+}
+
+func validHeaderShape(value *jsonvalue.Value, continuous bool) bool {
 	if value == nil || value.Kind() != jsonvalue.Object {
 		return false
 	}
-	for _, field := range []string{"kind", "version", "scope", "nonce", "sequence", "observation_sequence", "baseline", "aggregate", "started_at", "ended_at", "confirmed", "attempted", "comparison", "positions", "item_count", "change_count", "first_change_sequence", "last_change_sequence"} {
+	fields := []string{"kind", "version", "scope", "nonce", "sequence", "observation_sequence", "baseline", "aggregate", "started_at", "ended_at", "confirmed", "positions", "item_count", "change_count", "first_change_sequence", "last_change_sequence"}
+	required, forbidden := []string{"attempted", "comparison"}, []string{"selected", "profile"}
+	if continuous {
+		required, forbidden = forbidden, required
+	}
+	for _, field := range forbidden {
+		if _, exists := value.Get(field); exists {
+			return false
+		}
+	}
+	for _, field := range append(fields, required...) {
 		v, ok := value.Get(field)
 		if !ok {
 			return false
 		}
 		kind := jsonvalue.Number
 		switch field {
-		case "kind", "nonce", "started_at", "ended_at":
+		case "kind", "nonce", "started_at", "ended_at", "profile":
 			kind = jsonvalue.String
 		case "scope", "aggregate":
 			kind = jsonvalue.Object
@@ -467,6 +515,9 @@ func (t *Tracker) validateV2() error {
 		previous = key
 	}
 	needed := s.Confirmed
+	if t.continuous {
+		needed = t.cursor
+	}
 	if s.Comparison != nil && *s.Comparison < needed {
 		needed = *s.Comparison
 	}
@@ -474,7 +525,7 @@ func (t *Tracker) validateV2() error {
 		if p.Sequence < 2 || p.Sequence > s.Attempted || p.Value != t.position(p.Sequence) {
 			return invalid
 		}
-		if p.Sequence < needed {
+		if !t.continuous && p.Sequence < needed {
 			needed = p.Sequence
 		}
 	}

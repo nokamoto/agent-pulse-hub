@@ -12,6 +12,38 @@ import (
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
 
+func TestContinuousMarkerBlocksRestoreUntilFinalCommit(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registration := testSubscription(t, testID)
+	if err := store.CommitContinuous(registration, testID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BeginContinuousRun(registration.ID, testID); err == nil {
+		t.Fatal("existing marker overwritten")
+	}
+	registrations := []domain.Subscription{registration}
+	if _, err := store.LoadRuntimeSources(registrations, 65536); err == nil || !strings.Contains(err.Error(), "continuous_progress_unverified") {
+		t.Fatalf("marker did not block restore: %v", err)
+	}
+	state := runtimeTestState(t, `{"schema":"cursor-v1","payload":{"confirmed":["U1"]}}`)
+	if _, err := store.CommitRuntime(registration, state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadRuntime(registrations); err == nil || !strings.Contains(err.Error(), "continuous_progress_unverified") {
+		t.Fatalf("saved generation bypassed marker: %v", err)
+	}
+	if err := store.EndContinuousRun(registration.ID, testID); err != nil {
+		t.Fatal(err)
+	}
+	if states, err := store.LoadRuntime(registrations); err != nil || len(states) != 1 {
+		t.Fatalf("final generation not restored: %v", err)
+	}
+}
+
 func TestRuntimeGenerationCommitRestoreAndCleanup(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	store, err := Open(root)
