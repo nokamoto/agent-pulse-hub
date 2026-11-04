@@ -344,9 +344,11 @@ func (h *Hub) recordNotificationEvidence(id, attemptID string, e domain.AttemptE
 func (h *Hub) completeNotificationItem(item queuedEvent, status string) {
 	h.mu.Lock()
 	_, cancelled := h.cancellations[item.event.SubscriptionID]
-	r, exists := h.registrations[item.event.SubscriptionID]
+	_, exists := h.registrations[item.event.SubscriptionID]
 	h.mu.Unlock()
-	if cancelled || !exists || !r.Active || item.eventID == "" {
+	// Output invalidation closes admission and issuance. The input can still
+	// be waiting for this terminal notice before it can checkpoint.
+	if cancelled || !exists || item.eventID == "" {
 		h.releasePendingEvents(1)
 		return
 	}

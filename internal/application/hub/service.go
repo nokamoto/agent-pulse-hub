@@ -1014,6 +1014,8 @@ func runtimeStateWatchFits(watchArgs *jsonvalue.Value, subscriptionID, requestID
 
 func (h *Hub) deliveryWorker() {
 	defer close(h.workerDone)
+	defer h.discardQueued()
+	defer h.stopNotificationWork()
 	for {
 		h.mu.Lock()
 		candidate, delay := h.nextNotificationLocked()
@@ -1026,8 +1028,6 @@ func (h *Hub) deliveryWorker() {
 		select {
 		case <-h.stopCh:
 			timer.Stop()
-			h.stopNotificationWork()
-			h.discardQueued()
 			return
 		case <-timer.C:
 			continue
@@ -1048,7 +1048,6 @@ func (h *Hub) deliveryWorker() {
 			h.mu.Unlock()
 			if stopping {
 				h.discardEvent(item, "shutdown")
-				h.discardQueued()
 				return
 			}
 			h.deliver(item)

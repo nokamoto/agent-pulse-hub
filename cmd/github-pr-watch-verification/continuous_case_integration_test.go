@@ -4,7 +4,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -17,12 +16,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 )
 
-func gpwContinuousCase() {
-	t := GinkgoT()
-	directory := gpwSuite.newCase(t)
-	fixture := newGPWFixture(t)
-	fixture.prelude = true
-	gpwDaemonEnvironment = fixture.environment(directory)
+func gpwNotificationOutput(t mvpReporter, directory string) (mvpPluginConfig, string) {
+	t.Helper()
 	python := os.Getenv("APH_PLUGIN_PYTHON")
 	if python == "" {
 		python = "python3"
@@ -40,9 +35,54 @@ func gpwContinuousCase() {
 		t.Fatal(err)
 	}
 	peer := filepath.Join(gpwSuite.root, "cmd", "agent-pulse-hub", "testdata", "notification-delivery-plugin.py")
+	return mvpPluginConfig{Name: "action", Role: "output", Executable: python, Args: []string{"-B", peer, actionDir, "--role", "output"}}, actionDir
+}
+
+func gpwRespondToNotification(t mvpReporter, actionDir string, number int, attempt map[string]any, status string) {
+	t.Helper()
+	response := map[string]any{"version": 2, "type": "notification_result", "request_id": attempt["request_id"], "delivery_id": attempt["delivery_id"], "status": status}
+	if status != "accepted" {
+		response["reason"], response["message"] = "controlled_outcome", "Controlled destination outcome."
+		if status == "unsubmitted" {
+			response["retryable"] = false
+		}
+	}
+	path := fmt.Sprintf("command-%d", number)
+	writeMVPObject(t, actionDir, path+".json", response)
+	if err := os.WriteFile(filepath.Join(actionDir, path+".ready"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func gpwNotificationAttempts(actionDir string) []map[string]any {
+	var attempts []map[string]any
+	for _, row := range readMVPJournal(filepath.Join(actionDir, "journal.jsonl")) {
+		if row["kind"] == "notification_deliver" {
+			attempts = append(attempts, row["frame"].(map[string]any))
+		}
+	}
+	return attempts
+}
+
+func gpwAwaitNotificationAttempt(t mvpReporter, actionDir string, number int) map[string]any {
+	t.Helper()
+	var rows []map[string]any
+	if !waitMVP(t, 3*time.Second, func() bool { rows = gpwNotificationAttempts(actionDir); return len(rows) >= number }) || len(rows) != number {
+		t.Fatalf("attempt %d missing or repeated: %v", number, rows)
+	}
+	return rows[number-1]
+}
+
+func gpwContinuousCase() {
+	t := GinkgoT()
+	directory := gpwSuite.newCase(t)
+	fixture := newGPWFixture(t)
+	fixture.prelude = true
+	gpwDaemonEnvironment = fixture.environment(directory)
+	action, actionDir := gpwNotificationOutput(t, directory)
 	config := writeMVPConfig(t, directory, mvpConfig{Plugins: []mvpPluginConfig{
 		{Name: "pr", Role: "input", Executable: gpwPlugin, Args: []string{"--host", "github.com", "--poll-interval", "5", "--state-profile", "discussion-v2"}},
-		{Name: "action", Role: "output", Executable: python, Args: []string{"-B", peer, actionDir, "--role", "output"}},
+		action,
 		{Name: "out", Role: "output", Executable: gpwSuite.model, Args: []string{}},
 	}})
 	state := filepath.Join(directory, "state")
@@ -56,24 +96,10 @@ func gpwContinuousCase() {
 	b := filepath.Join(directory, "B.jsonl")
 	other := gpwRegister(t, daemon, b, gpwArgs("github.com"))
 	fixture.waitRounds(t, 4)
-	journal := filepath.Join(actionDir, "journal.jsonl")
-	frames := func() []map[string]any {
-		var result []map[string]any
-		for _, row := range readMVPJournal(journal) {
-			if row["kind"] == "notification_deliver" {
-				result = append(result, row["frame"].(map[string]any))
-			}
-		}
-		return result
-	}
 	deliveries := map[any]bool{}
 	awaitAttempt := func(n int, marker string) map[string]any {
 		t.Helper()
-		var rows []map[string]any
-		if !waitMVP(t, 3*time.Second, func() bool { rows = frames(); return len(rows) >= n }) || len(rows) != n {
-			t.Fatalf("attempt %d missing or repeated: %v, log=%s", n, rows, readMVPFile(daemon.logPath))
-		}
-		row := rows[n-1]
+		row := gpwAwaitNotificationAttempt(t, actionDir, n)
 		delivery := row["delivery_id"]
 		if row["subscription_id"] != id || row["destination_args"].(map[string]any)["recipient"] != "A" || deliveries[delivery] {
 			t.Fatalf("route or notification ID changed: %v", row)
@@ -85,27 +111,6 @@ func gpwContinuousCase() {
 			t.Fatal("earlier represented change repeated", ctx)
 		}
 		return row
-	}
-	complete := func(n int, attempt map[string]any, status string) {
-		t.Helper()
-		response := map[string]any{"version": 2, "type": "notification_result", "request_id": attempt["request_id"], "delivery_id": attempt["delivery_id"], "status": status}
-		if status != "accepted" {
-			response["reason"], response["message"] = "controlled_outcome", "Controlled destination outcome."
-			if status == "unsubmitted" {
-				response["retryable"] = false
-			}
-		}
-		raw, err := json.Marshal(response)
-		if err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(actionDir, fmt.Sprintf("command-%d", n))
-		if err := os.WriteFile(path+".json", raw, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path+".ready", nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
 	}
 	for i, stimulus := range []struct{ marker, status string }{
 		{"C1b", "accepted"}, {"C2", "unsubmitted"}, {"C3", "unknown"}, {"C4", "accepted"}, {"extra0", "accepted"},
@@ -123,7 +128,7 @@ func gpwContinuousCase() {
 				t.Fatal(err)
 			}
 		}
-		complete(n, row, stimulus.status)
+		gpwRespondToNotification(t, actionDir, n, row, stimulus.status)
 	}
 	if !waitMVP(t, 2*time.Second, func() bool {
 		for _, row := range readMVPJournal(filepath.Join(directory, "protocol.jsonl")) {
@@ -172,7 +177,7 @@ func gpwContinuousCase() {
 	fixture.extra = 2
 	fixture.mu.Unlock()
 	bRows := gpwRecords(t, b, before+1)
-	if bRows[len(bRows)-1]["subscription_id"] != other || len(frames()) != 5 {
+	if bRows[len(bRows)-1]["subscription_id"] != other || len(gpwNotificationAttempts(actionDir)) != 5 {
 		t.Fatal("cancelled A revived or unrelated B stopped")
 	}
 	daemon.stop(t, gpwSuite.hub)
