@@ -352,7 +352,94 @@ func gpwContinuationCase() {
 	}
 	gpwMigrationCase(t, false)
 	gpwMigrationCase(t, true)
+	gpwStopDuringPrefix(t)
 	t.Logf("GPW-I05 execution: %s", time.Since(started))
+}
+
+func gpwStopDuringPrefix(t mvpReporter) {
+	t.Helper()
+	directory := gpwSuite.newCase(t)
+	fixture := newGPWFixture(t)
+	fixture.capacity = 100
+	gpwDaemonEnvironment = fixture.environment(directory)
+	action, actionDir := gpwNotificationOutput(t, directory)
+	config := writeMVPConfig(t, directory, mvpConfig{Plugins: []mvpPluginConfig{
+		{Name: "pr", Role: "input", Executable: gpwPlugin, Args: []string{"--host", "github.com", "--poll-interval", "5", "--state-profile", "discussion-v2"}},
+		action,
+	}})
+	state := filepath.Join(directory, "state")
+	daemon := gpwSuite.startDaemonWithState(t, directory, config, freeMVPAddress(t), state)
+	DeferCleanup(daemon.cleanup)
+	registered := gpwSuite.register(t, 3*time.Second, daemon.address, "pr", "action", gpwArgs("github.com"), map[string]any{"manual": true})
+	if registered.code() != 0 {
+		t.Fatal(registered.stdout, registered.stderr)
+	}
+	id := parseMVPResponse(t, registered)["subscription_id"].(string)
+	fixture.waitRounds(t, 2)
+	fixture.set(1, "complete")
+	gpwRespondToNotification(t, actionDir, 1, gpwAwaitNotificationAttempt(t, actionDir, 1), "accepted")
+	gpwWaitAcceptedCount(t, directory, id, 1)
+
+	// Keep the source unchanged from this point, including across restart.
+	fixture.set(2, "complete")
+	next := uint64(3)
+	seen := map[string]bool{}
+	accepted := gpwAwaitNotificationAttempt(t, actionDir, 2)
+	gpwCheckPrefix(t, gpwContext(t, accepted["context"]), &next, seen)
+	confirmed := next - 1
+	gpwRespondToNotification(t, actionDir, 2, accepted, "accepted")
+	held := gpwAwaitNotificationAttempt(t, actionDir, 3)
+	_, more := gpwCheckPrefix(t, gpwContext(t, held["context"]), &next, seen)
+	if !more || held["subscription_id"] != id {
+		t.Fatal("expected an issued prefix with a remaining suffix", held)
+	}
+	stop := gpwSuite.runCLI(t, 15*time.Second, "stop", "--address", daemon.address)
+	if stop.code() != 0 || parseMVPResponse(t, stop)["ok"] != true {
+		t.Fatalf("stop failed: %v; %s %s; log=%s", stop.err, stop.stdout, stop.stderr, readMVPFile(daemon.logPath))
+	}
+	if waitMVPDaemonExit(t, daemon, 5*time.Second) != 0 {
+		t.Fatalf("daemon failed to exit cleanly: %s", readMVPFile(daemon.logPath))
+	}
+	if _, err := os.Stat(filepath.Join(state, "runtime", id, "continuous-active.json")); !os.IsNotExist(err) {
+		t.Fatalf("final checkpoint did not clear the active marker: %v; log=%s", err, readMVPFile(daemon.logPath))
+	}
+	manifest, _ := gpwStreamFiles(t, state, id)
+	header := gpwSavedHeader(t, manifest)
+	if header["confirmed"] != float64(confirmed) || header["selected"] != float64(next-1) {
+		t.Fatal("final snapshot did not preserve accepted and unknown coverage separately", header)
+	}
+	for number := 1; number <= 2; number++ {
+		if err := os.Remove(filepath.Join(actionDir, fmt.Sprintf("command-%d.ready", number))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	daemon = gpwSuite.startDaemonWithState(t, directory, config, freeMVPAddress(t), state)
+	DeferCleanup(daemon.cleanup)
+	shown := gpwSuite.runCLI(t, 3*time.Second, "notification", "--notification-id", held["delivery_id"].(string), "--address", daemon.address)
+	if shown.code() != 0 {
+		t.Fatal(shown.stdout, shown.stderr)
+	}
+	ledger := parseMVPResponse(t, shown)
+	attempts := ledger["attempts"].([]any)
+	if ledger["acceptance"] != "unknown" || ledger["retry_state"] != "unknown" || len(attempts) != 1 || attempts[0].(map[string]any)["reason"] != "notification_interrupted" {
+		t.Fatal("interrupted attempt did not remain terminal and unknown", ledger)
+	}
+	number := 3
+	for more {
+		number++
+		row := gpwAwaitNotificationAttempt(t, actionDir, number)
+		if row["subscription_id"] != id {
+			t.Fatal("restart did not retain the subscription", row)
+		}
+		_, more = gpwCheckPrefix(t, gpwContext(t, row["context"]), &next, seen)
+		gpwRespondToNotification(t, actionDir, number-3, row, "accepted")
+	}
+	gpwWaitAcceptedCount(t, directory, id, number-1)
+	fixture.waitRounds(t, fixture.count()+2)
+	if len(seen) != 40 || len(gpwNotificationAttempts(actionDir)) != number {
+		t.Fatal("restart lost or repeated coverage", seen)
+	}
+	daemon.stop(t, gpwSuite.hub)
 }
 
 func gpwWaitAcceptedCount(t mvpReporter, directory, id string, count int) {
