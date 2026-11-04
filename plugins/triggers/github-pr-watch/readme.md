@@ -45,7 +45,8 @@ assignments for different hosts; do not implicitly reuse one environment token
 across hosts.
 
 This walkthrough uses the [continuous-notification implementation](https://github.com/nokamoto/agent-pulse-hub/pull/113)
-with the [registration timeout fix](https://github.com/nokamoto/agent-pulse-hub/pull/115).
+with the [registration timeout fix](https://github.com/nokamoto/agent-pulse-hub/pull/115)
+and the [normal stop fix](https://github.com/nokamoto/agent-pulse-hub/pull/116).
 In the first terminal, obtain that revision and build matching programs. If you
 already cloned the repository from the root README, enter it and start with
 `git checkout`. If the commit is missing, fetch it with `git fetch origin`.
@@ -56,7 +57,7 @@ Stop if any command fails.
 ```sh
 git clone https://github.com/nokamoto/agent-pulse-hub.git
 cd agent-pulse-hub
-git checkout --detach 9599c3226da330c0c787c7f3ac23736c74412781
+git checkout --detach 0efadf047107a57d6923578556b813459dc5deae
 mkdir ./pr-watch-demo
 run="$(python3 -c 'from pathlib import Path; print((Path.cwd() / "pr-watch-demo").as_posix())')"
 suffix="$(go env GOEXE)"
