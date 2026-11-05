@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,83 @@ func TestGraphQLRateLimitPreservesRetryGuidance(t *testing.T) {
 	}
 	if delay := application.RetryDelay(time.Minute, err, 0, now, 0); delay < 120*time.Second {
 		t.Fatalf("retry guidance ignored: %s", delay)
+	}
+}
+
+func TestObserveGraphQLRateLimit(t *testing.T) {
+	now := time.Date(2026, 11, 5, 13, 12, 29, 0, time.UTC)
+	for _, response := range []struct{ name, entry string }{
+		{"reported response", `{"type":"RATE_LIMIT","code":"graphql_rate_limit","message":"API rate limit already exceeded for user ID [redacted]."}`},
+		{"type only", `{"type":"RATE_LIMIT","message":"private detail"}`},
+		{"code only", `{"code":"graphql_rate_limit","message":"private detail"}`},
+		{"legacy type", `{"type":"RATE_LIMITED","message":"private detail"}`},
+	} {
+		for _, guidance := range []struct {
+			name    string
+			headers http.Header
+			delay   time.Duration
+		}{
+			{"no guidance", nil, 5 * time.Second},
+			{"retry after", http.Header{"Retry-After": []string{"120"}}, 120 * time.Second},
+			{"later reset", http.Header{"Retry-After": []string{"120"}, "X-Ratelimit-Remaining": []string{"0"}, "X-Ratelimit-Reset": []string{strconv.FormatInt(now.Add(180*time.Second).Unix(), 10)}}, 180 * time.Second},
+		} {
+			for _, signals := range []bool{false, true} {
+				profile := "discussion"
+				if signals {
+					profile = "signals"
+				}
+				t.Run(response.name+"/"+guidance.name+"/"+profile, func(t *testing.T) {
+					transport := NewMockRoundTripper(gomock.NewController(t))
+					transport.EXPECT().RoundTrip(gomock.Any()).DoAndReturn(func(req *http.Request) (*http.Response, error) {
+						body, err := io.ReadAll(req.Body)
+						if err != nil || !strings.Contains(string(body), "query PullRequestMetadata(") {
+							t.Fatalf("unexpected metadata request: %s, %v", body, err)
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: guidance.headers, Body: io.NopCloser(strings.NewReader(`{"data":{"repository":{}},"errors":[` + response.entry + `]}`))}, nil
+					})
+					client := NewWithHTTPClient(&http.Client{Transport: transport}).WithSignals(signals)
+					client.now = func() time.Time { return now }
+					observation, err := client.Observe(context.Background(), domain.WatchConfig{Host: "github.com", Owner: "acme", Repository: "widget", PullNumber: 17}, "secret")
+					failure, ok := err.(*application.Failure)
+					if !ok || failure.Code != "rate_limit" || failure.StatusCode != http.StatusOK || err.Error() != "rate_limit" {
+						t.Fatalf("failure=%#v", err)
+					}
+					wantRetry := time.Time{}
+					if guidance.headers != nil {
+						wantRetry = now.Add(guidance.delay)
+					}
+					if !failure.RetryAt.Equal(wantRetry) || application.RetryDelay(time.Minute, err, 0, now, 0) != guidance.delay {
+						t.Fatalf("retry=%s want=%s delay=%s", failure.RetryAt, wantRetry, application.RetryDelay(time.Minute, err, 0, now, 0))
+					}
+					if !observation.EndedAt.IsZero() || observation.PR.ID != "" || len(observation.Items) != 0 {
+						t.Fatalf("failed response became a complete observation: %#v", observation)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestGraphQLFailureClassificationOrder(t *testing.T) {
+	for _, test := range []struct{ name, entries, code string }{
+		{"unsupported", `{"type":"UNSUPPORTED","message":"private detail"}`, "unsupported_api"},
+		{"forbidden", `{"type":"FORBIDDEN","message":"private detail"}`, "access_denied"},
+		{"rate then forbidden", `{"type":"RATE_LIMIT"},{"type":"FORBIDDEN"}`, "access_denied"},
+		{"forbidden then rate", `{"type":"FORBIDDEN"},{"type":"RATE_LIMIT"}`, "rate_limit"},
+		{"rate then unsupported", `{"type":"RATE_LIMIT"},{"type":"UNSUPPORTED"}`, "rate_limit"},
+		{"same entry forbidden", `{"type":"FORBIDDEN","code":"graphql_rate_limit"}`, "access_denied"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := NewMockRoundTripper(gomock.NewController(t))
+			transport.EXPECT().RoundTrip(gomock.Any()).Return(&http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"errors":[` + test.entries + `]}`))}, nil)
+			client := NewWithHTTPClient(&http.Client{Transport: transport})
+			total := uint64(0)
+			_, err := client.request(context.Background(), domain.WatchConfig{Host: "github.com"}, "secret", "query Safe {}", nil, &total)
+			failure, ok := err.(*application.Failure)
+			if !ok || failure.Code != test.code || err.Error() != test.code {
+				t.Fatalf("failure=%#v want=%s", err, test.code)
+			}
+		})
 	}
 }
 
