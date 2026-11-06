@@ -46,7 +46,8 @@ across hosts.
 
 This walkthrough uses the [continuous-notification implementation](https://github.com/nokamoto/agent-pulse-hub/pull/113)
 with the [registration timeout fix](https://github.com/nokamoto/agent-pulse-hub/pull/115)
-and the [normal stop fix](https://github.com/nokamoto/agent-pulse-hub/pull/116).
+and the [normal stop fix](https://github.com/nokamoto/agent-pulse-hub/pull/116),
+plus the [GraphQL rate-limit classification fix](https://github.com/nokamoto/agent-pulse-hub/pull/120).
 In the first terminal, obtain that revision and build matching programs. If you
 already cloned the repository from the root README, enter it and start with
 `git checkout`. If the commit is missing, fetch it with `git fetch origin`.
@@ -57,7 +58,7 @@ Stop if any command fails.
 ```sh
 git clone https://github.com/nokamoto/agent-pulse-hub.git
 cd agent-pulse-hub
-git checkout --detach 0efadf047107a57d6923578556b813459dc5deae
+git checkout --detach 0a4a4b075141b1009613f8765cc041a738ed4424
 mkdir ./pr-watch-demo
 run="$(python3 -c 'from pathlib import Path; print((Path.cwd() / "pr-watch-demo").as_posix())')"
 suffix="$(go env GOEXE)"
