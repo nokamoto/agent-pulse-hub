@@ -389,7 +389,7 @@ func (c *Client) request(ctx context.Context, config domain.WatchConfig, token, 
 		code := "unsupported_api"
 		for _, entry := range envelope.Errors {
 			lower := strings.ToLower(string(entry))
-			if strings.Contains(lower, "rate_limited") {
+			if strings.Contains(lower, "rate_limit") {
 				code = "rate_limit"
 			}
 			if strings.Contains(lower, "forbidden") {
