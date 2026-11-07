@@ -1,9 +1,8 @@
 # GitHub pull request watch trigger
 
-`github-pr-watch` observes one selected GitHub pull request and supplies bounded
-review context to the registered destination. It keeps observing after a
-notification; the caller explicitly rearms the same registration with a returned
-confirmation position.
+`github-pr-watch` observes one selected GitHub pull request and automatically
+sends later changes to the same registered destination, even while the receiving
+agent is working. Register once for the selected PR and waiting context.
 
 The first complete observation establishes a silent baseline. Later observed
 reviews, conversation comments, review comments/replies, reviewer requests,
@@ -45,15 +44,21 @@ Use separate plugin processes and host-specific environment
 assignments for different hosts; do not implicitly reuse one environment token
 across hosts.
 
-This walkthrough builds the signal implementation with its base-revision fix
-from [#103](https://github.com/nokamoto/agent-pulse-hub/pull/103).
-The checkout below selects that snapshot. In the first terminal, obtain and build matching
-programs. Stop on failure:
+This walkthrough uses the [continuous-notification implementation](https://github.com/nokamoto/agent-pulse-hub/pull/113)
+with the [registration timeout fix](https://github.com/nokamoto/agent-pulse-hub/pull/115)
+and the [normal stop fix](https://github.com/nokamoto/agent-pulse-hub/pull/116),
+plus the [GraphQL rate-limit classification fix](https://github.com/nokamoto/agent-pulse-hub/pull/120).
+In the first terminal, obtain that revision and build matching programs. If you
+already cloned the repository from the root README, enter it and start with
+`git checkout`. If the commit is missing, fetch it with `git fetch origin`.
+Use a fresh `pr-watch-demo` directory. To resume an existing watch, skip to
+[Stop, restart and upgrade](#stop-restart-and-upgrade).
+Stop if any command fails.
 
 ```sh
 git clone https://github.com/nokamoto/agent-pulse-hub.git
 cd agent-pulse-hub
-git checkout --detach 5b73c05d39c7e280cf8f59e11aecf8ea8d475da9
+git checkout --detach 0a4a4b075141b1009613f8765cc041a738ed4424
 mkdir ./pr-watch-demo
 run="$(python3 -c 'from pathlib import Path; print((Path.cwd() / "pr-watch-demo").as_posix())')"
 suffix="$(go env GOEXE)"
@@ -104,16 +109,6 @@ printf 'Run directory: %s\n' "$run"
 "$run/agent-pulse-hub$suffix" daemon --config "$run/daemon.json" --address 127.0.0.1:47832
 ```
 
-The generated watch uses author context: `represented_actor` is `Pull request
-author`, and `waiting_reason` is `Review new feedback on the selected pull
-request`. Before registering, a reviewer can instead edit `watch.json` to set
-these fields to `Pull
-request reviewer` and `Assess the author's next revision and discussion` using
-a JSON editor. They are descriptions supplied by you, not authenticated identity
-or instructions granting authority. Both are required nonempty strings, bounded
-to 128 and 512 UTF-8 bytes respectively. Selection and waiting context are
-immutable within a registration; changed context requires a separate registration.
-
 Wait for `plugin_ready` with `available:true` for both configured plugins and
 then `daemon_ready` with `restored_registrations:0` for fresh state. If the port
 is occupied, choose another loopback port consistently. Keep this terminal open.
@@ -125,7 +120,15 @@ move or share it while running. Reuse the same configuration and state on restar
 
 ## Register and receive context
 
-In a second terminal, enter the printed run directory:
+The generated `watch.json` uses author context. For a reviewer, edit that file
+in the printed run directory before registering. Set `represented_actor` to
+`Pull request reviewer` and `waiting_reason` to `Assess the author's next
+revision and discussion`. Both fields describe your waiting context. They are
+required nonempty strings limited to 128 and 512 UTF-8 bytes respectively.
+They carry no additional authority or authenticated identity. Changing the PR
+selection or waiting context requires a separate registration.
+
+In the second terminal, run the following and paste the printed path when prompted.
 
 ```sh
 printf 'Run directory printed in the first terminal: '
@@ -136,12 +139,12 @@ cat "$run/registration.json"
 subscription="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["ok"] is True; print(r["subscription_id"])' "$run/registration.json")"
 ```
 
-Require exit zero, `ok:true` and a `subscription_id`; stop on failure. Keep this
-response and address. Equivalent registration returns the same active ID and
-does not rearm a notification wait. Registration validates access but does not
-itself establish the baseline. Polling defaults to 60 seconds after each round
-completes. Silence alone does not prove success. Before creating your first
-test change, confirm a saved complete baseline with this read-only check:
+Require exit zero, `ok:true` and a `subscription_id`. Stop on failure. Keep this
+response and address. Equivalent registration returns the same active ID.
+Registration validates access, and the first complete polling round establishes
+the baseline. Polling defaults to 60 seconds after each round completes.
+Before creating your first test change, confirm a saved complete baseline with
+this read-only check.
 
 ```sh
 python3 - "$run" "$subscription" <<'PY'
@@ -155,8 +158,9 @@ try:
     manifest = json.loads((generation / "manifest.json").read_text(encoding="utf-8"))
     header = json.loads((generation / "00000000000000000000.json").read_text(encoding="utf-8"))
     assert manifest["subscription_id"] == sys.argv[2]
-    assert manifest["schema"] == "github-pr-watch-v3"
-    assert header["version"] == 3 and header["signal_version"] == 1
+    assert manifest["schema"] == "github-pr-watch-v4"
+    assert header["version"] == 4 and header["profile"] == "signals-v3"
+    assert header["signal_version"] == 1
     assert header["kind"] == "header" and header["baseline"] is True
     assert header["observation_sequence"] > 0
 except (OSError, ValueError, KeyError, AssertionError):
@@ -169,16 +173,21 @@ Require exit zero and `Complete baseline saved through` with an observation time
 The example uses the default state directory; adapt `root` if you chose
 `--state-dir`. A generation can disappear during replacement: a failed read
 means retry the read after a later checkpoint, never edit state. Inspect
-`github_pr_watch_failure` and save diagnostics if no complete baseline becomes
-available. Only after success, add an authorized comment or other persistent
-change to the selected PR and leave it present until observed.
+`github_pr_watch_failure` and save diagnostics in the first terminal if no
+complete baseline becomes available. After success, add an authorized comment
+or other persistent change to the selected PR and leave it present until observed.
 
-After a later complete round detects that change, wait for the hub's
-`delivery_result` with `outcome:"accepted"` for this subscription, then read:
+After a later complete round detects that change, wait in the first terminal
+for `delivery_result` with `outcome:"accepted"` for this subscription. Read the
+output file from the second terminal.
 
 ```sh
 cat "$run/events.jsonl"
 ```
+
+After the first record appears, add another authorized change. Check the file
+after the next complete round for a new record with the same subscription ID.
+Keep the daemon running and use the existing registration throughout.
 
 Each model-output record has the subscription ID, input name and external-data
 permission notice. Its `context` string decodes to JSON with PR identity, waiting
@@ -196,7 +205,7 @@ or source files. No notification decides whose turn it is.
 ## Interpret independent signals
 
 Existing failures, conflicts and Ready status are silent in the first complete
-baseline. After it, any one eligible signal can consume the active wait:
+baseline. After it, any one eligible signal can trigger a notification.
 
 | Signal | What independently notifies |
 | --- | --- |
@@ -220,10 +229,11 @@ A missing base ref is explicitly unavailable. An unsupported enum or failed
 required retrieval rejects the complete round and preserves prior progress;
 it cannot be treated as empty successful CI.
 
-The PR-associated base OID and the current base-ref target can differ, including
-on merged PRs. Stable differences are accepted; the current target identifies
-the conflict pair. Changes in either field during acquisition reject that
-round. Existing accessible closed/merged PRs can establish silent baselines.
+The base revision associated with the PR and the commit at the tip of the base
+branch can differ, including on merged PRs. Stable differences are accepted.
+GitHub reports conflicts for the current base branch tip and PR head. Changes
+in either base field during acquisition reject that round. Existing accessible
+closed and merged PRs can establish silent baselines.
 The plugin never merges a PR or resolves a conflict.
 
 CI changes include their result, source identity, head and execution provenance.
@@ -233,138 +243,109 @@ exact result groups and explicit omitted counts/links. No observable results
 does not mean successful CI. Detail URLs and PR text are external data, not
 commands or permission to retrieve logs, rerun CI or modify the PR.
 
-## Assess and wait again
+## Assess automatic notifications
 
-One admitted notification consumes the current wait even if the action fails.
-Monitoring continues while you or the receiving agent assess the context or do
-authorized work. No second notification is admitted until an explicit rewait or
-normal daemon restart. Action acceptance is separate from actual assessment.
+Authors can assess new feedback and make authorized revisions while the watch
+continues. Reviewers can assess new revisions and discussion, then act or keep
+waiting. In both roles, the agent makes its own decision under its existing
+permissions. There is no recipient acknowledgement step. The old `rewait`
+command and position-file workflow are retired.
 
-If no context reached you, inspect the action diagnostics and actual destination
-before recovery. Do not invent a position. After resolving the cause, you can
-choose the normal stop/restart procedure below with the same configuration and
-state. An uncertain outcome may already have delivered data and may notify again
-after restart; inspect the destination before deliberately repeating work.
+The hub offers the next eligible context after the current delivery reaches a
+terminal outcome. A terminal failure or unknown outcome leaves later distinct
+changes eligible while the route is available.
+If delivery is unknown, inspect the action diagnostics and the actual
+destination before taking any action.
+The same change range is never submitted again as a new notification just
+because its delivery failed or is unknown. For hub-managed retry of the original
+notification, see the [Codex Queue notification mode](../../actions/codex-queue/readme.md).
 
-For the local example, the following selects the latest record for this saved
-subscription and writes its position as a JSON string. Run it only after reading
-and assessing that record. With another action, obtain the position from the
-actual received context instead of this file.
+Each context contains at most eight changes and 8,192 decoded UTF-8 bytes.
+`continuation.has_more:true` means more retained changes were waiting when the
+context was prepared. `through_sequence` marks its last represented change,
+`observed_through_sequence` marks the latest observed change at preparation,
+and `remaining_changes` counts the outstanding suffix at that time. The hub
+and trigger continue that suffix automatically, even without new GitHub
+activity. Later complete rounds can add changes while you work. Current state
+can be newer than the represented changes, as indicated by its time and label.
 
-```sh
-python3 - "$run" "$subscription" <<'PY'
-import json
-import secrets
-import sys
-import time
-from pathlib import Path
-
-run = Path(sys.argv[1])
-records = [json.loads(line) for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()]
-record = next(r for r in reversed(records) if r["subscription_id"] == sys.argv[2])
-context = json.loads(record["context"])
-print(json.dumps(context["continuation"]))
-(run / "position.json").write_text(json.dumps(context["confirmation_position"]), encoding="utf-8")
-(run / "operation.txt").write_text(str(time.time_ns() // 1000000) + ":" + secrets.token_hex(16), encoding="utf-8")
-PY
-operation="$(cat "$run/operation.txt")"
-"$run/agent-pulse-hub$suffix" rewait --subscription-id "$subscription" --operation-id "$operation" --confirmation-position-file "$run/position.json" --address 127.0.0.1:47832
-```
-
-Require exit zero and `ok:true` with the same subscription and operation IDs.
-Use a freshly generated operation ID after daemon startup and within five
-minutes of generation. It is one explicit wait intent. A deliberate identical
-same-ID retry during the same daemon run and five-minute window returns the
-retained result; it does
-not open another wait. After restart the old operation ID is invalid. An
-uncertain response is not evidence of success; do not automatically generate
-new operations or register replacement routes.
-
-`continuation.has_more:true` means a retained suffix remains. Each context
-contains at most eight changes and 8,192 decoded UTF-8 bytes; it can contain fewer
-when metadata or bodies are large. `through_sequence` is the last represented
-change, `observed_through_sequence` is the journal tail at preparation, and
-`remaining_changes` counts the suffix at that time. Assess each received part,
-then repeat the explicit position/rewait procedure on the same subscription.
-No further GitHub activity is needed for retained continuation. If `has_more`
-is false, a successful rewait waits for a later change. Changes observed while
-you worked remain eligible. Current state can be newer than a represented prefix;
-its time and label explain that distinction.
-
-Positions cover only represented changes. `body_status:"empty"` means a genuinely
-empty body; `shortened` identifies omitted text with a digest, reason and source
-link. Historical or deleted full text may be unavailable. Advancing through such
-a record does not assert you read the omitted text. Entirely omitted changes
-remain outside its position. Keep the latest position: only the latest four
-issued positions are retained without a time TTL, with the active comparison
-position pinned separately. An older position can expire; never replace a
-rejected position with the present silently.
-
-For an author, assess feedback, perform any authorized revision, then rewait
-from the assessed position to receive discussion observed during that work.
-For a reviewer, assess the author's observed revision/discussion, decide to act
-or continue waiting, and rewait from the assessed position. Both workflows use
-the same registration and fixed destination.
+`confirmation_position` is an informational reference for represented changes.
+`body_status:"empty"` means a genuinely empty body. `shortened` identifies
+omitted text with a digest, reason and source link. Historical or deleted full
+text may be unavailable. Entirely omitted changes remain outside the position.
 
 ## Use an agent destination
 
-The local model action does not resume a coding agent. To deliver to Codex,
-follow the [Codex Queue action guide](../../actions/codex-queue/readme.md) for
-its trusted native executable, build, readiness and target prerequisites. Keep
-this guide's `github-pr-watch` input and watch arguments; replace the model output
-configuration and destination with that guide's `codex` output and explicit
-recipient. Use its registration skill directly in the top-level conversation
-with input name `github-pr-watch`, or its direct hub command with that input.
+For a separate Codex walkthrough, start with a fresh run directory and state.
+Follow the [Codex Queue action guide](../../actions/codex-queue/readme.md) for its trusted
+native executable, build, readiness and target prerequisites. Before starting
+the daemon, combine this guide's `github-pr-watch` input configuration and watch
+arguments with the `codex` output configuration. Register this watch with the
+explicit Codex recipient. Use the action's registration skill in the top-level
+conversation with input name `github-pr-watch`. For direct registration, use the
+action guide's command with `--input-plugin github-pr-watch` and point
+`--watch-args-file` to this watch's `watch.json`.
 The action's accepted result proves queue acceptance; inspect the receiving
-conversation's actual assessment separately. Its identity rules and existing
-agent permissions still apply. Use this guide's explicit rewait procedure with
-the position from the context the agent actually received and assessed.
+conversation for actual receipt and the agent's decision separately. The
+destination's identity rules and the agent's existing permissions still apply.
 
 ## Stop, restart and upgrade
 
-From the second terminal, stop normally:
+In a new shell, set `run` to the existing absolute run directory and `suffix`
+to the executable suffix used in the build (`.exe` on Windows, empty otherwise).
+Prepare the same GitHub authentication environment in the daemon's terminal.
+If the daemon is still running, stop it from the second terminal.
 
 ```sh
 "$run/agent-pulse-hub$suffix" stop --address 127.0.0.1:47832
 ```
 
-Wait for daemon and configured-plugin exits. Restart the same foreground command
-with the same configuration and state. Expect `daemon_ready` with
-`restored_registrations:1` if this is the only saved registration; keep the same
-subscription ID and do not register again. Restart opens a new notification wait
-from successfully saved accepted-delivery progress. An unchanged accepted prefix
-does not repeat solely due to restart; a retained suffix may notify immediately.
-A fresh observed change can also notify without a new client request. This is
-delivery progress, not a claim that an agent assessed the previous message.
+In the first terminal, look for `runtime_state_saved` for this subscription
+during shutdown. After the daemon and plugins exit, confirm the file
+`daemon.json.state/runtime/<subscription_id>/continuous-active.json` is absent
+under the run directory. If you set `--state-dir`, look under that directory
+instead. The marker is cleared only after the final saves succeed.
 
-Before replacing binaries, changing budgets or backing up, stop the daemon using
-this state directory and wait for its configured plugins to exit. Preserve the
-entire state tree. Upgrade hub and plugin together.
+In the first terminal, restart with only the last `daemon` command from
+[Configure and start](#configure-and-start). Reuse the previous configuration,
+address and any `--state-dir` argument. If this is the only saved registration,
+expect `daemon_ready` with `restored_registrations:1`. Keep the same subscription
+ID and skip registration.
+A retained suffix may notify immediately. Restart continues
+after the last selected range, including a range whose delivery failed or was
+unknown. Add a fresh authorized change after startup and check for a new record
+under the original subscription ID.
 
-`--state-profile signals-v3` is the default for every watch in this input
-process and saves `github-pr-watch-v3` state. This guide selects it explicitly.
-V1/v2 discussion state cannot establish historical signal coverage: startup
-rejects it with `signal_state_incompatible` and preserves it before activation.
-There is no implicit migration, fallback or fresh baseline. Incompatible saved
-routes can prevent the whole daemon from becoming ready.
+If startup reports `continuous_progress_unverified`, preserve the stopped
+state directory with its marker intact. A previous run left the marker because
+continuity was unverified. Restore only from a verified clean backup that
+includes the selection progress for every change range that might already have
+been submitted. An older checkpoint alone cannot establish that coverage. If
+you cannot verify coverage, use the
+[offline recovery procedure](../../../docs/design/windows-operations.md#trigger-runtime-state-recovery)
+with `DELETE`, then register the watch again. Recreation loses prior
+continuity and starts a new silent baseline.
 
-For intentional discussion-only compatibility, stop first and select
-`--state-profile discussion-v2` on the configured input. This profile does not
-acquire or notify CI/conflict/readiness signals. It retains v1-to-v2 migration,
-nonce, positions and discussion history, saving streamed v2 on the next
-successful checkpoint. It cannot read v3 state, and changing profiles never
-converts state in either direction.
+### Upgrade an existing watch
 
-To enable signals for an old discussion watch, preserve the stopped state and
-either keep using compatible discussion binaries/profile or deliberately
-follow the linked offline recovery/reset procedure, accepting lost continuity.
-A recreated watch has a new nonce and cannot inherit old positions. Preserve
-matching old binaries and the stopped tree for rollback; using an older backup
-deliberately loses intervening progress. Invalid newest state blocks restore
-without falling back to an older generation.
-Follow the [state recovery guide](../../../docs/design/windows-operations.md#8-demonstrate-deliberate-saved-state-recovery)
-for deliberate offline repair/reset. Resetting or recreating a watch loses its
-old history and establishes a fresh silent baseline; it is an operator decision.
+Stop normally and confirm the final save before replacing binaries. Back up the
+entire stopped state directory and the matching old binaries. Upgrade the hub
+and trigger together and keep the registration's configuration and profile.
+
+The default `--state-profile signals-v3` restores compatible legacy v3
+checkpoints. The discussion-only `--state-profile discussion-v2` restores
+compatible legacy v1/v2 checkpoints and does not observe CI, conflict or
+readiness signals. Either profile writes v4 at the next successful checkpoint.
+The existing registration and its observation history carry forward.
+Previously attempted changes remain selected, and the remaining history can
+notify automatically. An attempted delivery alone provides no evidence of
+acceptance.
+
+A profile change does not convert history between discussion and signals.
+Keep the compatible profile for an existing watch, or deliberately recreate it
+using the offline procedure above to start with the new profile. Invalid or
+incompatible newest state blocks startup. Older binaries cannot read v4.
+A rollback needs the matching stopped backup and loses any intervening progress.
 
 ## Capacity and failures
 
@@ -393,10 +374,8 @@ ten-second window. Larger budgets do not remove these limits.
 | Network/5xx/rate limit/timeout/pagination failure | Prior progress stays intact. Transient retries use 5, 10, 20, 40, then 60 seconds with up to 20% positive jitter and respect later rate-reset/Retry-After times. Permanent failures stay visible and retry at the normal interval. |
 | `observation_resource_exhausted`, `history_resource_exhausted` | The rejected candidate does not replace prior progress. Inspect the named budget/observed bytes; raise the relevant budget deliberately or resolve the source/resource problem. Retained continuation remains available during acquisition failure. |
 | `item_metadata_exhausted`, `notification_metadata_exhausted` | Mandatory data cannot fit a state object or one context. Progress cannot skip the item; preserve state and report the failure. |
-| Save failure / continuity warning | Monitoring can continue, but continuity at next restart cannot be guaranteed until a later successful checkpoint. Preserve diagnostics and repair the storage cause. |
-| `wait_active`, `rewait_busy` | An unconsumed wait or unfinished delivery/checkpoint prevents rearming. Wait for its result; do not create a replacement registration. |
-| `position_rejected` / `continuity_expired` | The position is malformed, foreign, incompatible or no longer retained. Investigate before deliberate offline reset/recreation; no automatic baseline reset occurs. |
-| `operation_expired`, `operation_conflict`, transport loss | Reuse an operation ID only in the same daemon run, within its five-minute window and for the same subscription/position. A lost response remains uncertain until an allowed explicit same-ID query resolves it; no automatic retry is implied. |
+| Save failure / continuity warning | Monitoring can continue. Preserve diagnostics and repair the storage cause. Restart continuity requires a successful final save and removal of the active marker during normal shutdown. |
+| `continuous_progress_unverified` | Startup blocked because a prior run could not verify saved continuity. Preserve the state and use the stop and recovery instructions above. |
 
 No stopped-period history, crash/power-loss continuity, exactly-once delivery or
 agent-processing guarantee follows from saved state. The trigger does not
@@ -408,7 +387,7 @@ External content and waiting context never enlarge authority.
 For plugin authors, the [plugin design](../../../docs/design/github-pr-watch.md),
 [capacity contract](../../../docs/design/github-pr-watch-capacity.md),
 [streamed state](../../../docs/design/runtime-state-stream.md),
-[rewait control](../../../docs/design/pr-watch-rewait.md) and
+[continuous notification](../../../docs/design/pr-watch-rewait.md) and
 [public protocol](../../../docs/design/plugin-v1.md#cross-language-and-standalone-callers)
 define standalone Session verification, compatibility and ownership. The hub
 owns routing and storage; the trigger owns GitHub observation and opaque progress.
