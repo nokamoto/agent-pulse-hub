@@ -237,21 +237,32 @@ eligible entries from the last complete observation have been emitted. The
 Session continues processing notices and checkpoints during the wait. Never
 queue missed ticks. Bound each HTTP request
 to ten seconds, each response to 8 MiB, and each observation to 120 seconds.
-These are retrieval resource bounds, not notification deadlines. Oversized or
-timed-out responses are incomplete failures. Keep HTTP work off the ordered
-protocol receiver so checkpoints remain responsive.
+These are retrieval resource bounds, not notification deadlines. Classify an
+oversized response as incomplete retrieval and a timeout as a network failure.
+Both invalidate the observation. Keep HTTP work off the ordered protocol
+receiver so checkpoints remain responsive.
 
-For network/timeouts and 5xx errors, retry retrieval after the greater of the
-interval and exponential delay starting at one second and capped at five
-minutes. Classify HTTP 429 as rate limiting. Classify HTTP 403 as rate limiting
-when it carries a nonempty `Retry-After`, `X-RateLimit-Remaining: 0`, or a
-bounded JSON error message indicating a rate limit or abuse detection.
-Classify other HTTP 403 responses as permission failures. For rate limiting,
-honor valid `Retry-After` (delta or
-HTTP date) and exhausted `X-RateLimit-Reset`; never retry before the latest
-applicable server time. Without guidance, rate-limit delay is at least one
-minute. Successful observations reset backoff. Retry incomplete collections
-after at least the interval. Authentication/permission/unsupported-API errors
+For network errors, timeouts, 5xx errors, and rate-limit failures, use the
+greater of the configured interval and the exponential delay. Start the
+exponential term at one second. Use its current value to schedule the retry,
+then double it for a subsequent failure in these categories, up to five
+minutes. Other failures leave the term unchanged. A successful complete
+observation resets it to one second.
+
+Classify HTTP 429 as rate limiting. Classify HTTP 403 as rate limiting when
+it carries a nonempty `Retry-After`, `X-RateLimit-Remaining: 0`, or a bounded
+JSON error message indicating a rate limit or abuse detection. Classify other
+HTTP 403 responses as permission failures. For rate limiting, also include
+the wait until the latest applicable server time from valid `Retry-After`
+(delta or HTTP date) and exhausted `X-RateLimit-Reset` when computing that
+maximum. Use a one-minute minimum when neither header supplies guidance. The
+five-minute cap applies to the exponential term.
+
+Classify redirects and HTTP 404 and 422 responses from the selected API as
+unsupported API. Classify partial or malformed search results as incomplete
+retrieval. Retry incomplete retrieval and capacity failures after at least
+the configured interval while retaining the exponential term.
+Authentication/permission/unsupported-API errors
 retain state and report a watch error; probe again no faster than the greater
 of the interval and five minutes, with no credential fallback. A later success
 recovers monitoring; environment credential changes require restart.
@@ -454,7 +465,7 @@ filesystem, or wall-clock sleeps belong in these unit matrices.
 | U-AUTH | Host invalid forms and case normalization; both/one/empty tokens; rejected chosen source never falls back; CLI absent/error/timeout/output overflow and sanitized environment; `/user` malformed IDs and state identity mismatch; no secret markers in errors. |
 | U-OBSERVE | Direct query and open PR validation; incomplete empty response before a complete baseline containing A leaves the baseline unset, then A stays quiet. A/A/empty/A produces only the reappearance attempt. A/A across unobserved cancellation stays quiet for a baseline occurrence or preserves the single earlier attempt for a post-baseline occurrence. Later B and C in distinct repos get separate exact-URL events; the same PR number in different repos stays distinct. |
 | U-SCHEDULE | No search or emission before grant, including on a dormant checkpoint and on quiescence before grant. Activation starts one initial search. Duplicate and late grants do not start polling for an active or quiesced watch. A controlled clock verifies the default 60s and a configured positive duration from retrieval result processing. Reject zero, negative, and malformed durations. Verify non-overlapping polls, server retry timing and exponential reset. With two eligible matches, hold the first event's notice through the interval and verify there is no next retrieval. Release its slot, emit the remaining event, and allow polling while its outcome is pending. Checkpoints remain responsive and quiescence cancels the wait. |
-| U-RETRIEVE | Cover 0/100/1,000/1,001 results, page failure, duplicate/count drift, incomplete flag, invalid IDs/URLs, redirect, and body limit. Cover 401, 429, 5xx and network errors. Compare an ordinary 403 with each 403 rate-limit signal and verify the respective permission or rate-limit delay. Every failure preserves A, recovery does not repeat A, and retries respect server guidance. |
+| U-RETRIEVE | Cover 0/100/1,000/1,001 results, page failure, duplicate/count drift, incomplete flag, invalid IDs/URLs, redirect, and body limit. Cover 401, 429, 5xx and network errors. Compare an ordinary 403 with each 403 rate-limit signal and verify the respective permission or rate-limit delay. Use a controlled clock to test successive rate-limit failures where each of the configured interval, exponential delay, and latest server retry time determines the wait. With no guidance and an interval below one minute, check the one-minute floor and verify that the seventh and eighth consecutive failures wait 64 and 128 seconds. Verify that an intervening incomplete result retains the exponential term and a complete observation resets it. Every failure preserves A, recovery does not repeat A, and retries respect server guidance. |
 | U-STATE | Round-trip a quiescing v2 checkpoint before the first complete observation and separately one after a complete empty baseline. Restore each with A and expect silence and one A event, respectively (AC-009). Restore exact v1 payloads with an empty array and with present A/B/C at statuses 0/1/2. With new D in each next complete observation, expect D alone and A plus D, respectively; B and C stay quiet and the next checkpoint is v2 (AC-010). Check wrong identity, unknown schema, v1 status 3, v2 false flag with rows, and wrong flag types. Test notice-before-checkpoint ordering, late notices after reappearance, no retry while queued/in progress or after failure/unknown acceptance, 1,000 maximum-width rows, oversize rejection, and quiescence fencing late results. |
 
 ### CI acceptance cases and selection
@@ -582,53 +593,150 @@ neither inventory replaces the other.
 
 | Check | Mapping | Preconditions, actions and expected result | Evidence and evaluator |
 | --- | --- | --- | --- |
-| GRR-D01 | AC-001/002/003/005/008 | Run the shipping plugin on github.com with controlled reviewers, requester, team and two repositories. Perform the baseline and restart walkthrough and the authentication matrix below. Resume the retained watch again. Introduce a direct request for the watched reviewer in the other repository, a team-only request, a direct request addressed only to a different reviewer, and closed and merged PRs. Expect only the new direct open URL. Cancel the watched reviewer's direct request on A while leaving A open. Wait for a successful periodic checkpoint without A, then re-request review from the watched reviewer on A and expect its URL once. | The delivery maintainer records the shipping revision, redacted configuration, host, credential type and permissions, stimuli, URL events, acceptance outcomes, diagnostics and successful saves and exits. |
+| GRR-D01 | AC-001/002/003/005/008 | Run the shipping plugin on github.com with controlled reviewers, requester, team and two repositories. Perform the baseline, restart, exclusion, and reappearance walkthroughs and the authentication matrix below. | The delivery maintainer records the shipping revision, redacted configuration, host, credential type and permissions, stimuli, URL events, acceptance outcomes, diagnostics and successful saves and exits. |
 | GRR-D02 | AC-001/002/003/005/008, Q-001 | Repeat D01 on a qualified GHES 3.19.x installation with a known patch version and controlled repositories, users and team. Verify host isolation as described below. | The delivery maintainer records the exact patch and API profile, installation owner, redacted destination metadata and a separate result with the D01 evidence. |
 
-For the baseline and restart walkthrough, use an isolated reviewer account
-with controlled requests so unrelated matches cannot interfere. Choose a
-poll interval long enough to collect the first observation's checkpoint
-before a second poll. Use the issue IDs of the controlled PRs to correlate
-results with saved rows.
+#### Shared delivery evidence
+
+Use an isolated reviewer account and controlled requests. Route the
+walkthrough watch to the shipping [model output](mvp.md#model-output) in legacy
+mode. For each observation window, record the log start and the current end
+of the append-only JSONL file before the specified stimulus or startup.
+Evaluate new records for the walkthrough registration. When a window ends
+with a normal stop, check hub reception and delivery through quiescence and
+the final save, and record successful process exit separately.
+
+Match each `event_admitted` for the registration to one new JSONL row and one
+accepted `delivery_result` by `delivery_id`. Compare the row's context to the
+expected exact PR URL. In a silent window require zero admissions and zero new
+rows. An unexpected URL or extra admission fails the check. Inspect
+`event_rejected`, `plugin_event_rejected`, `plugin_frame_rejected`,
+`delivery_discarded`, and nonaccepted delivery results for the test watch or
+its input instance. Treat an observation window with rejected or discarded
+work, a premature Session loss, or missing logs as unverified unless the
+available evidence already shows a failure.
+
+Choose a `poll_interval` longer than the
+[five-second core checkpoint cadence](trigger-runtime-state.md#periodic-checkpoints-and-save-failures)
+with time for startup, retrieval, delivery, and normal stop. For each check
+of a first observation, record a conservative deadline one configured poll
+interval after sending the fresh registration request or starting the daemon
+for a retained watch. Collect the first-complete diagnostic and the required
+save or completed stop before that deadline. This bounds the evidence to
+the first poll because the interval starts after retrieval result processing.
+If the deadline is missed, repeat the walkthrough with a longer interval.
+
+Inspect saved progress read-only using the core runtime-state envelope. Use
+issue IDs to identify the controlled rows. Correlate the first-complete
+diagnostic and `runtime_state_saved` record with the registration and saved
+generation. Keep tokens and unrelated checkpoint contents out of retained
+evidence.
+
+#### Baseline and restart walkthrough
 
 1. Directly request review from the controlled reviewer on open PR A before
-   registering. Wait for the registration's first-complete diagnostic with
-   `baseline_created=true` and one match. While the watch runs, use its
-   successful periodic save record to identify a checkpoint with A at status 3.
-   Verify there is no A output before requesting B.
-2. Keep A present and directly request review from the same reviewer on open
-   PR B. Wait for its exact URL and confirmed action acceptance. Stop normally
-   and verify the final checkpoint has A at status 3
-   and B at status 2. Record the successful save and process exits.
+   registering. Independently run the plugin's open direct-user query on the
+   same host with the watched identity and repository access. Start the
+   fresh watch once a complete result contains only A. Verify its
+   first-complete diagnostic has `baseline_created=true` and one match. Use
+   a successful periodic save to identify A at status 3. Apply the silent
+   window checks from startup through the point just before requesting B.
+2. Begin a new evidence window before directly requesting review from the
+   same reviewer on open PR B in the first repository. Keep A present. Wait
+   for B's exact URL and confirmed action acceptance, then stop normally.
+   Require exactly one accepted B delivery in this window and a successful
+   final checkpoint with A at status 3 and B at status 2.
 3. Keep A and B present and restart the retained watch. Wait for the same
    registration's first-complete diagnostic with two matches and
-   `baseline_created=false`. Stop and verify a successful final checkpoint
-   before the next poll. Verify the checkpoint has A at status 3 and B at
-   status 2, with no additional URL events. Retain the diagnostic, final save,
-   exit and output records together to assess silence after an actual observation.
+   `baseline_created=false`. Stop normally within the first-poll deadline.
+   Verify a successful final checkpoint with A at status 3 and B at status 2
+   and apply the silent window checks to this restart.
 
-Inspect saved progress read-only using the core runtime-state envelope. Record
-only the controlled row assertions and their correlation to the observation
-and save. Keep tokens and unrelated checkpoint contents out of retained evidence.
+#### Exclusion walkthrough
 
-For authentication on each host, use a fresh watch for each condition and
-compare the authenticated user ID in a successful checkpoint with the
-expected test identity. Use two valid environment tokens for distinct test
-users and omit `gh` from PATH. Verify that setting both selects the
+1. With the daemon stopped after the baseline and restart walkthrough, keep A
+   and B present. Add a direct request to the watched reviewer on open PR C in
+   the second repository. Prepare four controls in the two test repositories.
+
+   | Control | Fixture and search evidence |
+   | --- | --- |
+   | Team-only | Leave the PR open. Request review from a team containing the watched reviewer, with no personal request. Confirm the exact PR in an open `team-review-requested:ORG/TEAM` search and confirm the current requested reviewers. |
+   | Different reviewer | Leave the PR open and request review only from another test user. Confirm the exact PR in an open `review-requested:USERNAME` search for that user and verify the direct assignment in the current requested reviewers. |
+   | Closed without merge | On an open PR, request review from the watched reviewer. Confirm it appears in an open direct-user search as that reviewer. Close the PR without merging, then confirm the same issue ID in an `is:closed is:unmerged` search. |
+   | Merged | On another open PR, request review from the watched reviewer and confirm its open direct-user search result. Merge it with the request pending in a test repository that permits this. Confirm the same issue ID in an `is:merged` search. |
+
+2. Run the independent searches under the watched identity and equivalent
+   repository access. Scope control queries to a fixture repository and a
+   unique PR title marker. Require complete results and compare issue IDs.
+   The delivery maintainer checks current reviewer assignments separately
+   with authorized read access to the
+   [requested reviewers endpoint](https://docs.github.com/en/rest/pulls/review-requests#get-all-requested-reviewers-for-a-pull-request).
+   After closing or merging a control, repeat its state query with
+   `user-review-requested:@me` to check whether the same issue ID is indexed
+   with both the new state and the watched reviewer still requested. If the
+   service clears the request or that combined evidence is unavailable,
+   record the state-only exclusion as unverified on that host. Retain the
+   observed transition separately from the service-free `is:open` query and
+   closed-record validation checks. Once the direct-user open search
+   contains A, B, and C, test the qualified controls together. Record each
+   fixture's issue ID, state, assignment, search assertions and timestamps.
+3. Keep the fixture states fixed and start the retained watch. Expect only
+   the exact C URL and its accepted delivery. Capture the first-complete
+   diagnostic with three matches and `baseline_created=false`. Stop normally
+   within the first-poll deadline and confirm a successful final checkpoint
+   containing exactly A, B and C, with C at status 2. Require exactly one
+   accepted C delivery in this activation's evidence window.
+4. Restart with the same fixtures. Require a second first-complete diagnostic
+   with three matches and `baseline_created=false`. Stop normally within
+   the first-poll deadline and verify a successful final save with the same
+   three rows. Apply the silent window checks to this activation.
+
+A control remains unverified if its indexed preconditions or either complete
+observation cannot be established.
+
+#### Reappearance walkthrough
+
+Resume the retained A/B/C registration using the same state root, host,
+watched identity, and model output file as the exclusion walkthrough. Start
+the evidence window before startup. Cancel the watched reviewer's request
+on A while leaving A open. Wait for a new successful periodic save of that
+registration without A's row. Then re-request review from the same reviewer
+on A and wait for the exact A URL and action acceptance. Stop normally.
+Require exactly one accepted A delivery in the window and A at status 2 in
+the successful final checkpoint.
+
+#### Authentication and host isolation
+
+For each authentication condition on each host, start a daemon under the
+specified environment with its own state root and output file, and register
+a fresh watch. In accepted cases, compare
+the authenticated user ID in a successful checkpoint with the expected test
+identity. Use two valid environment tokens for distinct test users and omit
+`gh` from PATH in the environment-token tests. Verify that setting both selects the
 `GH_TOKEN` identity and setting only `GITHUB_TOKEN` selects its identity.
 Then use a rejected `GH_TOKEN` with that same valid `GITHUB_TOKEN` and
 expect a rejected registration and authentication diagnostic. With both
-variables empty, verify acceptance using the saved login for the selected
-host and rejection in an environment with no usable saved login.
+variables empty, run with `gh` on PATH to verify acceptance using the saved
+login for the selected host. Repeat with both variables empty and no usable
+saved login, and verify rejection and its authentication diagnostic.
 
-For host isolation, use separate daemon environments, state roots and
-control addresses for the github.com and GHES tokens. Record the HTTPS
-destination host and port for each plugin instance, using a TLS pass-through
-CONNECT log or equivalent per-instance egress metadata. Verify that the
-github.com instance connects only to `api.github.com:443` and the GHES
-instance only to its configured API host on port 443. Correlate those
-destinations with the expected authenticated identities and completed
-observations. Retain only destination metadata and the identity assertions.
+For host isolation in GRR-D02, use separate daemon environments, state
+roots and control addresses for the github.com and GHES token runs. Capture
+the logical destination of every outbound HTTPS connection attempt by each
+trigger instance during authentication and polling. Cover direct and proxied
+paths. For example, route HTTPS through a dedicated TLS pass-through CONNECT
+listener for each instance and use a test egress boundary that denies and
+records attempts to connect directly. The listener records the requested
+host and port while the plugin verifies the service's certificate end to end.
+Include blocked attempts when evaluating the run.
+
+Require completed observations for the expected authenticated identities.
+The github.com instance may contact only `api.github.com:443`, and the GHES
+instance only its configured API host on port 443. An observed attempt to
+contact another origin fails the check. If a path or attempted destination
+cannot be accounted for, record host isolation as unverified.
+Retain instance, destination, timestamps, outcome and identity assertions
+without capturing TLS payloads or credentials.
 
 Real-service execution may be deferred, but remains visibly unverified until
 these checks run. Review finalized README/examples for all FR-010 topics,
