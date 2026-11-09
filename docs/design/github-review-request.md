@@ -172,7 +172,10 @@ have an exact positive uint64 issue ID and an HTTPS PR `html_url` on the selecte
 web host with no user information, query, fragment, or nondefault port. Require
 the `/owner/repository/pull/<positive-number>` path shape and the public
 8,192-byte context bound. Treat malformed data, missing pages, duplicate IDs,
-count changes, and result overflow as incomplete retrieval. Do not follow
+and count changes as incomplete retrieval. After decoding the first page,
+classify a total above 1,000 with `incomplete_results=false` as a capacity
+failure before validating item count and match content. The observation
+remains incomplete. Do not follow
 arbitrary response URLs or `Link` targets with the credential; construct page
 requests locally against the selected API origin. Reject HTTP redirects.
 
@@ -235,32 +238,50 @@ The interval runs while pending events are being emitted. Start the next
 retrieval when the interval and any failure backoff have elapsed and all
 eligible entries from the last complete observation have been emitted. The
 Session continues processing notices and checkpoints during the wait. Never
-queue missed ticks. Bound each HTTP request
-to ten seconds, each response to 8 MiB, and each observation to 120 seconds.
-These are retrieval resource bounds, not notification deadlines. Classify an
-oversized response as incomplete retrieval and a timeout as a network failure.
-Both invalidate the observation. Keep HTTP work off the ordered protocol
-receiver so checkpoints remain responsive.
+queue missed ticks. Bound each HTTP request to ten seconds, each response
+body read to 8 MiB plus one byte to detect overflow, and each observation to
+120 seconds. These are retrieval resource bounds, not notification deadlines.
+Keep HTTP work off the ordered protocol receiver so checkpoints remain
+responsive.
 
-For network errors, timeouts, 5xx errors, and rate-limit failures, use the
+For a non-2xx response, classify the failure from the HTTP status and any
+applicable headers. A body read failure, timeout, or overflow leaves that
+classification and any usable retry guidance intact. A complete JSON error
+object within the body limit can also identify a rate-limited 403, even if
+the read returned an error. A transport failure
+before receiving a response or a read failure on a 2xx response is a network
+failure. A 2xx body that exceeds 8 MiB is incomplete retrieval. Each failure
+invalidates the observation and preserves prior progress.
+
+For network, service, and rate-limit failures, use the
 greater of the configured interval and the exponential delay. Start the
 exponential term at one second. Use its current value to schedule the retry,
 then double it for a subsequent failure in these categories, up to five
 minutes. Other failures leave the term unchanged. A successful complete
 observation resets it to one second.
 
-Classify HTTP 429 as rate limiting. Classify HTTP 403 as rate limiting when
-it carries a nonempty `Retry-After`, `X-RateLimit-Remaining: 0`, or a bounded
-JSON error message indicating a rate limit or abuse detection. Classify other
-HTTP 403 responses as permission failures. For rate limiting, also include
-the wait until the latest applicable server time from valid `Retry-After`
-(delta or HTTP date) and exhausted `X-RateLimit-Reset` when computing that
-maximum. Use a one-minute minimum when neither header supplies guidance. The
-five-minute cap applies to the exponential term.
+Classify HTTP 5xx as a service failure, HTTP 401 as an authentication failure,
+and HTTP 429 as rate limiting. Classify HTTP 403 as rate limiting when it
+carries a nonempty `Retry-After`, `X-RateLimit-Remaining: 0`, or a bounded
+JSON `message` indicating a rate limit or abuse detection. Classify
+redirects and HTTP 404 and 422 as unsupported API. Classify other 4xx
+responses, including other 403 responses, as permission failures.
 
-Classify redirects and HTTP 404 and 422 responses from the selected API as
-unsupported API. Classify partial or malformed search results as incomplete
-retrieval. Retry incomplete retrieval and capacity failures after at least
+When scheduling the next search after a service or rate-limit failure,
+include the wait from a valid `Retry-After` in the retry maximum. Evaluate
+the header when the bounded body read finishes or fails. Measure nonnegative
+delta seconds, including zero, from that time. Accept an HTTP date only if
+it is later than that time and use it as an absolute deadline. For rate
+limits with zero remaining quota, also accept a positive Unix timestamp in
+seconds from `X-RateLimit-Reset`. Use the later deadline when both headers
+qualify. When scheduling the next search after Session processing, include
+only the remaining time until the chosen deadline in the retry maximum.
+A qualifying deadline that has elapsed contributes zero wait. Include a
+one-minute minimum only for rate-limit failures with neither
+qualifying header. The five-minute cap applies to the exponential term.
+
+Classify partial or malformed search results as incomplete retrieval.
+Retry incomplete retrieval and capacity failures after at least
 the configured interval while retaining the exponential term.
 Authentication/permission/unsupported-API errors
 retain state and report a watch error; probe again no faster than the greater
@@ -465,8 +486,40 @@ filesystem, or wall-clock sleeps belong in these unit matrices.
 | U-AUTH | Host invalid forms and case normalization; both/one/empty tokens; rejected chosen source never falls back; CLI absent/error/timeout/output overflow and sanitized environment; `/user` malformed IDs and state identity mismatch; no secret markers in errors. |
 | U-OBSERVE | Direct query and open PR validation; incomplete empty response before a complete baseline containing A leaves the baseline unset, then A stays quiet. A/A/empty/A produces only the reappearance attempt. A/A across unobserved cancellation stays quiet for a baseline occurrence or preserves the single earlier attempt for a post-baseline occurrence. Later B and C in distinct repos get separate exact-URL events; the same PR number in different repos stays distinct. |
 | U-SCHEDULE | No search or emission before grant, including on a dormant checkpoint and on quiescence before grant. Activation starts one initial search. Duplicate and late grants do not start polling for an active or quiesced watch. A controlled clock verifies the default 60s and a configured positive duration from retrieval result processing. Reject zero, negative, and malformed durations. Verify non-overlapping polls, server retry timing and exponential reset. With two eligible matches, hold the first event's notice through the interval and verify there is no next retrieval. Release its slot, emit the remaining event, and allow polling while its outcome is pending. Checkpoints remain responsive and quiescence cancels the wait. |
-| U-RETRIEVE | Cover 0/100/1,000/1,001 results, page failure, duplicate/count drift, incomplete flag, invalid IDs/URLs, redirect, and body limit. Cover 401, 429, 5xx and network errors. Compare an ordinary 403 with each 403 rate-limit signal and verify the respective permission or rate-limit delay. Use a controlled clock to test successive rate-limit failures where each of the configured interval, exponential delay, and latest server retry time determines the wait. With no guidance and an interval below one minute, check the one-minute floor and verify that the seventh and eighth consecutive failures wait 64 and 128 seconds. Verify that an intervening incomplete result retains the exponential term and a complete observation resets it. Every failure preserves A, recovery does not repeat A, and retries respect server guidance. |
+| U-RETRIEVE | Cover 0/100/1,000 results and a decodable first page with `incomplete_results=false` and a total of 1,001 as a capacity failure. Cover page failure, duplicate/count drift, incomplete flag, invalid IDs/URLs, redirect, and body limit. Cover 401, 429, 5xx and network errors. Compare an ordinary 403 with each 403 rate-limit signal and verify the respective permission or rate-limit delay. Use a controlled clock to test successive rate-limit failures where each of the configured interval, exponential delay, and latest server retry time determines the wait. With no guidance and an interval below one minute, check the one-minute floor and verify that the seventh and eighth consecutive failures wait 64 and 128 seconds. Verify that an intervening incomplete result retains the exponential term and a complete observation resets it. Every failure preserves A, recovery does not repeat A, and retries respect server guidance. |
 | U-STATE | Round-trip a quiescing v2 checkpoint before the first complete observation and separately one after a complete empty baseline. Restore each with A and expect silence and one A event, respectively (AC-009). Restore exact v1 payloads with an empty array and with present A/B/C at statuses 0/1/2. With new D in each next complete observation, expect D alone and A plus D, respectively; B and C stay quiet and the next checkpoint is v2 (AC-010). Check wrong identity, unknown schema, v1 status 3, v2 false flag with rows, and wrong flag types. Test notice-before-checkpoint ordering, late notices after reappearance, no retry while queued/in progress or after failure/unknown acceptance, 1,000 maximum-width rows, oversize rejection, and quiescence fencing late results. |
+
+For AC-006 in U-RETRIEVE, mock HTTP responses and use a controlled clock.
+With a 30-second configured interval and a one-second exponential term, check
+the following cases:
+
+- Classify HTTP 503 at time T. Test `Retry-After: 120` and the absolute HTTP
+  date T plus 120 seconds separately. Advance the clock five seconds before
+  scheduling. Expect a service diagnostic and a 115-second wait, with the
+  same deadline of T plus 120 seconds in both cases.
+  Repeat with HTTP 502 and `Retry-After: 120` for the same result. With an
+  unusable `Retry-After` on 503, expect the 30-second interval. Expect the
+  same interval with `X-RateLimit-Remaining: 0` and a future reset on 503
+  when `Retry-After` is absent.
+- For both 503 and 429, simulate a body read timeout and an oversized body
+  separately. Advance the clock five seconds between receiving
+  `Retry-After: 120` and completing the read attempt. Expect the status-based
+  service or rate-limit diagnostic and a retry deadline 125 seconds after
+  receiving the headers. With a valid HTTP date, expect the absolute deadline
+  to stay fixed. HTTP 200 with the same body faults yields network and
+  incomplete-retrieval failures, respectively.
+- For 403 with neither rate-limit header, return a complete rate-limit JSON
+  message within the body limit along with a read error. Expect rate limiting.
+  With truncated invalid JSON or an oversized body instead, expect a
+  permission failure.
+- With 429, verify that a zero delta or an elapsed positive Unix reset with
+  `X-RateLimit-Remaining: 0` uses the 30-second interval. An expired
+  `Retry-After` date without a qualifying reset uses the one-minute floor.
+
+Preserve the preceding complete match set and verify recovery without
+repeating an unchanged match. GRR-V02 covers retry scheduling through the
+public Session with 429. The unit cases isolate status, headers, body read
+results, and clock behavior.
 
 ### CI acceptance cases and selection
 
