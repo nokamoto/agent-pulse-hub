@@ -159,7 +159,7 @@ var _ = Describe("GitHub review request acceptance", Serial, func() {
 		}
 	})
 
-	PIt("establishes a silent baseline and observes later request transitions through the public input", Label("case:GRR-V02-OBSERVATION"), func() {
+	It("establishes a silent baseline and observes later request transitions through the public input", Label("case:GRR-V02-OBSERVATION"), func() {
 		t := GinkgoT()
 		const subscriptionID = "grr-observation"
 		const token = "observation-token"
@@ -286,7 +286,7 @@ var _ = Describe("GitHub review request acceptance", Serial, func() {
 		}
 	})
 
-	PIt("restores silent baseline and accepted progress through the actual hub runtime-state facility", Label("case:GRR-V03-RESTART"), func() {
+	It("restores silent baseline and accepted progress through the actual hub runtime-state facility", Label("case:GRR-V03-RESTART"), func() {
 		runGRRRestartAcceptance(GinkgoT())
 	})
 })

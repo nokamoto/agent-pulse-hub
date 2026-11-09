@@ -41,6 +41,9 @@ type watch struct {
 	eventCounter   uint64
 	outstanding    string
 	correlations   map[string]domain.Attempt
+	firstComplete  bool
+	backoffLevel   uint
+	emissionsDone  chan struct{}
 }
 
 type incoming struct {
@@ -49,10 +52,15 @@ type incoming struct {
 }
 
 type observation struct {
-	subscriptionID string
-	matches        map[uint64]string
-	err            error
-	ack            chan struct{}
+	watch   *watch
+	matches map[uint64]string
+	err     error
+	ack     chan pollSchedule
+}
+
+type pollSchedule struct {
+	nextPoll      time.Time
+	emissionsDone <-chan struct{}
 }
 
 type validationResult struct {
@@ -177,24 +185,19 @@ func (p *Plugin) Session(stream pluginprotocol.SessionServer) error {
 			case message := <-incomingFrames:
 				if message.err != nil {
 					if errors.Is(message.err, io.EOF) || ctx.Err() != nil {
-						close(result.ack)
 						return nil
 					}
-					close(result.ack)
 					return fmt.Errorf("receive daemon message: %w", message.err)
 				}
 				if err := handle(message.frame); err != nil {
-					close(result.ack)
 					return err
 				}
 				goto priorityDrain
 			default:
 			}
-			if err := p.applyObservation(stream, watches, result); err != nil {
-				close(result.ack)
+			if err := p.applyObservation(stream, result); err != nil {
 				return err
 			}
-			close(result.ack)
 		}
 	}
 }
@@ -348,63 +351,72 @@ func (p *Plugin) applyValidation(ctx context.Context, stream pluginprotocol.Sess
 
 func (p *Plugin) poll(current *watch, results chan<- observation) {
 	defer close(current.done)
-	var backoffLevel uint
-	for {
+	for current.ctx.Err() == nil {
 		observationCtx, cancel := context.WithTimeout(current.ctx, 120*time.Second)
 		matches, err := p.github.Observe(observationCtx, current.validated.Config, current.validated.Token)
 		cancel()
-		ack := make(chan struct{})
+		ack := make(chan pollSchedule, 1)
 		select {
-		case results <- observation{subscriptionID: current.subscriptionID, matches: matches, err: err, ack: ack}:
+		case results <- observation{watch: current, matches: matches, err: err, ack: ack}:
 		case <-current.ctx.Done():
 			return
 		}
+		var schedule pollSchedule
 		select {
-		case <-ack:
+		case schedule = <-ack:
 		case <-current.ctx.Done():
 			return
 		}
-		if current.ctx.Err() != nil {
-			return
-		}
-		failure, _ := err.(*application.Failure)
-		if failure == nil {
-			if err == nil {
-				backoffLevel = 0
-			} else {
-				failure = &application.Failure{Kind: application.FailureNetwork}
-			}
-		}
-		delay := application.RetryDelay(current.validated.Config.PollInterval, failure, backoffLevel)
-		if failure != nil && (failure.Kind == application.FailureNetwork || failure.Kind == application.FailureService || failure.Kind == application.FailureRateLimit) {
-			if backoffLevel < 9 {
-				backoffLevel++
-			}
-		}
-		timer := time.NewTimer(delay)
+		timer := time.NewTimer(time.Until(schedule.nextPoll))
 		select {
 		case <-current.ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
+			timer.Stop()
 			return
 		case <-timer.C:
+		}
+		if schedule.emissionsDone != nil {
+			select {
+			case <-schedule.emissionsDone:
+			case <-current.ctx.Done():
+				return
+			}
 		}
 	}
 }
 
-func (p *Plugin) applyObservation(stream pluginprotocol.SessionServer, watches map[string]*watch, result observation) error {
-	current := watches[result.subscriptionID]
-	if current == nil || current.quiesced || current.ctx.Err() != nil {
+func (p *Plugin) applyObservation(stream pluginprotocol.SessionServer, result observation) error {
+	current := result.watch
+	if current.quiesced || current.ctx.Err() != nil {
 		return nil
 	}
+	var failure *application.Failure
 	if result.err != nil {
-		failure, ok := result.err.(*application.Failure)
-		if !ok {
+		if !errors.As(result.err, &failure) {
 			failure = &application.Failure{Kind: application.FailureNetwork}
+		}
+	}
+	if failure == nil {
+		baselineCreated, err := current.validated.Tracker.Reconcile(result.matches)
+		if err != nil {
+			failure = &application.Failure{Kind: application.FailureIncomplete, Reason: "search observation could not be committed"}
+		} else if !current.firstComplete {
+			current.firstComplete = true
+			p.logger.Info("github_review_request_first_complete_observation",
+				"registration_id", current.subscriptionID,
+				"host", current.validated.Config.Host,
+				"match_count", len(result.matches),
+				"baseline_created", baselineCreated,
+			)
+		}
+	}
+
+	now := time.Now()
+	delay := application.RetryDelayAt(current.validated.Config.PollInterval, failure, current.backoffLevel, now)
+	schedule := pollSchedule{nextPoll: now.Add(delay)}
+	if failure != nil {
+		switch failure.Kind {
+		case application.FailureNetwork, application.FailureService, application.FailureRateLimit:
+			current.backoffLevel = min(current.backoffLevel+1, 9)
 		}
 		p.logger.Warn("github_review_request_observation_failed",
 			"registration_id", current.subscriptionID,
@@ -413,12 +425,16 @@ func (p *Plugin) applyObservation(stream pluginprotocol.SessionServer, watches m
 			"http_status", failure.StatusCode,
 			"reason", safeReason(failure),
 		)
+		result.ack <- schedule
 		return nil
 	}
-	if err := current.validated.Tracker.Reconcile(result.matches); err != nil {
-		p.logger.Error("github_review_request_observation_rejected", "registration_id", current.subscriptionID, "host", current.validated.Config.Host, "category", application.FailureCapacity)
-		return nil
+
+	current.backoffLevel = 0
+	if current.validated.Tracker.HasPendingEmission() {
+		current.emissionsDone = make(chan struct{})
+		schedule.emissionsDone = current.emissionsDone
 	}
+	result.ack <- schedule
 	return p.emitNext(stream, current)
 }
 
@@ -427,7 +443,7 @@ func (p *Plugin) emitNext(stream pluginprotocol.SessionServer, current *watch) e
 		return nil
 	}
 	if current.eventCounter == math.MaxUint64 {
-		if _, exists := current.validated.Tracker.NextAttempt(); exists {
+		if current.validated.Tracker.HasPendingEmission() {
 			return errors.New("GitHub review request event counter exhausted")
 		}
 		return nil
@@ -445,6 +461,10 @@ func (p *Plugin) emitNext(stream pluginprotocol.SessionServer, current *watch) e
 		EventID: eventID, Context: attempt.URL,
 	}); err != nil {
 		return fmt.Errorf("send GitHub review request event: %w", err)
+	}
+	if current.emissionsDone != nil && !current.validated.Tracker.HasPendingEmission() {
+		close(current.emissionsDone)
+		current.emissionsDone = nil
 	}
 	return nil
 }

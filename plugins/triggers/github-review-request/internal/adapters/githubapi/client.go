@@ -93,7 +93,7 @@ func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token s
 		if err != nil {
 			return nil, err
 		}
-		response, err := parseSearch(body)
+		response, err := parseSearch(body, page == 1)
 		if err != nil {
 			return nil, err
 		}
@@ -102,9 +102,6 @@ func (c *Client) Observe(ctx context.Context, config domain.WatchConfig, token s
 		}
 		if page == 1 {
 			expectedTotal = response.Total
-			if expectedTotal > domain.MaxMatches {
-				return nil, &application.Failure{Kind: application.FailureCapacity, Reason: "search result count exceeds 1,000"}
-			}
 		} else if response.Total != expectedTotal {
 			return nil, &application.Failure{Kind: application.FailureIncomplete, Reason: "search result count changed during pagination"}
 		}
@@ -185,7 +182,7 @@ type searchItem struct {
 	IsPullRequest bool
 }
 
-func parseSearch(body []byte) (searchResponse, error) {
+func parseSearch(body []byte, firstPage bool) (searchResponse, error) {
 	value, err := jsonvalue.Parse(body, maxResponse)
 	if err != nil || value.Kind() != jsonvalue.Object {
 		return searchResponse{}, &application.Failure{Kind: application.FailureIncomplete, Reason: "invalid search response"}
@@ -195,9 +192,15 @@ func parseSearch(body []byte) (searchResponse, error) {
 	total, totalErr := strconv.ParseUint(totalText, 10, 64)
 	incompleteValue, incompleteExists := value.Get("incomplete_results")
 	incomplete, incompleteOK := incompleteValue.Bool()
-	itemsValue, itemsExists := value.Get("items")
-	if !totalExists || totalValue.Kind() != jsonvalue.Number || !totalOK || totalErr != nil || strconv.FormatUint(total, 10) != totalText || !incompleteExists || !incompleteOK || !itemsExists || itemsValue.Kind() != jsonvalue.Array {
+	if !totalExists || totalValue.Kind() != jsonvalue.Number || !totalOK || totalErr != nil || strconv.FormatUint(total, 10) != totalText || !incompleteExists || !incompleteOK {
 		return searchResponse{}, &application.Failure{Kind: application.FailureIncomplete, Reason: "search response fields are invalid"}
+	}
+	if firstPage && !incomplete && total > domain.MaxMatches {
+		return searchResponse{}, &application.Failure{Kind: application.FailureCapacity, Reason: "search result count exceeds 1,000"}
+	}
+	itemsValue, itemsExists := value.Get("items")
+	if !itemsExists || itemsValue.Kind() != jsonvalue.Array {
+		return searchResponse{}, &application.Failure{Kind: application.FailureIncomplete, Reason: "search response items are invalid"}
 	}
 	items := make([]searchItem, 0, len(itemsValue.Items()))
 	for _, value := range itemsValue.Items() {
@@ -252,18 +255,18 @@ func classifyResponse(response *http.Response, body []byte, now time.Time) *appl
 	case http.StatusForbidden:
 		if isRateLimited(response.Header, body) {
 			failure.Kind = application.FailureRateLimit
-			failure.RetryAt = retryTime(response.Header, now)
+			failure.RetryAt = rateLimitRetryTime(response.Header, now)
 		} else {
 			failure.Kind = application.FailurePermission
 		}
 	case http.StatusTooManyRequests:
 		failure.Kind = application.FailureRateLimit
-		failure.RetryAt = retryTime(response.Header, now)
+		failure.RetryAt = rateLimitRetryTime(response.Header, now)
 	case http.StatusNotFound, http.StatusUnprocessableEntity:
 		failure.Kind = application.FailureUnsupported
 	default:
 		if status >= 500 {
-			failure.Kind = application.FailureService
+			failure.RetryAt = retryAfter(response.Header.Get("Retry-After"), now)
 		} else if status >= 400 {
 			failure.Kind = application.FailurePermission
 		}
@@ -288,28 +291,27 @@ func isRateLimited(headers http.Header, body []byte) bool {
 	return strings.Contains(message, "rate limit") || strings.Contains(message, "secondary rate") || strings.Contains(message, "abuse detection")
 }
 
-func retryTime(headers http.Header, now time.Time) time.Time {
-	var latest time.Time
-	consider := func(candidate time.Time) {
-		if candidate.After(latest) {
-			latest = candidate
+func retryAfter(text string, now time.Time) time.Time {
+	if seconds, err := strconv.ParseUint(text, 10, 64); err == nil {
+		const maxDuration = time.Duration(1<<63 - 1)
+		if seconds > uint64(maxDuration/time.Second) {
+			return now.Add(maxDuration)
 		}
+		return now.Add(time.Duration(seconds) * time.Second)
 	}
-	if text := headers.Get("Retry-After"); text != "" {
-		if seconds, err := strconv.ParseInt(text, 10, 64); err == nil && seconds >= 0 {
-			const maxDuration = time.Duration(1<<63 - 1)
-			if seconds > int64(maxDuration/time.Second) {
-				consider(now.Add(maxDuration))
-			} else {
-				consider(now.Add(time.Duration(seconds) * time.Second))
-			}
-		} else if date, err := http.ParseTime(text); err == nil && date.After(now) {
-			consider(date)
-		}
+	if date, err := http.ParseTime(text); err == nil && date.After(now) {
+		return date
 	}
-	if text := headers.Get("X-RateLimit-Remaining"); text == "0" {
+	return time.Time{}
+}
+
+func rateLimitRetryTime(headers http.Header, now time.Time) time.Time {
+	latest := retryAfter(headers.Get("Retry-After"), now)
+	if headers.Get("X-RateLimit-Remaining") == "0" {
 		if reset, err := strconv.ParseInt(headers.Get("X-RateLimit-Reset"), 10, 64); err == nil && reset > 0 {
-			consider(time.Unix(reset, 0))
+			if deadline := time.Unix(reset, 0); deadline.After(latest) {
+				return deadline
+			}
 		}
 	}
 	return latest
