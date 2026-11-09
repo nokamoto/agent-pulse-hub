@@ -50,6 +50,7 @@ func runGRRRestartAcceptance(t grrReporter) {
 	urlA := "https://github.com/owner-a/repo-a/pull/31"
 	urlB := "https://github.com/owner-b/repo-b/pull/32"
 	urlC := "https://github.com/owner-c/repo-c/pull/33"
+	urlD := "https://github.com/owner-d/repo-d/pull/34"
 	fixture.setSearch([]grrItem{{ID: 301, URL: urlA}}, "complete", "1")
 	configPath := writeGRRDaemonConfig(t, caseDirectory)
 	stateDirectory := filepath.Join(caseDirectory, "state")
@@ -60,23 +61,36 @@ func runGRRRestartAcceptance(t grrReporter) {
 
 	first := startGRRDaemon(t, caseDirectory, configPath, address, stateDirectory, fixture)
 	firstA := registerGRR(t, caseDirectory, address, destinationA, watchArgs)
+	awaitGRRFirstObservation(t, first, firstA, true, 1)
+	if records := readGRRRecords(destinationA); len(records) != 0 {
+		t.Fatalf("first baseline emitted output: %v", records)
+	}
+	fixture.setSearch([]grrItem{{ID: 301, URL: urlA}, {ID: 302, URL: urlB}}, "complete", "1")
+	if !waitGRR(t, 5*time.Second, func() bool { return len(readGRRRecords(destinationA)) == 1 }) {
+		t.Fatalf("later request was not delivered: %s", readGRRFile(first.logPath))
+	}
+	assertGRRRecord(t, destinationA, 0, firstA, urlB)
+	awaitGRRAcceptance(t, first, firstA, destinationA, 0)
+
 	secondWatchArgs := map[string]any{"host": "github.com", "poll_interval": "120ms"}
 	firstB := registerGRR(t, caseDirectory, address, destinationB, secondWatchArgs)
 	if firstA == "" || firstB == "" || firstA == firstB {
 		t.Fatalf("registration IDs were not isolated: A=%q B=%q", firstA, firstB)
 	}
-	if !waitGRR(t, 10*time.Second, func() bool { return len(readGRRRecords(destinationA)) == 1 && len(readGRRRecords(destinationB)) == 1 }) {
-		t.Fatalf("initial requests were not delivered independently: A=%v B=%v hub=%s", readGRRRecords(destinationA), readGRRRecords(destinationB), readGRRFile(first.logPath))
-	}
-	assertGRRRecord(t, destinationA, 0, firstA, urlA)
-	assertGRRRecord(t, destinationB, 0, firstB, urlA)
+	awaitGRRFirstObservation(t, first, firstB, true, 2)
 	if err := first.stop(t); err != nil {
 		t.Fatalf("normal stop failed: %v; log=%s", err, readGRRFile(first.logPath))
 	}
-	assertGRRCheckpoint(t, stateDirectory, firstA, "301", 2)
-	assertGRRCheckpoint(t, stateDirectory, firstB, "301", 2)
+	if a, b := readGRRRecords(destinationA), readGRRRecords(destinationB); len(a) != 1 || len(b) != 0 {
+		t.Fatalf("baselines did not stay silent: first=%v second=%v", a, b)
+	}
+	assertGRRCheckpoint(t, stateDirectory, firstA, "301", 3)
+	assertGRRCheckpoint(t, stateDirectory, firstA, "302", 2)
+	assertGRRCheckpoint(t, stateDirectory, firstB, "301", 3)
+	assertGRRCheckpoint(t, stateDirectory, firstB, "302", 3)
 
-	fixture.setSearch([]grrItem{{ID: 301, URL: urlA}, {ID: 302, URL: urlB}}, "complete", "1")
+	abc := []grrItem{{ID: 301, URL: urlA}, {ID: 302, URL: urlB}, {ID: 303, URL: urlC}}
+	fixture.setSearch(abc, "complete", "1")
 	savedFiles, err := filepath.Glob(filepath.Join(stateDirectory, "registrations", "*.json"))
 	if err != nil || len(savedFiles) != 2 {
 		t.Fatalf("saved registration order missing: files=%v error=%v", savedFiles, err)
@@ -106,43 +120,120 @@ func runGRRRestartAcceptance(t grrReporter) {
 		t.Fatalf("restoration crossed its barrier early: searches=%d journal=%s hub=%s", fixture.searchCountSnapshot(), readGRRFile(second.journalPath), readGRRFile(second.logPath))
 	}
 	releaseValidation()
-	if !waitGRR(t, 10*time.Second, func() bool { return len(readGRRRecords(destinationA)) == 2 && len(readGRRRecords(destinationB)) == 2 }) {
+	awaitGRRFirstObservation(t, second, firstA, false, 3)
+	awaitGRRFirstObservation(t, second, firstB, false, 3)
+	if !waitGRR(t, 5*time.Second, func() bool { return len(readGRRRecords(destinationA)) == 2 && len(readGRRRecords(destinationB)) == 1 }) {
 		t.Fatalf("restored registrations did not emit only the new request: A=%v B=%v hub=%s", readGRRRecords(destinationA), readGRRRecords(destinationB), readGRRFile(second.logPath))
 	}
-	assertGRRRecord(t, destinationA, 1, firstA, urlB)
-	assertGRRRecord(t, destinationB, 1, firstB, urlB)
+	assertGRRRecord(t, destinationA, 1, firstA, urlC)
+	assertGRRRecord(t, destinationB, 0, firstB, urlC)
+	awaitGRRAcceptance(t, second, firstA, destinationA, 1)
+	awaitGRRAcceptance(t, second, firstB, destinationB, 0)
 	assertGRRGrantOrder(t, second.journalPath, firstA, firstB)
-	if len(readGRRRecords(destinationA)) != 2 || len(readGRRRecords(destinationB)) != 2 {
-		t.Fatal("restored request was emitted more than once")
-	}
 	if err := second.stop(t); err != nil {
 		t.Fatalf("second normal stop failed: %v; log=%s", err, readGRRFile(second.logPath))
 	}
-	assertGRRCheckpoint(t, stateDirectory, firstA, "301", 2)
+	assertGRRCheckpoint(t, stateDirectory, firstA, "301", 3)
 	assertGRRCheckpoint(t, stateDirectory, firstA, "302", 2)
-	assertGRRCheckpoint(t, stateDirectory, firstB, "301", 2)
-	assertGRRCheckpoint(t, stateDirectory, firstB, "302", 2)
+	assertGRRCheckpoint(t, stateDirectory, firstA, "303", 2)
+	assertGRRCheckpoint(t, stateDirectory, firstB, "301", 3)
+	assertGRRCheckpoint(t, stateDirectory, firstB, "302", 3)
+	assertGRRCheckpoint(t, stateDirectory, firstB, "303", 2)
 
 	corruptGRRCheckpoint(t, stateDirectory, firstA)
-	fixture.setSearch([]grrItem{{ID: 301, URL: urlA}, {ID: 302, URL: urlB}, {ID: 303, URL: urlC}}, "complete", "1")
+	fixture.setSearch(append(abc, grrItem{ID: 304, URL: urlD}), "complete", "1")
+	beforeInvalidSearches := fixture.searchCountSnapshot()
 	invalid := launchGRRDaemon(t, caseDirectory, configPath, freeGRRAddress(t), stateDirectory, fixture)
-	if !waitGRR(t, 10*time.Second, func() bool {
-		return !invalid.alive() || strings.Contains(readGRRFile(invalid.logPath), "watch_rejected") || strings.Contains(readGRRFile(invalid.logPath), "incompatible with this host")
-	}) {
+	if !waitGRR(t, 5*time.Second, func() bool { return !invalid.alive() }) {
 		invalid.cleanup()
-		t.Fatalf("invalid restored checkpoint was not reported: %s", readGRRFile(invalid.logPath))
+		t.Fatalf("incompatible restore did not stop startup: %s", readGRRFile(invalid.logPath))
 	}
-	if invalid.alive() {
-		_ = invalid.stop(t)
-	}
-	if recordsA := readGRRRecords(destinationA); len(recordsA) != 2 || recordsA[0]["context"] != urlA || recordsA[1]["context"] != urlB {
-		t.Fatalf("incompatible state fell back to fresh delivery for the affected registration: A=%v", recordsA)
+	if invalid.waitError == nil || fixture.searchCountSnapshot() != beforeInvalidSearches ||
+		len(readGRRRecords(destinationA)) != 2 || len(readGRRRecords(destinationB)) != 1 {
+		t.Fatalf("incompatible restore started polling or changed delivery: %s", readGRRFile(invalid.logPath))
 	}
 	invalidLog := readGRRFile(invalid.logPath)
-	for _, marker := range []string{"hub-token", urlA, urlB, urlC} {
+	if !strings.Contains(invalidLog, "saved GitHub review progress is incompatible") {
+		t.Fatalf("restore rejection reason missing: %s", invalidLog)
+	}
+	for _, marker := range []string{"hub-token", urlA, urlB, urlC, urlD} {
 		if strings.Contains(invalidLog, marker) {
 			t.Errorf("invalid-state diagnostics contain %q", marker)
 		}
+	}
+
+	// Preserve the stopped watch's whole progress directory outside the runtime
+	// tree. Keeping its registration lets the daemon restore it with null state.
+	if err := os.Rename(filepath.Join(stateDirectory, "runtime", firstA), filepath.Join(caseDirectory, "reset-backup")); err != nil {
+		t.Fatalf("reset saved progress for %s: %v", firstA, err)
+	}
+	reset := startGRRDaemon(t, caseDirectory, configPath, freeGRRAddress(t), stateDirectory, fixture)
+	awaitGRRFirstObservation(t, reset, firstA, true, 4)
+	if !waitGRR(t, 5*time.Second, func() bool { return len(readGRRRecords(destinationB)) == 2 }) {
+		t.Fatalf("the other registration did not deliver D: %s", readGRRFile(reset.logPath))
+	}
+	assertGRRRecord(t, destinationB, 1, firstB, urlD)
+	awaitGRRAcceptance(t, reset, firstB, destinationB, 1)
+	if err := reset.stop(t); err != nil {
+		t.Fatalf("normal stop after reset failed: %v", err)
+	}
+	if a, b := readGRRRecords(destinationA), readGRRRecords(destinationB); len(a) != 2 || len(b) != 2 {
+		t.Fatalf("unexpected delivery after reset: first=%v second=%v", a, b)
+	}
+	for _, issueID := range []string{"301", "302", "303", "304"} {
+		assertGRRCheckpoint(t, stateDirectory, firstA, issueID, 3)
+	}
+	assertGRRCheckpoint(t, stateDirectory, firstB, "304", 2)
+}
+
+func awaitGRRFirstObservation(t grrReporter, daemon *grrDaemon, subscriptionID string, baselineCreated bool, matchCount int) {
+	t.Helper()
+	if !waitGRR(t, 5*time.Second, func() bool {
+		for _, line := range strings.Split(readGRRFile(daemon.logPath), "\n") {
+			var record struct {
+				Message string `json:"message"`
+			}
+			var diagnostic struct {
+				Name            string `json:"msg"`
+				RegistrationID  string `json:"registration_id"`
+				BaselineCreated *bool  `json:"baseline_created"`
+				MatchCount      int    `json:"match_count"`
+			}
+			if json.Unmarshal([]byte(line), &record) == nil &&
+				json.Unmarshal([]byte(record.Message), &diagnostic) == nil &&
+				diagnostic.Name == "github_review_request_first_complete_observation" &&
+				diagnostic.RegistrationID == subscriptionID &&
+				diagnostic.BaselineCreated != nil && *diagnostic.BaselineCreated == baselineCreated &&
+				diagnostic.MatchCount == matchCount {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("first complete observation for %s was not recorded: %s", subscriptionID, readGRRFile(daemon.logPath))
+	}
+}
+
+func awaitGRRAcceptance(t grrReporter, daemon *grrDaemon, subscriptionID, outputFile string, recordIndex int) {
+	t.Helper()
+	records := readGRRRecords(outputFile)
+	if len(records) <= recordIndex {
+		t.Fatalf("missing output record %d for %s", recordIndex, subscriptionID)
+	}
+	deliveryID, _ := records[recordIndex]["delivery_id"].(string)
+	if deliveryID == "" {
+		t.Fatalf("output record %d for %s has no delivery ID", recordIndex, subscriptionID)
+	}
+	if !waitGRR(t, 5*time.Second, func() bool {
+		for _, record := range readGRRRecords(daemon.logPath) {
+			if record["msg"] == "delivery_result" && record["subscription_id"] == subscriptionID &&
+				record["delivery_id"] == deliveryID && record["outcome"] == "accepted" {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("delivery %s for %s was not accepted: %s", deliveryID, subscriptionID, readGRRFile(daemon.logPath))
 	}
 }
 
@@ -399,7 +490,8 @@ func assertGRRCheckpoint(t grrReporter, stateDirectory, subscriptionID, issueID 
 	}
 	encoded := string(value.Marshal())
 	want := fmt.Sprintf(`["%s",%d]`, issueID, status)
-	if !strings.Contains(encoded, want) || !strings.Contains(encoded, `"schema":"github-review-request-v1"`) || strings.Contains(encoded, "hub-token") {
+	if !strings.Contains(encoded, want) || !strings.Contains(encoded, `"schema":"github-review-request-v2"`) ||
+		!strings.Contains(encoded, `"baseline_established":true`) || strings.Contains(encoded, "hub-token") {
 		t.Fatalf("saved state for %s = %s, missing %s", subscriptionID, encoded, want)
 	}
 }

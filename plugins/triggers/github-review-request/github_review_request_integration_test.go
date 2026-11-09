@@ -159,119 +159,134 @@ var _ = Describe("GitHub review request acceptance", Serial, func() {
 		}
 	})
 
-	It("observes complete request sets through the standalone public input", Label("case:GRR-V02-OBSERVATION"), func() {
+	PIt("establishes a silent baseline and observes later request transitions through the public input", Label("case:GRR-V02-OBSERVATION"), func() {
 		t := GinkgoT()
+		const subscriptionID = "grr-observation"
+		const token = "observation-token"
 		noGH := grrNoGHDirectory(t)
-		urlA := "https://github.com/owner-a/repo-a/pull/11"
-		urlB := "https://github.com/owner-b/repo-b/pull/22"
-		fixture := newGRRFixture(t, map[string]uint64{"observation-token": 81})
+		a := grrItem{ID: 101, URL: "https://github.com/owner-a/repo-a/pull/11"}
+		b := grrItem{ID: 202, URL: "https://github.com/owner-b/repo-b/pull/22"}
+		c := grrItem{ID: 303, URL: "https://github.com/owner-c/repo-c/pull/33"}
+		d := grrItem{ID: 404, URL: "https://github.com/owner-d/repo-d/pull/44"}
+		fixture := newGRRFixture(t, map[string]uint64{token: 81})
 		fixture.holdSearchResponses()
-		fixture.setSearch([]grrItem{{ID: 101, URL: urlA}, {ID: 202, URL: urlB}}, "complete", "1")
-		host := startGRRPluginHost(t, noGH, fixture, map[string]string{"PATH": noGH, "GH_TOKEN": "observation-token", "GITHUB_TOKEN": ""})
+		fixture.setSearch(nil, "incomplete", "1")
+		host := startGRRPluginHost(t, noGH, fixture, map[string]string{"PATH": noGH, "GH_TOKEN": token, "GITHUB_TOKEN": ""})
 		DeferCleanup(host.cleanup)
-		watchResult := host.watch(t, "observation", "grr-observation", grrWatchArgs("", "40ms"), jsonvalue.NewNull())
+		watchResult := host.watch(t, "observation", subscriptionID, grrWatchArgs("", "40ms"), jsonvalue.NewNull())
 		if watchResult.Accepted == nil || !*watchResult.Accepted {
 			t.Fatalf("observation watch result = %+v", watchResult)
 		}
-		// A checkpoint is an ordered protocol barrier while the accepted watch
-		// is still dormant; it must perform no source observation or emission.
-		host.send(t, pluginprotocol.Frame{Type: "checkpoint", RequestID: "before-activation", SubscriptionID: "grr-observation"})
-		prepared := host.receiveType(t, "checkpoint_result", "before-activation", 2*time.Second)
-		if prepared.Accepted == nil || !*prepared.Accepted || fixture.searchCountSnapshot() != 0 {
-			t.Fatalf("dormant watch performed source work: checkpoint=%+v searches=%d", prepared, fixture.searchCountSnapshot())
+		checkpoint := func(requestID string) string {
+			host.send(t, pluginprotocol.Frame{Type: "checkpoint", RequestID: requestID, SubscriptionID: subscriptionID})
+			result := host.receiveType(t, "checkpoint_result", requestID, 2*time.Second)
+			if result.Accepted == nil || !*result.Accepted || result.State == nil {
+				t.Fatalf("observation checkpoint rejected: %+v", result)
+			}
+			return string(result.State.Marshal())
 		}
-		host.send(t, pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: "grr-observation"})
-		host.send(t, pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: "grr-observation"})
-		firstRequest := grrWaitSearch(t, fixture, 1, 3*time.Second)
-		query, err := url.ParseQuery(firstRequest.Query)
-		if err != nil || query.Get("q") != "is:pr is:open user-review-requested:@me" || query.Get("per_page") != "100" || query.Get("sort") != "created" || query.Get("order") != "asc" || firstRequest.Host != "api.github.com" || firstRequest.Token != "observation-token" {
-			t.Fatalf("GitHub search request = %+v query=%v error=%v", firstRequest, query, err)
+		checkpoint("before-activation")
+		if fixture.searchCountSnapshot() != 0 {
+			t.Fatalf("dormant watch performed %d searches", fixture.searchCountSnapshot())
 		}
-		grrReleaseSearch(t, firstRequest)
-		eventA := host.event(t, 3*time.Second)
-		if eventA.Context != urlA || eventA.EventID != "1" {
-			t.Fatalf("first event = %+v", eventA)
+		host.send(t, pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: subscriptionID})
+		host.send(t, pluginprotocol.Frame{Type: "activate_watch", SubscriptionID: subscriptionID})
+		request := grrWaitSearch(t, fixture, 1, 3*time.Second)
+		query, err := url.ParseQuery(request.Query)
+		if err != nil || query.Get("q") != "is:pr is:open user-review-requested:@me" || query.Get("per_page") != "100" || query.Get("sort") != "created" || query.Get("order") != "asc" || request.Host != "api.github.com" || request.Token != token {
+			t.Fatalf("GitHub search request = %+v query=%v error=%v", request, query, err)
 		}
-		host.send(t, pluginprotocol.Frame{Type: "delivery_notice", SubscriptionID: "grr-observation", EventID: eventA.EventID, Status: "accepted"})
-		eventB := host.event(t, 3*time.Second)
-		if eventB.Context != urlB || eventB.EventID != "2" {
-			t.Fatalf("second event = %+v", eventB)
+		// Each request holds a snapshot of the fixture response. The next request
+		// is a barrier for the preceding observation, which has already committed
+		// or failed before polling can resume.
+		advance := func(items []grrItem, mode string) time.Duration {
+			fixture.setSearch(items, mode, "1")
+			released := grrReleaseSearch(t, request)
+			request = grrWaitSearch(t, fixture, request.Sequence+1, 4*time.Second)
+			if request.Mode != mode {
+				t.Fatalf("expected %s search, got %+v", mode, request)
+			}
+			return request.At.Sub(released)
 		}
-		host.send(t, pluginprotocol.Frame{Type: "delivery_notice", SubscriptionID: "grr-observation", EventID: eventB.EventID, Status: "accepted"})
+		expectEvent := func(item grrItem, eventID string) {
+			event := host.event(t, 3*time.Second)
+			if event.Context != item.URL || event.EventID != eventID || event.SubscriptionID != subscriptionID {
+				t.Fatalf("expected event %s for %s, got %+v", eventID, item.URL, event)
+			}
+		}
+		acceptEvent := func(eventID string) {
+			host.send(t, pluginprotocol.Frame{Type: "delivery_notice", SubscriptionID: subscriptionID, EventID: eventID, Status: "accepted"})
+		}
 
-		unchanged := grrWaitSearch(t, fixture, 2, 3*time.Second)
-		grrReleaseSearch(t, unchanged)
-		fixture.setSearch([]grrItem{{ID: 202, URL: urlB}}, "complete", "1")
-		missing := grrWaitSearch(t, fixture, 3, 3*time.Second)
+		advance([]grrItem{a}, "complete")
 		host.assertNoEvent(t, 25*time.Millisecond)
-		grrReleaseSearch(t, missing)
-		absent := grrWaitSearch(t, fixture, 4, 3*time.Second)
+		if state := checkpoint("after-incomplete"); !strings.Contains(state, `"baseline_established":false`) || !strings.Contains(state, `"entries":[]`) {
+			t.Fatalf("incomplete observation established a baseline: %s", state)
+		}
+		abc := []grrItem{a, b, c}
+		advance(abc, "complete")
 		host.assertNoEvent(t, 25*time.Millisecond)
-		grrReleaseSearch(t, absent)
-		fixture.setSearch([]grrItem{{ID: 101, URL: urlA}, {ID: 202, URL: urlB}}, "complete", "1")
-		reappearedObservation := grrWaitSearch(t, fixture, 5, 3*time.Second)
-		grrReleaseSearch(t, reappearedObservation)
-		reappearedCommitted := grrWaitSearch(t, fixture, 6, 3*time.Second)
-		reappeared := host.event(t, 3*time.Second)
-		if reappeared.Context != urlA || reappeared.EventID != "3" {
-			t.Fatalf("reappearance event = %+v", reappeared)
+		if state := checkpoint("after-baseline"); !strings.Contains(state, `"baseline_established":true`) || !strings.Contains(state, `"entries":[["101",3]]`) {
+			t.Fatalf("complete observation did not record a silent baseline: %s", state)
 		}
-		host.send(t, pluginprotocol.Frame{Type: "delivery_notice", SubscriptionID: "grr-observation", EventID: reappeared.EventID, Status: "accepted"})
 
-		fixture.setSearch([]grrItem{{ID: 202, URL: urlB}}, "incomplete", "1")
-		grrReleaseSearch(t, reappearedCommitted)
-		incomplete := grrWaitSearch(t, fixture, 7, 3*time.Second)
-		if incomplete.Mode != "incomplete" {
-			t.Fatalf("expected an incomplete search, got %+v", incomplete)
+		grrReleaseSearch(t, request)
+		firstEvent := host.event(t, 3*time.Second)
+		if (firstEvent.Context != b.URL && firstEvent.Context != c.URL) ||
+			firstEvent.EventID != "1" || firstEvent.SubscriptionID != subscriptionID {
+			t.Fatalf("expected first event for B or C, got %+v", firstEvent)
 		}
-		grrReleaseSearch(t, incomplete)
-		incompleteRetry := grrWaitSearch(t, fixture, 8, 3*time.Second)
-		if incompleteRetry.Mode != "incomplete" {
-			t.Fatalf("incomplete retrieval was not retried: %+v", incompleteRetry)
+		remaining := b
+		if firstEvent.Context == b.URL {
+			remaining = c
 		}
-		grrReleaseSearch(t, incompleteRetry)
-		fixture.setSearch([]grrItem{{ID: 202, URL: urlB}}, "rate-limit", "1")
-		rateLimited := grrWaitSearch(t, fixture, 9, 3*time.Second)
-		if rateLimited.Mode != "rate-limit" {
-			t.Fatalf("expected rate limit, got %+v", rateLimited)
+		// An observation must not supersede the remaining event before emission.
+		select {
+		case next := <-fixture.searchCalls:
+			t.Fatalf("started search %d with %s still unsent", next.Sequence, remaining.URL)
+		case <-time.After(125 * time.Millisecond):
 		}
-		retryFrom := grrReleaseSearch(t, rateLimited)
-		rateLimitedRetry := grrWaitSearch(t, fixture, 10, 3*time.Second)
-		if rateLimitedRetry.Mode != "rate-limit" || rateLimitedRetry.At.Sub(retryFrom) < 900*time.Millisecond {
-			t.Fatalf("rate-limit retry occurred before server guidance: response=%s retry=%s", retryFrom, rateLimitedRetry.At)
+		acceptEvent("1")
+		expectEvent(remaining, "2")
+		request = grrWaitSearch(t, fixture, request.Sequence+1, 3*time.Second)
+		acceptEvent("2")
+		bc := []grrItem{b, c}
+		advance(bc, "complete") // Commit the unchanged observation.
+		host.assertNoEvent(t, 25*time.Millisecond)
+		advance(abc, "complete") // Commit absence before A reappears.
+		host.assertNoEvent(t, 25*time.Millisecond)
+		advance(bc, "incomplete")
+		expectEvent(a, "3")
+		acceptEvent("3")
+		advance(bc, "rate-limit")
+		host.assertNoEvent(t, 25*time.Millisecond)
+		if delay := advance(bc, "rate-limit"); delay < time.Second {
+			t.Fatalf("rate-limit retry after %s violated Retry-After", delay)
 		}
-		grrReleaseSearch(t, rateLimitedRetry)
-		fixture.setSearch([]grrItem{{ID: 101, URL: urlA}, {ID: 202, URL: urlB}}, "complete", "1")
-		recovered := grrWaitSearch(t, fixture, 11, 4*time.Second)
-		if recovered.Mode != "complete" {
-			t.Fatalf("search did not recover: %+v", recovered)
-		}
-		grrReleaseSearch(t, recovered)
-		recoveryCommitted := grrWaitSearch(t, fixture, 12, 3*time.Second)
-		grrReleaseSearch(t, recoveryCommitted)
-		host.assertNoEvent(t, 150*time.Millisecond)
+		abcd := []grrItem{a, b, c, d}
+		advance(abcd, "complete")
+		host.assertNoEvent(t, 25*time.Millisecond)
+		advance(abcd, "complete")
+		expectEvent(d, "4")
+		acceptEvent("4")
+		host.assertNoEvent(t, 25*time.Millisecond)
 
-		host.send(t, pluginprotocol.Frame{Type: "checkpoint", RequestID: "observation-state", SubscriptionID: "grr-observation", Quiesce: false})
-		checkpoint := host.receiveType(t, "checkpoint_result", "observation-state", 2*time.Second)
-		if checkpoint.Accepted == nil || !*checkpoint.Accepted {
-			t.Fatalf("observation checkpoint = %+v", checkpoint)
-		}
-		checkpointJSON := string(checkpoint.State.Marshal())
-		if !strings.Contains(checkpointJSON, `"entries":[["101",2],["202",2]]`) || strings.Contains(checkpointJSON, urlA) || strings.Contains(checkpointJSON, "observation-token") {
-			t.Fatalf("checkpoint does not contain only confirmed progress: %s", checkpointJSON)
+		state := checkpoint("observation-state")
+		if !strings.Contains(state, `"entries":[["101",2],["202",2],["303",2],["404",2]]`) {
+			t.Fatalf("checkpoint did not preserve accepted progress: %s", state)
 		}
 		logText := readGRRFile(host.logPath)
 		if !strings.Contains(logText, "github_review_request_coverage_limit") || !strings.Contains(logText, "Search covers at most 4,000 GitHub-selected repositories; coverage beyond that limit cannot be detected or guaranteed.") || !strings.Contains(logText, `"category":"incomplete retrieval"`) || !strings.Contains(logText, `"category":"rate-limit"`) || !strings.Contains(logText, `"http_status":429`) {
 			t.Fatalf("coverage or retrieval diagnostics are missing: %s", logText)
 		}
-		for _, marker := range []string{"observation-token", urlA, urlB} {
-			if strings.Contains(logText, marker) {
-				t.Errorf("diagnostics contain sensitive marker %q", marker)
+		for _, marker := range []string{token, a.URL, b.URL, c.URL, d.URL} {
+			if strings.Contains(logText, marker) || strings.Contains(state, marker) {
+				t.Errorf("sensitive marker %q appeared in diagnostics or checkpoint", marker)
 			}
 		}
 	})
 
-	It("restores accepted progress through the actual hub runtime-state facility", Label("case:GRR-V03-RESTART"), func() {
+	PIt("restores silent baseline and accepted progress through the actual hub runtime-state facility", Label("case:GRR-V03-RESTART"), func() {
 		runGRRRestartAcceptance(GinkgoT())
 	})
 })

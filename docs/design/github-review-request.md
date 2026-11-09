@@ -1,7 +1,7 @@
 ---
 type: Design
 title: GitHub review request trigger
-description: Poll direct review requests through bounded GitHub search and retain notification progress through the public runtime-state interface.
+description: Establish a silent baseline for direct review requests and retain notification progress through the public runtime-state interface.
 sources:
   - id: requirements
     resource: requirements/github-review-request.md
@@ -23,7 +23,9 @@ sources:
 
 This design fulfills [GitHub review request requirements](../requirements/github-review-request.md).
 The bundled trigger observes open pull requests requesting the authenticated
-user's review and emits their URLs. It uses the existing input role and
+user's review. It records the first complete observation of a fresh watch
+silently and emits URLs for matches newly present in later observations.
+It uses the existing input role and
 `runtime_state_v2` capability of [plugin protocol v2](plugin-v1.md).
 The hub continues to own routing, one-attempt delivery, registration storage,
 and [coordinated checkpoints](trigger-runtime-state.md).
@@ -50,11 +52,11 @@ its observation state; registrations never share notification progress.
 | `readme.md` | Operator prerequisites, configuration, limits, and recovery. |
 | `examples/daemon.json`, `examples/watch.json` | Daemon input configuration and host/interval watch arguments with an operator-selected action. |
 
-Implementation introduces the complete bundled artifact set together. Delivery
-verifies its instructions and updates the root README entry points. No new
-plugin-specific skill is needed. Reuse existing framework dependencies; the
-GitHub adapter uses Go's standard HTTP and JSON libraries, not a new SDK.
-Package and helper names within the permitted layers remain implementation choices.
+The bundled guide and examples describe setup, baseline timing, and recovery
+for operators. Delivery verifies them and the root README entry points.
+The GitHub adapter uses Go's standard HTTP and JSON libraries and the
+existing plugin framework. Package and helper names within the permitted
+layers remain implementation choices.
 
 ## Configuration and authentication
 
@@ -170,7 +172,10 @@ have an exact positive uint64 issue ID and an HTTPS PR `html_url` on the selecte
 web host with no user information, query, fragment, or nondefault port. Require
 the `/owner/repository/pull/<positive-number>` path shape and the public
 8,192-byte context bound. Treat malformed data, missing pages, duplicate IDs,
-count changes, and result overflow as incomplete retrieval. Do not follow
+and count changes as incomplete retrieval. After decoding the first page,
+classify a total above 1,000 with `incomplete_results=false` as a capacity
+failure before validating item count and match content. The observation
+remains incomplete. Do not follow
 arbitrary response URLs or `Link` targets with the credential; construct page
 requests locally against the selected API origin. Reject HTTP redirects.
 
@@ -227,20 +232,58 @@ restoration/admission barrier; the plugin owns per-watch idempotent activation
 and permanent quiescence. A standalone caller prepares its receiver/correlations
 after acceptance, sends the same grant, then observes events. Duplicate grants
 start no extra poller; a late grant cannot resume quiescence. Serialize
-observations per watch. After each completed attempt, wait the configured
-interval before the next; never queue missed ticks. Bound each HTTP request
-to ten seconds, each response to 8 MiB, and each observation to 120 seconds.
-These are retrieval resource bounds, not notification deadlines. Oversized or
-timed-out responses are incomplete failures. Keep HTTP work off the ordered
-protocol receiver so checkpoints remain responsive.
+observations per watch. Measure the configured interval from the time the
+Session processes the previous retrieval result, whether successful or failed.
+The interval runs while pending events are being emitted. Start the next
+retrieval when the interval and any failure backoff have elapsed and all
+eligible entries from the last complete observation have been emitted. The
+Session continues processing notices and checkpoints during the wait. Never
+queue missed ticks. Bound each HTTP request to ten seconds, each response
+body read to 8 MiB plus one byte to detect overflow, and each observation to
+120 seconds. These are retrieval resource bounds, not notification deadlines.
+Keep HTTP work off the ordered protocol receiver so checkpoints remain
+responsive.
 
-For network/timeouts and 5xx errors, retry retrieval after the greater of the
-interval and exponential delay starting at one second and capped at five
-minutes. For 429 or rate-limited 403, also honor valid `Retry-After` (delta or
-HTTP date) and exhausted `X-RateLimit-Reset`; never retry before the latest
-applicable server time. Without guidance, rate-limit delay is at least one
-minute. Successful observations reset backoff. Retry incomplete collections
-after at least the interval. Authentication/permission/unsupported-API errors
+For a non-2xx response, classify the failure from the HTTP status and any
+applicable headers. A body read failure, timeout, or overflow leaves that
+classification and any usable retry guidance intact. A complete JSON error
+object within the body limit can also identify a rate-limited 403, even if
+the read returned an error. A transport failure
+before receiving a response or a read failure on a 2xx response is a network
+failure. A 2xx body that exceeds 8 MiB is incomplete retrieval. Each failure
+invalidates the observation and preserves prior progress.
+
+For network, service, and rate-limit failures, use the
+greater of the configured interval and the exponential delay. Start the
+exponential term at one second. Use its current value to schedule the retry,
+then double it for a subsequent failure in these categories, up to five
+minutes. Other failures leave the term unchanged. A successful complete
+observation resets it to one second.
+
+Classify HTTP 5xx as a service failure, HTTP 401 as an authentication failure,
+and HTTP 429 as rate limiting. Classify HTTP 403 as rate limiting when it
+carries a nonempty `Retry-After`, `X-RateLimit-Remaining: 0`, or a bounded
+JSON `message` indicating a rate limit or abuse detection. Classify
+redirects and HTTP 404 and 422 as unsupported API. Classify other 4xx
+responses, including other 403 responses, as permission failures.
+
+When scheduling the next search after a service or rate-limit failure,
+include the wait from a valid `Retry-After` in the retry maximum. Evaluate
+the header when the bounded body read finishes or fails. Measure nonnegative
+delta seconds, including zero, from that time. Accept an HTTP date only if
+it is later than that time and use it as an absolute deadline. For rate
+limits with zero remaining quota, also accept a positive Unix timestamp in
+seconds from `X-RateLimit-Reset`. Use the later deadline when both headers
+qualify. When scheduling the next search after Session processing, include
+only the remaining time until the chosen deadline in the retry maximum.
+A qualifying deadline that has elapsed contributes zero wait. Include a
+one-minute minimum only for rate-limit failures with neither
+qualifying header. The five-minute cap applies to the exponential term.
+
+Classify partial or malformed search results as incomplete retrieval.
+Retry incomplete retrieval and capacity failures after at least
+the configured interval while retaining the exponential term.
+Authentication/permission/unsupported-API errors
 retain state and report a watch error; probe again no faster than the greater
 of the interval and five minutes, with no credential fallback. A later success
 recovers monitoring; environment credential changes require restart.
@@ -257,10 +300,16 @@ quiescing does not wait for an observation timeout.
 ### Observation transitions
 
 A request occurrence is a PR's uninterrupted presence across complete
-observations. At the first complete observation, create an unsent entry for
-each match. Preserve entries for IDs still present, remove absent IDs, and
-create new entries for newly present IDs. An incomplete observation performs
-none of these transitions. Assign memory-only occurrence generations so a
+observations. A watch with no saved progress starts with its baseline unset.
+Its first complete observation establishes the baseline, even if empty.
+Record every match in that observation as a silent baseline entry, including
+requests made after registration and before the observation. On each later
+complete observation, preserve entries for IDs still present, remove absent
+IDs, and create unsent entries for newly present IDs. Validate the entire
+observation before committing its baseline or entry changes. Failed or
+incomplete observations leave both unchanged.
+
+Assign memory-only occurrence generations so a
 late notice for an older occurrence cannot modify a later occurrence of the
 same PR. Keep event-to-occurrence correlations until terminal notices or
 Session closure; bound emission to one outstanding event per watch.
@@ -273,30 +322,50 @@ the matching current occurrence to confirmed. A notice for an occurrence
 already removed has no effect on current progress. A send/stream failure ends
 the Session through the existing lifecycle. Counter exhaustion fails visibly.
 
+Emit all eligible entries from a complete observation before starting the
+next retrieval, so a later absence cannot erase an occurrence before its first
+attempt. The final outstanding event can remain in flight during the next
+observation because it has already been emitted. A restored status 0 lacks
+a current URL and becomes eligible only if the first complete observation
+still contains that ID. A quiescing checkpoint can end polling while entries
+still await emission. Persist their current status and apply the ordinary
+restore rules at the next start.
+
 After a complete absence, the same ID's reappearance is a new occurrence and
-is eligible again. An unobserved cancellation/re-request, including while
-stopped, does not create a new occurrence. Multiple observations may proceed
-while waiting for delivery; do not block checkpoint processing on delivery.
-This preserves first-use and observed-transition behavior without introducing
-automatic retries for an earlier attempt.
+is eligible again. An unobserved cancellation and re-request, including while
+stopped, does not create a new occurrence.
+After the first complete observation commits in each activation, emit one
+informational `github_review_request_first_complete_observation` diagnostic
+with the registration ID, selected host, `match_count`, and a `baseline_created`
+boolean indicating whether this observation established the baseline. Keep
+PR IDs, URLs, credentials, and response bodies out of the diagnostic.
 
 ### State representation
 
-Use this exact state envelope, with no additional fields:
+Write this exact state envelope, with no additional fields:
 
 ```json
-{"schema":"github-review-request-v1","payload":{"host":"github.com","user_id":"123","entries":[["456",2]]}}
+{"schema":"github-review-request-v2","payload":{"host":"github.com","user_id":"123","baseline_established":true,"entries":[["456",3],["789",2]]}}
 ```
 
 `host` is the canonical selected web hostname. `user_id` and each issue ID are
 canonical positive uint64 decimal strings. `entries` is sorted by numeric issue
-ID, unique, and has at most 1,000 rows. Each row is exactly `[issue_id,status]`:
-integer `0` means observed but unsent, `1` means attempted without confirmed
-acceptance, and `2` means confirmed acceptance. Status 1 includes pending,
-failed, unknown, and discarded attempts; it never means successful notification.
-All present entries suppress duplicate attempts in the running occurrence,
-except status 0, which is eligible for its first attempt. URLs, credentials,
-login names, interval, event counters, and in-flight correlations are not saved.
+ID, unique, and has at most 1,000 rows. The boolean `baseline_established`
+is false only while waiting for the first complete observation and requires
+an empty `entries` array. True with an empty array means the baseline is
+established and the most recent complete observation has zero matches.
+
+Each row is exactly `[issue_id,status]` with one of these integer values.
+
+| Status | Meaning while the ID is present |
+| --- | --- |
+| `0` | Observed and eligible for its first attempt once its current URL is available. |
+| `1` | Attempted without confirmed acceptance, including pending, failed, unknown, and discarded outcomes. |
+| `2` | Confirmed action acceptance. |
+| `3` | Present at baseline and suppressed until a complete observation establishes absence. |
+
+Only status 0 is eligible to emit. URLs, credentials, login names, interval,
+event counters, and in-flight correlations are kept out of saved progress.
 
 At 20 digits per ID each row occupies at most 26 bytes, plus one separator;
 1,000 rows occupy at most 27,001 bytes including the outer array. With a
@@ -306,15 +375,26 @@ the common encoder before returning it, including the 32,768-byte limit;
 overflow is a checkpoint failure, never truncation. This leaves margin without
 depending on compression, hashes with collision risk, or unbounded URLs.
 
-On restoration validate exact schema/fields/types, bounds, ordering, unique
-IDs, and status values, then require host and `/user` ID to match the watch.
-Reject incompatible state before starting the watch; never silently reset.
-With null state, all initial matches are unsent. With saved state, wait for
-the first complete search to obtain current URLs and reconcile presence.
-Retain status 2 to suppress confirmed occurrences. Retain status 1 to avoid
-retrying unfinished attempts; do not claim they were delivered. Status 0 may
-make its first attempt only if still present. Newly present IDs become status
-0, and absent IDs are removed. The plugin never owns state files.
+### Restore, upgrade, and reset
+
+On restoration validate the exact fields and types for the declared schema,
+including the boolean and empty-array invariant in v2, bounds, ordering,
+unique IDs, and allowed statuses. Require the saved host and `/user` ID to
+match the watch. Reject malformed, incompatible, or identity-mismatched state
+before positive watch acceptance. The hub owns all state files.
+
+| Restored input | State before the first complete observation |
+| --- | --- |
+| Null, including a new registration or an explicit offline progress reset | Baseline unset, no entries. |
+| Valid `github-review-request-v2` | Restore the saved baseline flag and entries exactly. |
+| Valid `github-review-request-v1` from the version that notified initial matches | Restore with the baseline established, even when the saved array is empty. Read the v1 payload containing exactly `host`, `user_id`, and `entries`, with statuses 0–2. Preserve each saved status. |
+
+Every checkpoint written by the new reader uses v2, including checkpoints
+taken before a complete observation and those produced after restoring v1.
+With an established baseline, wait for the first complete observation to
+obtain current URLs and reconcile against the restored set. A present status
+0 may emit its first attempt. Present statuses 1, 2, and 3 stay quiet. Newly
+present IDs become status 0, and absent IDs are removed.
 
 Process `delivery_notice`, observation commits, event emission, and checkpoint
 extraction in one ordered per-watch state coordinator. A checkpoint applies
@@ -322,9 +402,9 @@ all preceding notices before taking its snapshot. For `quiesce:true`, cancel
 retrieval/timers, prevent further emission and observation commits, then
 snapshot promptly; remain quiescent until Session closure. Late HTTP results
 cannot change a quiesced snapshot. Existing common save-failure continuation
-and final-stop fences remain authoritative. Saved status 2 plus successful
-normal shutdown establishes confirmed restart suppression; status 1 carries
-no added delivery/recovery guarantee.
+and final-stop fences remain authoritative. Successfully saved statuses 2 and
+3 preserve suppression through a normal restart. Status 1 carries no added
+delivery or recovery guarantee.
 
 ## Specification documents and operating procedure
 
@@ -340,23 +420,26 @@ For continued developer and operator use:
 1. Build the plugin with `go build -o <output> ./plugins/triggers/github-review-request`.
    Supply a trusted PATH only when using saved `gh` authentication. Configure
    certificate trust for GHES using the operating system's normal trust store.
-2. Configure the executable as `role: "input"` in the existing `plugins` array,
-   together with an existing action. Supply the chosen host's credentials to
-   the daemon process environment. For different host tokens start separate
-   daemons, each with a different `--state-dir` and `--address 127.0.0.1:<port>`;
-   use that same address for its register and stop commands. Saved host `gh`
-   logins can share a daemon only with both environment token variables absent.
+2. Configure the executable as `role: "input"` in the existing `plugins` array
+   together with an existing action. For token authentication, set the
+   selected host's token in the daemon environment. Use separate daemons for
+   different host tokens, with distinct `--state-dir` and
+   `--address 127.0.0.1:<port>` values. Use the corresponding address for
+   register and stop commands. For saved host `gh` authentication, leave both
+   environment token variables empty. Those host logins can share a daemon.
 3. Register with `{"host":"github.com","poll_interval":"60s"}` (or the
    GHES hostname) as watch arguments and the chosen action's destination
    arguments. No repository list is needed. Verify the startup coverage notice.
-4. Observe one URL event for each initial direct match, then newly observed
-   occurrences. Use normal daemon stop and wait for process exit. Verify final
-   checkpoint/save success before relying on restart continuity.
+4. For a fresh watch, wait for the first-complete diagnostic. Requests in
+   that observation form the silent baseline. Each later newly observed
+   occurrence emits its URL. Use normal daemon stop and wait for process exit.
+   Verify final checkpoint/save success before relying on restart continuity.
 5. Restart with the same registration, host, and user identity. For deliberate
    identity changes or invalid state use the existing
-   [offline recovery procedure](windows-operations.md#trigger-runtime-state-recovery),
-   preserving the state tree first. Reset relinquishes previous suppression;
-   initial matches may notify again. Do not edit live or individual state rows.
+   [offline recovery procedure](trigger-runtime-state.md#offline-reset-deletion-and-recreation),
+   preserving the state tree first. After a reset, the first complete
+   observation establishes a new silent baseline. Do not edit live or
+   individual state rows.
 
 Examples use POSIX-shell notation where a shell is necessary; it is not an OS
 requirement. Delivery supplies complete runnable daemon/registration examples
@@ -368,7 +451,8 @@ using these contracts and inspects credential isolation for multiple hosts.
 | --- | --- | --- |
 | Bounded REST search with direct-user qualifier | Enumerate `/user/repos` and every PR; GraphQL; webhook/history | Search reaches non-affiliated public repositories and is documented on both target hosts. Repository enumeration does not enumerate every accessible public repository; GraphQL adds another capability surface; history/webhooks exceed scope. Search coverage limits remain explicit. |
 | One compact status row per current issue ID | Store URLs or two complete ID sets; compression; hashes | Exact bounded IDs fit the common checkpoint. Status separates confirmed success from attempted work without doubling worst-case storage. |
-| One outstanding event per watch | Unbounded burst; concurrent delivery map | Bounds correlation memory and simplifies notice ordering; a large initial set may take many delivery round trips. No latency guarantee is added. |
+| Explicit baseline flag and silent status in a new schema | Infer baseline from empty entries; save null before the first complete observation; mark baseline entries attempted | An empty array has two meanings and the hub persists non-null checkpoints. A dedicated status distinguishes baseline suppression from attempted delivery. A distinct schema makes old readers reject the new semantics even when the array is empty. |
+| One outstanding event per watch and an emission gate before the next retrieval | Concurrent delivery map or an additional queue for disappeared, unsent matches | Keeps at most 1,000 current rows and one outstanding correlation. A slow delivery can delay polling while an eligible event still awaits emission. Once that event is sent, polling can resume before its outcome is known. |
 | Saved-login CLI only after absent environment tokens | Always invoke `gh`; CLI API calls; enterprise-token precedence | Preserves the approved precedence and supports token users without a CLI. Sanitizing the child environment prevents implicit enterprise-token substitution. |
 | TLS trust and address routing substituted only in test processes | Production insecure/test endpoint flags; a new proxy framework | Exercises the real HTTP/TLS adapter without adding product configuration or shared infrastructure. Shipping executable identity remains a separate source/build and delivery concern. |
 
@@ -380,9 +464,10 @@ All GRR IDs below refer to
 | Requirement | Acceptance | Design | Verification |
 | --- | --- | --- | --- |
 | FR-001, FR-002 | AC-001 | Watch host and credential/identity selection | U-AUTH; GRR-V01-AUTH; GRR-D01/D02 |
-| FR-003, FR-005, FR-006 | AC-002, AC-003 | Retrieval and occurrence transitions | U-OBSERVE; GRR-V02-OBSERVATION; GRR-D01/D02 |
+| FR-003, FR-006 | AC-002 | Retrieval and URL-only emission | U-OBSERVE; GRR-V02-OBSERVATION; GRR-D01/D02 |
+| FR-005 | AC-002, AC-003, AC-005, AC-006, AC-008, AC-009 | Complete observations, silent initialization, and absence/reappearance | U-OBSERVE/U-STATE; GRR-V02/V03; GRR-D01/D02 |
 | FR-004 | AC-004 | Duration validation and scheduling | U-SCHEDULE; source inspection |
-| FR-007, FR-008 | AC-005, AC-007 | Status rows, ordered notices, restore and quiesce | U-STATE; GRR-V03-RESTART; common TRS-V01/V02/V03; GRR-D01/D02 |
+| FR-007, FR-008 | AC-003, AC-005, AC-007, AC-009, AC-010 | Versioned progress, ordered notices, restore, upgrade, and quiesce | U-OBSERVE/U-STATE; GRR-V03-RESTART; common TRS-V01/V02/V03; GRR-D01/D02 |
 | FR-009 | AC-006 | All-or-nothing observations, diagnostic classes and backoff | U-RETRIEVE; GRR-V02-OBSERVATION |
 | FR-010 | AC-008 | Artifacts, service profile, operating procedure | Artifact guardrail; documentation review; GRR-D01/D02 |
 | NFR-001 | AC-001, AC-007, AC-008 | Origin binding, TLS, secret exclusions and child environment | U-AUTH/U-STATE/U-RETRIEVE; GRR-V01/V02/V03; source and example review |
@@ -399,30 +484,72 @@ filesystem, or wall-clock sleeps belong in these unit matrices.
 | Group | Concrete boundaries and expected results |
 | --- | --- |
 | U-AUTH | Host invalid forms and case normalization; both/one/empty tokens; rejected chosen source never falls back; CLI absent/error/timeout/output overflow and sanitized environment; `/user` malformed IDs and state identity mismatch; no secret markers in errors. |
-| U-OBSERVE | Direct-query construction, open PR validation, exact URL context; A/A/empty/A produces two attempts; A/A across unobserved cancellation produces one; distinct IDs produce distinct attempts; same PR number in two repos stays distinct. |
-| U-SCHEDULE | No search/emission before grant; one initial search after activation; duplicate grant no-op; dormant checkpoint and quiesce-before-grant do not poll; late grant cannot leave quiescence. Controlled clock shows default 60s and configured positive duration after attempt completion; zero/negative/malformed rejected; no overlapping polls; server retry timestamps and exponential reset; quiesce cancels work. |
-| U-RETRIEVE | 0/100/1,000/1,001 results; page failure, duplicate/count drift, incomplete flag, invalid IDs/URLs, redirect, body limit; 401/403/429/5xx/network errors; each preserves A and recovery A does not repeat; retry guidance is never violated. |
-| U-STATE | Null versus compatible and corrupt/unknown state; all status values; accepted notice before checkpoint; late notice across absence/reappearance; status 1 never claimed accepted or retried; 1,000 maximum-width rows fit; oversize rejected; quiesce fences late HTTP results. |
+| U-OBSERVE | Direct query and open PR validation; incomplete empty response before a complete baseline containing A leaves the baseline unset, then A stays quiet. A/A/empty/A produces only the reappearance attempt. A/A across unobserved cancellation stays quiet for a baseline occurrence or preserves the single earlier attempt for a post-baseline occurrence. Later B and C in distinct repos get separate exact-URL events; the same PR number in different repos stays distinct. |
+| U-SCHEDULE | No search or emission before grant, including on a dormant checkpoint and on quiescence before grant. Activation starts one initial search. Duplicate and late grants do not start polling for an active or quiesced watch. A controlled clock verifies the default 60s and a configured positive duration from retrieval result processing. Reject zero, negative, and malformed durations. Verify non-overlapping polls, server retry timing and exponential reset. With two eligible matches, hold the first event's notice through the interval and verify there is no next retrieval. Release its slot, emit the remaining event, and allow polling while its outcome is pending. Checkpoints remain responsive and quiescence cancels the wait. |
+| U-RETRIEVE | Cover 0/100/1,000 results and a decodable first page with `incomplete_results=false` and a total of 1,001 as a capacity failure. Cover page failure, duplicate/count drift, incomplete flag, invalid IDs/URLs, redirect, and body limit. Cover 401, 429, 5xx and network errors. Compare an ordinary 403 with each 403 rate-limit signal and verify the respective permission or rate-limit delay. Use a controlled clock to test successive rate-limit failures where each of the configured interval, exponential delay, and latest server retry time determines the wait. With no guidance and an interval below one minute, check the one-minute floor and verify that the seventh and eighth consecutive failures wait 64 and 128 seconds. Verify that an intervening incomplete result retains the exponential term and a complete observation resets it. Every failure preserves A, recovery does not repeat A, and retries respect server guidance. |
+| U-STATE | Round-trip a quiescing v2 checkpoint before the first complete observation and separately one after a complete empty baseline. Restore each with A and expect silence and one A event, respectively (AC-009). Restore exact v1 payloads with an empty array and with present A/B/C at statuses 0/1/2. With new D in each next complete observation, expect D alone and A plus D, respectively; B and C stay quiet and the next checkpoint is v2 (AC-010). Check wrong identity, unknown schema, v1 status 3, v2 false flag with rows, and wrong flag types. Test notice-before-checkpoint ordering, late notices after reappearance, no retry while queued/in progress or after failure/unknown acceptance, 1,000 maximum-width rows, oversize rejection, and quiescence fencing late results. |
+
+For AC-006 in U-RETRIEVE, mock HTTP responses and use a controlled clock.
+With a 30-second configured interval and a one-second exponential term, check
+the following cases:
+
+- Classify HTTP 503 at time T. Test `Retry-After: 120` and the absolute HTTP
+  date T plus 120 seconds separately. Advance the clock five seconds before
+  scheduling. Expect a service diagnostic and a 115-second wait, with the
+  same deadline of T plus 120 seconds in both cases.
+  Repeat with HTTP 502 and `Retry-After: 120` for the same result. With an
+  unusable `Retry-After` on 503, expect the 30-second interval. Expect the
+  same interval with `X-RateLimit-Remaining: 0` and a future reset on 503
+  when `Retry-After` is absent.
+- For both 503 and 429, simulate a body read timeout and an oversized body
+  separately. Advance the clock five seconds between receiving
+  `Retry-After: 120` and completing the read attempt. Expect the status-based
+  service or rate-limit diagnostic and a retry deadline 125 seconds after
+  receiving the headers. With a valid HTTP date, expect the absolute deadline
+  to stay fixed. HTTP 200 with the same body faults yields network and
+  incomplete-retrieval failures, respectively.
+- For 403 with neither rate-limit header, return a complete rate-limit JSON
+  message within the body limit along with a read error. Expect rate limiting.
+  With truncated invalid JSON or an oversized body instead, expect a
+  permission failure.
+- With 429, verify that a zero delta or an elapsed positive Unix reset with
+  `X-RateLimit-Remaining: 0` uses the 30-second interval. An expired
+  `Retry-After` date without a qualifying reset uses the one-minute floor.
+
+Preserve the preceding complete match set and verify recovery without
+repeating an unchanged match. GRR-V02 covers retry scheduling through the
+public Session with 429. The unit cases isolate status, headers, body read
+results, and clock behavior.
 
 ### CI acceptance cases and selection
 
-Use three integration scenarios to test wiring that isolated decisions cannot
-establish. Put design-only cases and suite in
-`cmd/github-review-request-verification/*_integration_test.go`, all with
-`//go:build integration`, with local fixtures in its `testdata/` directory.
-Implementation relocates these cases and fixtures to the new plugin root and
-its `testdata/`, preserving IDs and expectations and removing the old suite.
-The complete plugin implementation scope must pass all three cases.
+Use the three existing case IDs directly in
+`plugins/triggers/github-review-request/*_integration_test.go`, all with
+`//go:build integration`. Keep local fixtures in that plugin's `testdata/`.
+GRR-V01 remains runnable because authentication is independent of baseline
+selection. GRR-V02 and GRR-V03 are static Pending until implementation
+connects the revised behavior. All three cases must pass for implementation
+completion.
 
 | Stable case ID | Mapping | Concrete stimulus and expected results |
 | --- | --- | --- |
 | GRR-V01-AUTH | AC-001, NFR-001 | Launch public Session against a test-instrumented real plugin command. Set both token markers with `gh` absent: `/user` must receive GH_TOKEN only. Reject it while a valid lower source exists: negative watch result, no fallback. With both absent run a native `gh` fixture for GHES: exact hostname argv, all four token variables absent, saved marker used only on GHES. Missing auth is a bounded negative watch result; diagnostics contain no token marker. |
-| GRR-V02-OBSERVATION | AC-002, AC-003, AC-006, NFR-001 | Through standalone public Session, send state_watch, permit only identity validation before acceptance, prepare receiver/correlations and send activate_watch before permitting search; duplicate grant creates no extra poller. A controlled HTTPS server offers two open direct PRs in two repositories and excludes team-only/other-user/closed/merged candidates according to the asserted direct query. Expect exact A and B URLs once; repeat unchanged, observe A absent, then A present and expect one new A. After A is confirmed, fail a page or return incomplete data, then recover unchanged: no repeat. A rate-limit response with Retry-After delays the next request. Inspect query, HTTPS host, event fields, and safe diagnostics; send terminal notices to release each emission slot. |
-| GRR-V03-RESTART | AC-005, AC-007, NFR-002 | Use the actual hub/client, instrumented plugin command and model output with controlled GitHub. Register two distinct destinations and confirm A independently for each; observe successful checkpoints, stop normally and wait for exits. Restart both retained routes with A+B; deterministically accept the first saved watch while holding a later watch validation. Before release the first watch makes no search/emission. Release validation; each destination receives only B once as a new event. With the daemon and configured plugins stopped, replace one runtime envelope payload by an incompatible schema: startup fails without fallback or output delivery. Preserve and remove the temporary state tree after all processes exit. |
+| GRR-V02-OBSERVATION | AC-002, AC-003, AC-006, NFR-001 | Use standalone public Session with a dormant checkpoint and duplicate activation. Assert the authenticated direct-user query on HTTPS. Return an incomplete empty result, then complete A, and confirm that the checkpoint records A at status 3 with no event. Add B and C in two repositories. Verify the first event matches either exact URL and hold its terminal notice through the polling interval. No search may start while the other event is unsent. Return the first event's accepted `delivery_notice`, expect the other exact URL once, and return its accepted notice. Return an accepted notice promptly for each subsequent event. Repeat unchanged, complete an observation without A, then reintroduce A and expect its URL once. After acceptance, serve incomplete and rate-limited results omitting A, honor Retry-After, then recover with A/B/C plus new D. Expect only D and safe coverage and failure diagnostics. The fixture substitutes GitHub query evaluation. The delivery walkthrough exercises excluded PRs on GitHub. |
+| GRR-V03-RESTART | AC-005, AC-007, NFR-002 | Use the actual hub/client, instrumented plugin command and model output with controlled GitHub. With A present, establish a silent baseline for the first registration, add B and confirm its acceptance, then register a second destination and establish its silent baseline with A+B. Stop normally and verify A/B persisted with the correct statuses per registration. Restart both retained routes with A/B/C, holding the later watch validation as below. Each saved destination receives only C after activation. Stop and replace one payload schema with an incompatible value. Startup must reject that restore without falling back to a fresh observation or delivering output. Explicitly reset only that watch in the stopped tree, then restart with A/B/C plus new D. The reset watch stays silent and persists the current set as baseline; the other watch receives only D. |
 
 Keep the full failure/scheduling/schema matrix in unit tests instead of
-repeating it through processes. Combine direct matching and partial-retrieval
-recovery in V02. Reuse common
+repeating it through processes. Combine silent startup, direct matching, and
+partial-retrieval recovery in V02. Use the existing held-response gates and
+wait for the next search request before sampling a checkpoint or asserting
+silence for the preceding result. For the emission gate, hold the first event's notice
+after its event and select on the next-request channel for 125 ms at the
+40 ms test interval. A request during that window fails immediately. Check
+the exact interval boundary with a controlled clock in U-SCHEDULE. V03 tests
+registration-specific progress
+through real storage. AC-009 and AC-010 use the same plugin state and
+observation functions in unit tests because the hub saves opaque envelopes
+and has no schema-dependent path. Additional process restarts for these
+payload variants would repeat the storage behavior exercised by V03. Reuse common
 [TRS-V01/V02/V03](trigger-runtime-state.md#verification-strategy) for reset,
 association, core save failure and restoration rules; V03 adds the actual
 GitHub state adapter and identity binding. U-STATE verifies plugin-specific
@@ -436,14 +563,19 @@ For V03 use existing daemon/client lifecycle and model-output artifact patterns.
 Inspect saved IDs in filename restoration order before restart. Reset the HTTPS identity-request counter for restart; sequential filename-order
 restoration identifies the second `/user` request to hold, independent of random
 UUID creation order. Use distinct valid watch intervals to keep both saved
-registrations distinct without needing different credentials or hosts. Wait for the first watch's positive-result journal barrier with A+B
-already available; the HTTPS server must record zero search calls from that
-watch during a bounded 500 ms no-search observation window after the later
-validation request arrives. Select on the first-search request channel and a
+registrations distinct without needing different credentials or hosts.
+Wait for the first watch's positive-result journal barrier with A/B/C
+already available. The HTTPS server must record zero search calls across both
+watches during a bounded 500 ms observation window after the later validation
+request arrives. Select on the first-search request channel and a
 context deadline: any search before release fails immediately; this is an
 explicit negative observation, not a sleep used to schedule restoration. Release
-within the existing eight-second validation budget, then expect the first search A+B, no second A, and exactly
-one accepted B per saved destination. Record public grant/result ordering in
+within the existing eight-second validation budget. After release, expect
+A/B/C in each first search and exactly one accepted C per saved destination.
+Use the first-complete diagnostic and final checkpoint to verify creation,
+restoration, and reset of each baseline. Before each stop, correlate new
+model-output rows with the hub's accepted `delivery_result` diagnostic by
+registration and delivery ID. Record public grant/result ordering in
 the instrumented plugin journal and actual output observations. Use channels
 and request-journal barriers, not random ID creation order or fixed sleeps.
 This catches start-after-result even when search beats restoration. Common
@@ -479,7 +611,8 @@ implementation must still pass the deterministic actual plugin/hub regression.
 
 Budget: build each fixture/test command once per suite, with at most 30 seconds
 for warm-dependency build/setup, V01/V02 at most 15 seconds each, V03 at most
-45 seconds, and final cleanup at most five seconds. The total is 110 seconds,
+45 seconds including the additional reset restart, and final cleanup at most
+five seconds. The total is 110 seconds,
 leaving ten seconds within the existing 120-second scoped suite deadline;
 at most one TLS fixture and, for V03, one daemon plus configured plugin processes
 per phase. A cold dependency download is separate setup evidence. Reuse the
@@ -488,24 +621,24 @@ shared harness, timeout, or verification-judgment changes are required. Record
 actual probe costs and any unavailable environment in the PR, never as product
 acceptance. The proposed case budget requires design review agreement.
 
-Run separately from the repository root:
+The existing Ubuntu Go CI uses the toolchain from `go.mod` and runs the
+unit and tagged product integration targets separately. Run from the
+repository root:
 
 ```sh
 go run build/mage.go -d build -w . test
 go run build/mage.go -d build -w . integrationAll
-go test -tags=integration ./cmd/github-review-request-verification -v
+go test -tags=integration ./plugins/triggers/github-review-request -v
 go run build/mage.go -d build -w . guardrails
 ```
 
-After case relocation the focused command addresses
-`./plugins/triggers/github-review-request` instead. The generic integration
-target discovers the suite automatically. Compile and enumerate all three
-static Pending cases during design; Pending, skipped, missing or filtered cases
-are not implementation acceptance.
+The generic integration target discovers the suite automatically. Compile and
+enumerate all three cases during design, including the two static Pending cases.
+Implementation requires a passing result for every inventory ID.
 
 The scoped inventory is
-`cmd/github-review-request-verification/testdata/github-review-request-cases.json`.
-Relocate its package path with the suite, preserving its three IDs. Also run
+`plugins/triggers/github-review-request/testdata/github-review-request-cases.json`.
+Also run
 the existing common runtime-state inventory separately for reused TRS coverage;
 neither inventory replaces the other.
 
@@ -513,30 +646,174 @@ neither inventory replaces the other.
 
 | Check | Mapping | Preconditions, actions and expected result | Evidence and evaluator |
 | --- | --- | --- | --- |
-| GRR-D01 | AC-001/002/005/008 | A maintainer uses github.com with a real user token and, separately, saved host `gh` auth. Register the shipping plugin, create direct requests in two controlled repos, a team-only request, another user's request and closed/merged cases. Observe only direct open URLs, no unchanged repeats, observed absence/reappearance, then accepted A plus successful normal restart with fresh B. Repeat selected-token rejection to establish no fallback. | Delivery maintainer records revision, host, credential type/permissions without secret, redacted config, exact stimulus, URL events, action acceptance and final save/exit records. |
-| GRR-D02 | AC-001/002/005/008, Q-001 | Repeat D01 on an available GHES 3.19.x installation with known patch version and controlled repositories/users/team. Configure separate daemon environments, state roots and control addresses for github.com and GHES tokens; verify host identity and no token transfer. Separately exercise saved host logins with environment tokens absent. | Delivery maintainer records exact version/API profile, environment owner, same observations, and separate result. No mock response or github.com success substitutes for GHES. |
+| GRR-D01 | AC-001/002/003/005/008 | Run the shipping plugin on github.com with controlled reviewers, requester, team and two repositories. Perform the baseline, restart, exclusion, and reappearance walkthroughs and the authentication matrix below. | The delivery maintainer records the shipping revision, redacted configuration, host, credential type and permissions, stimuli, URL events, acceptance outcomes, diagnostics and successful saves and exits. |
+| GRR-D02 | AC-001/002/003/005/008, Q-001 | Repeat D01 on a qualified GHES 3.19.x installation with a known patch version and controlled repositories, users and team. Verify host isolation as described below. | The delivery maintainer records the exact patch and API profile, installation owner, redacted destination metadata and a separate result with the D01 evidence. |
+
+#### Shared delivery evidence
+
+Use an isolated reviewer account and controlled requests. Route the
+walkthrough watch to the shipping [model output](mvp.md#model-output) in legacy
+mode. For each observation window, record the log start and the current end
+of the append-only JSONL file before the specified stimulus or startup.
+Evaluate new records for the walkthrough registration. When a window ends
+with a normal stop, check hub reception and delivery through quiescence and
+the final save, and record successful process exit separately.
+
+Match each `event_admitted` for the registration to one new JSONL row and one
+accepted `delivery_result` by `delivery_id`. Compare the row's context to the
+expected exact PR URL. In a silent window require zero admissions and zero new
+rows. An unexpected URL or extra admission fails the check. Inspect
+`event_rejected`, `plugin_event_rejected`, `plugin_frame_rejected`,
+`delivery_discarded`, and nonaccepted delivery results for the test watch or
+its input instance. Treat an observation window with rejected or discarded
+work, a premature Session loss, or missing logs as unverified unless the
+available evidence already shows a failure.
+
+Choose a `poll_interval` longer than the
+[five-second core checkpoint cadence](trigger-runtime-state.md#periodic-checkpoints-and-save-failures)
+with time for startup, retrieval, delivery, and normal stop. For each check
+of a first observation, record a conservative deadline one configured poll
+interval after sending the fresh registration request or starting the daemon
+for a retained watch. Collect the first-complete diagnostic and the required
+save or completed stop before that deadline. This bounds the evidence to
+the first poll because the interval starts after retrieval result processing.
+If the deadline is missed, repeat the walkthrough with a longer interval.
+
+Inspect saved progress read-only using the core runtime-state envelope. Use
+issue IDs to identify the controlled rows. Correlate the first-complete
+diagnostic and `runtime_state_saved` record with the registration and saved
+generation. Keep tokens and unrelated checkpoint contents out of retained
+evidence.
+
+#### Baseline and restart walkthrough
+
+1. Directly request review from the controlled reviewer on open PR A before
+   registering. Independently run the plugin's open direct-user query on the
+   same host with the watched identity and repository access. Start the
+   fresh watch once a complete result contains only A. Verify its
+   first-complete diagnostic has `baseline_created=true` and one match. Use
+   a successful periodic save to identify A at status 3. Apply the silent
+   window checks from startup through the point just before requesting B.
+2. Begin a new evidence window before directly requesting review from the
+   same reviewer on open PR B in the first repository. Keep A present. Wait
+   for B's exact URL and confirmed action acceptance, then stop normally.
+   Require exactly one accepted B delivery in this window and a successful
+   final checkpoint with A at status 3 and B at status 2.
+3. Keep A and B present and restart the retained watch. Wait for the same
+   registration's first-complete diagnostic with two matches and
+   `baseline_created=false`. Stop normally within the first-poll deadline.
+   Verify a successful final checkpoint with A at status 3 and B at status 2
+   and apply the silent window checks to this restart.
+
+#### Exclusion walkthrough
+
+1. With the daemon stopped after the baseline and restart walkthrough, keep A
+   and B present. Add a direct request to the watched reviewer on open PR C in
+   the second repository. Prepare four controls in the two test repositories.
+
+   | Control | Fixture and search evidence |
+   | --- | --- |
+   | Team-only | Leave the PR open. Request review from a team containing the watched reviewer, with no personal request. Confirm the exact PR in an open `team-review-requested:ORG/TEAM` search and confirm the current requested reviewers. |
+   | Different reviewer | Leave the PR open and request review only from another test user. Confirm the exact PR in an open `review-requested:USERNAME` search for that user and verify the direct assignment in the current requested reviewers. |
+   | Closed without merge | On an open PR, request review from the watched reviewer. Confirm it appears in an open direct-user search as that reviewer. Close the PR without merging, then confirm the same issue ID in an `is:closed is:unmerged` search. |
+   | Merged | On another open PR, request review from the watched reviewer and confirm its open direct-user search result. Merge it with the request pending in a test repository that permits this. Confirm the same issue ID in an `is:merged` search. |
+
+2. Run the independent searches under the watched identity and equivalent
+   repository access. Scope control queries to a fixture repository and a
+   unique PR title marker. Require complete results and compare issue IDs.
+   The delivery maintainer checks current reviewer assignments separately
+   with authorized read access to the
+   [requested reviewers endpoint](https://docs.github.com/en/rest/pulls/review-requests#get-all-requested-reviewers-for-a-pull-request).
+   After closing or merging a control, repeat its state query with
+   `user-review-requested:@me` to check whether the same issue ID is indexed
+   with both the new state and the watched reviewer still requested. If the
+   service clears the request or that combined evidence is unavailable,
+   record the state-only exclusion as unverified on that host. Retain the
+   observed transition separately from the service-free `is:open` query and
+   closed-record validation checks. Once the direct-user open search
+   contains A, B, and C, test the qualified controls together. Record each
+   fixture's issue ID, state, assignment, search assertions and timestamps.
+3. Keep the fixture states fixed and start the retained watch. Expect only
+   the exact C URL and its accepted delivery. Capture the first-complete
+   diagnostic with three matches and `baseline_created=false`. Stop normally
+   within the first-poll deadline and confirm a successful final checkpoint
+   containing exactly A, B and C, with C at status 2. Require exactly one
+   accepted C delivery in this activation's evidence window.
+4. Restart with the same fixtures. Require a second first-complete diagnostic
+   with three matches and `baseline_created=false`. Stop normally within
+   the first-poll deadline and verify a successful final save with the same
+   three rows. Apply the silent window checks to this activation.
+
+A control remains unverified if its indexed preconditions or either complete
+observation cannot be established.
+
+#### Reappearance walkthrough
+
+Resume the retained A/B/C registration using the same state root, host,
+watched identity, and model output file as the exclusion walkthrough. Start
+the evidence window before startup. Cancel the watched reviewer's request
+on A while leaving A open. Wait for a new successful periodic save of that
+registration without A's row. Then re-request review from the same reviewer
+on A and wait for the exact A URL and action acceptance. Stop normally.
+Require exactly one accepted A delivery in the window and A at status 2 in
+the successful final checkpoint.
+
+#### Authentication and host isolation
+
+For each authentication condition on each host, start a daemon under the
+specified environment with its own state root and output file, and register
+a fresh watch. In accepted cases, compare
+the authenticated user ID in a successful checkpoint with the expected test
+identity. Use two valid environment tokens for distinct test users and omit
+`gh` from PATH in the environment-token tests. Verify that setting both selects the
+`GH_TOKEN` identity and setting only `GITHUB_TOKEN` selects its identity.
+Then use a rejected `GH_TOKEN` with that same valid `GITHUB_TOKEN` and
+expect a rejected registration and authentication diagnostic. With both
+variables empty, run with `gh` on PATH to verify acceptance using the saved
+login for the selected host. Repeat with both variables empty and no usable
+saved login, and verify rejection and its authentication diagnostic.
+
+For host isolation in GRR-D02, use separate daemon environments, state
+roots and control addresses for the github.com and GHES token runs. Capture
+the logical destination of every outbound HTTPS connection attempt by each
+trigger instance during authentication and polling. Cover direct and proxied
+paths. For example, route HTTPS through a dedicated TLS pass-through CONNECT
+listener for each instance and use a test egress boundary that denies and
+records attempts to connect directly. The listener records the requested
+host and port while the plugin verifies the service's certificate end to end.
+Include blocked attempts when evaluating the run.
+
+Require completed observations for the expected authenticated identities.
+The github.com instance may contact only `api.github.com:443`, and the GHES
+instance only its configured API host on port 443. An observed attempt to
+contact another origin fails the check. If a path or attempted destination
+cannot be accounted for, record host isolation as unverified.
+Retain instance, destination, timestamps, outcome and identity assertions
+without capturing TLS payloads or credentials.
 
 Real-service execution may be deferred, but remains visibly unverified until
 these checks run. Review finalized README/examples for all FR-010 topics,
 normal recovery, exact capacity and coverage warnings, and secret exclusions.
-The service-free model walkthrough retains its independent scope. Passing this
-design's probes or common runtime tests does not satisfy either delivery check.
+GRR-D01 and GRR-D02 require independent live evidence. The
+[service-free model-plugin walkthrough and end-to-end suite](../requirements/bundled-plugins.md#scope)
+verify the shared routing path separately.
 
 ## Change impact and open decisions
 
-This adds a bundled input profile and its design-governed verification only.
-It uses the service-neutral runtime-state v2 coordination defined by
-[the runtime design](trigger-runtime-state.md), without a GitHub-specific hub
-API. Old nonparticipating/v1 behavior, shared tooling and storage formats stay
-unchanged. A host supporting `runtime_state_v2` is required; old hosts without the optional
-runtime-state extension are unsupported. The `github-review-request-v1` checkpoint schema/status rows stay identical;
-compatible saved progress loads without migration. Rollback to a binary lacking this schema must fail visibly on restore;
-use the established offline restore/reset procedure rather than ignoring state.
+The plugin uses the service-neutral `runtime_state_v2` coordination defined by
+[the runtime design](trigger-runtime-state.md). Upgrade by stopping normally and
+preserving the complete state tree before switching binaries. Compatible v1
+progress is read in memory and converted to v2 on the next successful save.
+Older plugin binaries reject a saved v2 payload. For rollback, stop every
+owner and restore the preserved compatible state tree, which resumes from
+that earlier save, or explicitly reset the affected progress. A reset under
+the older binary uses its initial-notification behavior. See the
+[offline reset procedure](trigger-runtime-state.md#offline-reset-deletion-and-recreation).
 
 | Question or risk | Impact | Owner | Resolve before | Status |
 | --- | --- | --- | --- | --- |
-| Q-001: GHES environment and tested patch version | Documentary 3.19.x API support does not establish service compatibility | Responsible human and delivery maintainer | Design approval for environment plan; delivery for execution | API target and permissions specified; actual environment unassigned and real-service verification deferred. |
-| Q-002: Search domain and capacity | At most 1,000 matches within GitHub-selected 4,000-repository coverage; exceeding repository coverage cannot reliably be detected | Design reviewer | Design approval | Bounded search and exact-ID status encoding selected with the explicit coverage limits; per-watch API cost accepted. |
+| Q-001: GHES environment and patch version | A usable installation is needed for the GRR-D02 walkthrough | Responsible human and delivery maintainer | Design approval for the environment assignment; delivery for execution | API target, permissions and qualification criteria specified. Assign an installation, patch version, owner and authorized access before approval. |
+| Q-002: Search domain and capacity | At most 1,000 matches within GitHub-selected 4,000-repository coverage. Exceeding repository coverage cannot reliably be detected. | Design reviewer | Design approval | The bounded search, exact-ID encoding, and per-watch API cost are subject to design approval. |
 | Eventual indexing and non-atomic pagination | Brief changes and some concurrent churn are not observable | Operator | Usage | Accepted observation-model limit; detect reported/observable incompleteness and preserve state. |
 | Instrumented CI versus live services | Controlled TLS/process success cannot certify deployed GitHub behavior | Delivery maintainer | Delivery completion | D01/D02 remain required and separate. |
 
