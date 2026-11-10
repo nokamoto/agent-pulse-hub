@@ -18,7 +18,6 @@ const (
 	DefaultHost         = "github.com"
 	DefaultPollInterval = time.Minute
 	MaxMatches          = 1_000
-	StateSchema         = "github-review-request-v1"
 )
 
 var pullURLPath = regexp.MustCompile(`^/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)$`)

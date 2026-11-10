@@ -8,12 +8,8 @@ const (
 	minRateDelay   = time.Minute
 )
 
-// RetryDelay computes the delay after one completed attempt. backoffLevel is
+// RetryDelayAt computes the delay from result processing. backoffLevel is
 // zero for the first transient failure and is capped without duration overflow.
-func RetryDelay(interval time.Duration, failure *Failure, backoffLevel uint) time.Duration {
-	return RetryDelayAt(interval, failure, backoffLevel, time.Now())
-}
-
 func RetryDelayAt(interval time.Duration, failure *Failure, backoffLevel uint, now time.Time) time.Duration {
 	if interval <= 0 {
 		interval = time.Minute
@@ -23,26 +19,12 @@ func RetryDelayAt(interval time.Duration, failure *Failure, backoffLevel uint, n
 	}
 	delay := interval
 	switch failure.Kind {
-	case FailureNetwork, FailureService:
-		backoff := exponentialBackoff(backoffLevel)
-		if backoff > delay {
-			delay = backoff
-		}
-	case FailureRateLimit:
-		guidance := minRateDelay
-		if !failure.RetryAt.IsZero() {
-			guidance = 0
-			until := failure.RetryAt.Sub(now)
-			if until > guidance {
-				guidance = until
-			}
-		}
-		if guidance > delay {
-			delay = guidance
-		}
-		backoff := exponentialBackoff(backoffLevel)
-		if backoff > delay {
-			delay = backoff
+	case FailureNetwork, FailureService, FailureRateLimit:
+		delay = max(delay, exponentialBackoff(backoffLevel))
+		if (failure.Kind == FailureService || failure.Kind == FailureRateLimit) && !failure.RetryAt.IsZero() {
+			delay = max(delay, failure.RetryAt.Sub(now))
+		} else if failure.Kind == FailureRateLimit {
+			delay = max(delay, minRateDelay)
 		}
 	case FailureAuthentication, FailurePermission, FailureUnsupported:
 		if 5*time.Minute > delay {

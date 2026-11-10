@@ -2,7 +2,6 @@ package domain
 
 import (
 	"errors"
-	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -10,7 +9,18 @@ import (
 	"github.com/nokamoto/agent-pulse-hub/internal/domain/jsonvalue"
 )
 
-const maxStateBytes = 32_768
+const (
+	maxStateBytes = 32_768
+	stateSchemaV1 = "github-review-request-v1"
+	stateSchemaV2 = "github-review-request-v2"
+)
+
+const (
+	unsent uint8 = iota
+	attempted
+	confirmed
+	silentBaseline
+)
 
 type Entry struct {
 	IssueID    uint64
@@ -25,11 +35,12 @@ type Attempt struct {
 }
 
 type Tracker struct {
-	host    string
-	userID  uint64
-	entries map[uint64]Entry
-	urls    map[uint64]string
-	nextGen uint64
+	host                string
+	userID              uint64
+	entries             map[uint64]Entry
+	urls                map[uint64]string
+	nextGen             uint64
+	baselineEstablished bool
 }
 
 func NewTracker(host string, userID uint64) *Tracker {
@@ -47,11 +58,23 @@ func RestoreTracker(state *jsonvalue.Value, host string, userID uint64) (*Tracke
 	}
 	schemaValue, _ := state.Get("schema")
 	schema, ok := jsonvalue.ParseString(schemaValue)
-	if !ok || schema != StateSchema {
+	if !ok || (schema != stateSchemaV1 && schema != stateSchemaV2) {
 		return nil, errors.New("checkpoint schema is incompatible")
 	}
-	payload, exists := state.Get("payload")
-	if !exists || payload.Kind() != jsonvalue.Object || !exactFields(payload, "host", "user_id", "entries") {
+	payload, _ := state.Get("payload")
+	fields := []string{"host", "user_id", "entries"}
+	baselineEstablished := true
+	maxStatus := confirmed
+	if schema == stateSchemaV2 {
+		fields = append(fields, "baseline_established")
+		flag, _ := payload.Get("baseline_established")
+		baselineEstablished, ok = flag.Bool()
+		if !ok {
+			return nil, errors.New("checkpoint baseline flag must be a boolean")
+		}
+		maxStatus = silentBaseline
+	}
+	if !exactFields(payload, fields...) {
 		return nil, errors.New("checkpoint payload fields are invalid")
 	}
 	hostValue, _ := payload.Get("host")
@@ -69,7 +92,11 @@ func RestoreTracker(state *jsonvalue.Value, host string, userID uint64) (*Tracke
 	if len(rows) > MaxMatches {
 		return nil, errors.New("checkpoint exceeds the supported entry capacity")
 	}
+	if !baselineEstablished && len(rows) != 0 {
+		return nil, errors.New("checkpoint has entries before establishing a baseline")
+	}
 	tracker := NewTracker(host, userID)
+	tracker.baselineEstablished = baselineEstablished
 	var previous uint64
 	for index, row := range rows {
 		if row.Kind() != jsonvalue.Array {
@@ -82,8 +109,8 @@ func RestoreTracker(state *jsonvalue.Value, host string, userID uint64) (*Tracke
 		idText, idOK := jsonvalue.ParseString(items[0])
 		issueID, validID := ParsePositiveID(idText)
 		statusText, statusOK := items[1].Text()
-		if items[1].Kind() != jsonvalue.Number || !statusOK || (statusText != "0" && statusText != "1" && statusText != "2") {
-			return nil, errors.New("checkpoint status must be integer 0, 1, or 2")
+		if items[1].Kind() != jsonvalue.Number || !statusOK || len(statusText) != 1 || statusText[0] < '0' || statusText[0] > '0'+maxStatus {
+			return nil, errors.New("checkpoint status is invalid for its schema")
 		}
 		if !idOK || !validID || (index > 0 && issueID <= previous) {
 			return nil, errors.New("checkpoint IDs must be canonical, unique, and sorted numerically")
@@ -116,14 +143,26 @@ func exactFields(value *jsonvalue.Value, fields ...string) bool {
 
 // Reconcile commits a complete observation. The caller must never call this
 // for an incomplete retrieval.
-func (t *Tracker) Reconcile(matches map[uint64]string) error {
+func (t *Tracker) Reconcile(matches map[uint64]string) (baselineCreated bool, err error) {
 	if len(matches) > MaxMatches {
-		return errors.New("observation exceeds the supported entry capacity")
+		return false, errors.New("observation exceeds the supported entry capacity")
 	}
+	var additions uint64
 	for id, rawURL := range matches {
 		if id == 0 || !ValidatePullURL(rawURL, t.host) {
-			return fmt.Errorf("observation contains an invalid pull request record")
+			return false, errors.New("observation contains an invalid pull request record")
 		}
+		if _, present := t.entries[id]; !present {
+			additions++
+		}
+	}
+	if additions > math.MaxUint64-t.nextGen {
+		return false, errors.New("occurrence generation exhausted")
+	}
+	baselineCreated = !t.baselineEstablished
+	status := unsent
+	if baselineCreated {
+		status = silentBaseline
 	}
 	for id := range t.entries {
 		if _, present := matches[id]; !present {
@@ -134,17 +173,24 @@ func (t *Tracker) Reconcile(matches map[uint64]string) error {
 		if _, exists := t.entries[id]; exists {
 			continue
 		}
-		if t.nextGen == math.MaxUint64 {
-			return errors.New("occurrence generation exhausted")
-		}
 		t.nextGen++
-		t.entries[id] = Entry{IssueID: id, Status: 0, Generation: t.nextGen}
+		t.entries[id] = Entry{IssueID: id, Status: status, Generation: t.nextGen}
 	}
 	t.urls = make(map[uint64]string, len(matches))
 	for id, rawURL := range matches {
 		t.urls[id] = rawURL
 	}
-	return nil
+	t.baselineEstablished = true
+	return baselineCreated, nil
+}
+
+func (t *Tracker) HasPendingEmission() bool {
+	for id := range t.urls {
+		if t.entries[id].Status == unsent {
+			return true
+		}
+	}
+	return false
 }
 
 // NextAttempt marks the lowest numbered unsent occurrence attempted before
@@ -153,14 +199,14 @@ func (t *Tracker) NextAttempt() (Attempt, bool) {
 	ids := t.sortedIDs()
 	for _, id := range ids {
 		entry := t.entries[id]
-		if entry.Status != 0 {
+		if entry.Status != unsent {
 			continue
 		}
 		rawURL, present := t.urls[id]
 		if !present {
 			continue
 		}
-		entry.Status = 1
+		entry.Status = attempted
 		t.entries[id] = entry
 		return Attempt{IssueID: id, Generation: entry.Generation, URL: rawURL}, true
 	}
@@ -171,10 +217,10 @@ func (t *Tracker) NextAttempt() (Attempt, bool) {
 // occurrence. Every terminal outcome releases the caller's outstanding slot.
 func (t *Tracker) ApplyNotice(issueID, generation uint64, status string) {
 	entry, exists := t.entries[issueID]
-	if !exists || entry.Generation != generation || status != "accepted" {
+	if !exists || entry.Generation != generation || entry.Status != attempted || status != "accepted" {
 		return
 	}
-	entry.Status = 2
+	entry.Status = confirmed
 	t.entries[issueID] = entry
 }
 
@@ -191,12 +237,13 @@ func (t *Tracker) Checkpoint() (*jsonvalue.Value, error) {
 		))
 	}
 	payload := jsonvalue.NewObject(map[string]*jsonvalue.Value{
-		"host":    jsonvalue.NewString(t.host),
-		"user_id": jsonvalue.NewString(strconv.FormatUint(t.userID, 10)),
-		"entries": jsonvalue.NewArray(rows...),
+		"host":                 jsonvalue.NewString(t.host),
+		"user_id":              jsonvalue.NewString(strconv.FormatUint(t.userID, 10)),
+		"baseline_established": jsonvalue.NewBoolean(t.baselineEstablished),
+		"entries":              jsonvalue.NewArray(rows...),
 	})
 	state := jsonvalue.NewObject(map[string]*jsonvalue.Value{
-		"schema":  jsonvalue.NewString(StateSchema),
+		"schema":  jsonvalue.NewString(stateSchemaV2),
 		"payload": payload,
 	})
 	if len(state.Marshal()) > maxStateBytes {

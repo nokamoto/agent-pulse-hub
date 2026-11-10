@@ -23,6 +23,8 @@ func TestRetryDelayAt(t *testing.T) {
 		{name: "short rate guidance is honored", interval: time.Second, failure: &Failure{Kind: FailureRateLimit, RetryAt: now.Add(2 * time.Second)}, want: 2 * time.Second},
 		{name: "rate limit respects larger interval", interval: 2 * time.Minute, failure: &Failure{Kind: FailureRateLimit, RetryAt: now.Add(90 * time.Second)}, want: 2 * time.Minute},
 		{name: "rate limit without guidance", interval: 30 * time.Second, failure: &Failure{Kind: FailureRateLimit}, want: minRateDelay},
+		{name: "seventh rate limit without guidance", interval: 30 * time.Second, failure: &Failure{Kind: FailureRateLimit}, level: 6, want: 64 * time.Second},
+		{name: "eighth rate limit without guidance", interval: 30 * time.Second, failure: &Failure{Kind: FailureRateLimit}, level: 7, want: 128 * time.Second},
 		{name: "authentication probe bound", interval: time.Minute, failure: &Failure{Kind: FailureAuthentication}, want: 5 * time.Minute},
 	}
 	for _, test := range cases {
