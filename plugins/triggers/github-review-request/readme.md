@@ -1,11 +1,12 @@
 # GitHub review request trigger
 
 Watch open pull requests that request a review directly from your GitHub user.
-The example below writes each newly observed request's URL to a local
-JSON-lines file through the bundled model-output action. It includes existing
-direct requests on the first search, across repositories visible to your
-credential. There is no repository or organization filter. Team-only requests
-are excluded.
+A new watch uses its first complete search as a baseline and emits no events
+for those requests. After that, the example below writes the URL of each newly
+observed request to a local JSON-lines file through the bundled model-output
+action. The search spans repositories visible to your credential, within
+[GitHub's search limits](#observation-and-delivery-limits). There is no
+repository or organization filter. Team-only requests are excluded.
 
 ## Prerequisites
 
@@ -18,15 +19,18 @@ the builds below.
 
 You need HTTPS access to GitHub and a user credential that can read the
 intended repositories. Use either an environment token or saved GitHub CLI
-authentication as described below. The example uses two POSIX shell terminals,
-Python 3 to generate JSON, and a new writable local directory. The shell and
-Python are example utilities, not product runtime dependencies or OS requirements.
+authentication as described below. To see a delivery, arrange for another user
+to request your review on an open pull request you can access after the
+baseline is established.
+
+The example uses two POSIX shell terminals, Python 3 to generate JSON, and a
+new writable local directory. The shell and Python are only walkthrough tools.
+Use equivalent tools for your platform if needed.
 Use only trusted executables. The daemon launches and supervises its plugins;
 do not launch the trigger directly.
 
-The designed service profiles are github.com and GitHub Enterprise Server
-(GHES) 3.19.x. Real-service delivery verification remains incomplete; this
-profile declaration does not establish tested GHES compatibility.
+The API profile targets github.com and GitHub Enterprise Server (GHES) 3.19.x.
+GHES real-service verification remains incomplete.
 
 ## Choose authentication and host
 
@@ -37,14 +41,16 @@ first nonempty credential in this order:
 2. `GITHUB_TOKEN`
 3. Saved GitHub CLI authentication for the configured host
 
-For an environment token, securely set the selected variable in the terminal
-that will run the daemon. No GitHub CLI is required. Do not put the token in
-JSON files, watch arguments, shell history, or shared diagnostics. The selected
+For an environment token, securely export the selected variable in the
+terminal that will run the daemon so it inherits the token. No GitHub CLI is
+required. Keep the token out of JSON files, watch arguments, shell history,
+and shared diagnostics. The selected
 token is used as-is: if rejected, it produces an error without trying a
 lower-priority source.
 
-For saved authentication, install a trusted `gh` executable on `PATH`, leave
-both token variables unset, and log in interactively before starting the daemon:
+For saved authentication, install a trusted `gh` executable on `PATH`. In the
+terminal that will run the daemon, unset both token variables and log in
+interactively before starting the daemon.
 
 ```sh
 unset GH_TOKEN GITHUB_TOKEN
@@ -61,21 +67,26 @@ Classic PATs or OAuth tokens need `repo` for private repository search; that
 scope also grants write capabilities although the trigger only reads.
 Fine-grained PATs and GitHub App user access tokens must be accepted by `/user`
 and issue search; repository selection and organization approval still limit
-visibility. Installation tokens that cannot resolve a user are unsupported.
+visibility. Installation tokens that cannot resolve a user, including the
+built-in GitHub Actions `GITHUB_TOKEN`, are unsupported.
 
 `host` defaults to `github.com`. For GHES, use its DNS hostname without a
 scheme or path. Requests use HTTPS port 443, normal system certificate
 verification, `Accept: application/vnd.github+json`, and API version `2022-11-28`.
 Configure GHES certificate trust in the system trust store. Use the GHES
-hostname for saved login as well.
+hostname for saved login as well. The installation must provide authenticated
+`GET /user` and REST issue search with `user-review-requested:@me`, pagination,
+`total_count`, and `incomplete_results`. A missing API capability produces
+an error. `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` do not select the
+watch's credential. Use the same precedence listed above for both hosts.
 
 When using environment tokens for different hosts, run one daemon per host,
 each with its host's token, its own run/configuration and state directories,
 and a different loopback control address. Never register a second host on a
 daemon carrying another host's token. The example below uses port `47832`;
-for a separate GHES daemon choose another port consistently in its start,
-register, and stop commands. When both environment token variables are absent,
-host-specific saved `gh` logins may share one daemon.
+for a separate GHES daemon choose another port and use it in every command
+that starts or contacts that daemon. When both environment token variables
+are absent, host-specific saved `gh` logins may share one daemon.
 
 ## Build and configure
 
@@ -124,8 +135,8 @@ With the empty action `args` array, this example uses default delivery without
 automatic retry. Optional retained notification evidence and conservative
 retry are described in the [local notification-mode guide](../manual/walkthrough.md#retain-notification-evidence-and-enable-safe-retry).
 To adapt that guide, change this example's `model` action arguments as directed,
-use `127.0.0.1:47832` for inspection, and use direct review requests as the event
-source in place of the manual example's file markers. Stop and restart with the
+use this daemon's loopback address for inspection, and use direct review
+requests as the event source. Stop and restart with the
 updated configuration as that guide describes.
 
 Note the printed run directory. Wait for `plugin_ready` with `available: true`
@@ -147,15 +158,25 @@ suffix="$(go env GOEXE)"
 
 Expect exit success and JSON with `"ok":true` and a `subscription_id`.
 Retain the returned ID and the daemon address if you want to cancel this watch.
-The trigger reports its search coverage limitation at watch startup. Repeating
-the same registration returns the same active ID. Once registered, it begins
-searching automatically. With no matching requests, no output file is expected.
+Repeating the same registration returns the same active ID.
+At startup the trigger warns that GitHub searches at most 4,000 repositories
+it selects. The trigger cannot reliably detect repositories omitted because
+of this limit. See [observation and delivery limits](#observation-and-delivery-limits).
 
-Have another user request your review directly on an open pull request you can
-access, or observe an existing direct request. Allow for search indexing and
-the polling interval. In the first terminal, look for `delivery_result` with
-`outcome: "accepted"` and your subscription ID. Then inspect the output in the
-second terminal:
+Wait for `github_review_request_first_complete_observation` in the daemon log
+with a `registration_id` matching the returned `subscription_id` and
+`baseline_created: true`. The `match_count` is the size of the baseline and
+may be zero. A failed or incomplete search leaves a fresh watch waiting for
+this first complete result. With the fresh output path in this example,
+expect no output file during baseline creation.
+
+After that diagnostic, choose an open pull request you can access that has no
+current direct request to you and was absent from the baseline. For example,
+use a new pull request created after the diagnostic. Have another user
+request your review directly on that pull request.
+Allow for search indexing and the polling interval. In the first terminal, look
+for `delivery_result` with `outcome: "accepted"` and your subscription ID. Then
+inspect the output in the second terminal:
 
 ```sh
 cat "$run/events.jsonl"
@@ -187,8 +208,8 @@ Require exit success and `"ok":true` with the exact same `subscription_id`.
 Cancellation removes this watch and its saved progress, so normal restart does
 not restore it. It does not change review requests on GitHub.
 An action already issued may still finish; cancellation cannot
-recall accepted output. A later registration creates a fresh watch without the
-cancelled watch's suppression history. For rejected, busy, storage, or uncertain
+recall accepted output. A later registration starts a fresh silent baseline.
+For rejected, busy, storage, or uncertain
 results, follow the local [cancellation instructions](../manual/walkthrough.md#cancel-one-subscription)
 and [recovery guide](../../../docs/design/windows-operations.md#cancel-one-subscription).
 
@@ -216,16 +237,38 @@ Restart with the same daemon command, configuration, state, host, and user
 identity. Wait for `daemon_ready` with `restored_registrations: 1`; do not
 register again. This assumes you retained the example's one watch; if you
 cancelled it above, expect zero restored registrations instead.
-For a retained watch, confirmed requests remain suppressed; a newly observed request
-can produce a new URL. Restoration does not need the original argument files.
-A new registration starts without prior progress.
+For a retained watch with an established baseline, the first complete
+observation after restart compares the current matches with saved progress.
+Unchanged baseline matches and requests with confirmed acceptance stay quiet.
+A newly present request can produce a URL. A saved baseline with zero matches
+is still an established baseline. If the watch was still waiting for its first
+complete search at the last successful save, it establishes a silent baseline
+after restart. Restoration uses the saved arguments.
 
-An incompatible checkpoint or changed user identity prevents watch restoration;
-it is not treated as first use. With the daemon stopped, follow the
-[offline recovery procedure](../../../docs/design/windows-operations.md#trigger-runtime-state-recovery).
-Preserve state before deliberate recovery. Reset relinquishes previous
-suppression and can notify initial matches again. Forced termination and
+An incompatible checkpoint or changed user identity blocks restoration. To
+deliberately start over with the same registration and destination, stop all
+daemons using the state tree, wait for their exits, and back up the entire tree.
+Then follow the [offline reset procedure](../../../docs/design/trigger-runtime-state.md#offline-reset-deletion-and-recreation)
+to remove only the affected watch's runtime progress. Restart restores the
+same registration and destination without re-registering. Its first complete
+observation establishes a new silent baseline. Forced termination and
 power-loss recovery are not guaranteed.
+
+## Upgrade and rollback
+
+Before switching binaries, stop normally and preserve the complete state tree
+after all owners exit. The current plugin treats compatible v1 checkpoints
+from the version that notified initial matches as established progress, even
+when they contain zero matches. On the next complete observation, a still
+present request with no prior delivery attempt and any newly present request
+can produce a URL. Previously attempted requests stay quiet while present.
+
+The next successful save writes v2 progress. Older plugin binaries reject v2
+checkpoints. To roll back after a v2 save, stop all owners and restore the
+preserved compatible state tree before starting the older binaries. This resumes
+from the earlier save. Alternatively, follow the offline reset procedure for
+the affected watch while stopped. With the older plugin, a reset can notify
+requests present on the first complete search.
 
 ## Observation and delivery limits
 
@@ -236,9 +279,10 @@ previously present request allows a later reappearance to produce a new event.
 A cancellation and re-request between observations may be missed.
 
 Search is eventually indexed and pagination is not an atomic snapshot.
-Coverage is at most 4,000 GitHub-selected repositories; exceeding that coverage
-cannot reliably be detected or guaranteed. The trigger reports this limit at
-watch startup. It rejects incomplete pages, changing counts, duplicates, and
+GitHub searches at most 4,000 repositories it selects. The trigger cannot
+reliably detect when this limit leaves out a repository. Even a complete
+observation can omit repositories your credential can access. The trigger
+reports the limit at watch startup. It rejects incomplete pages, changing counts, duplicates, and
 more than 1,000 results instead of treating partial data as an empty set.
 A complete observation costs one search request for 0–100 matches and up to
 ten for 901–1,000. Registrations poll independently and multiply that load;
