@@ -129,8 +129,10 @@ cat "$run/events.jsonl"
 ```
 
 Each new JSON Lines record has the exact pull request URL as its `context`.
-The file can contain private repository URLs. A request can notify again
-after a complete search sees it disappear and a later search sees it return.
+The file can contain private repository URLs. In this example, failed or
+uncertain deliveries are not retried automatically, and unfinished attempts
+may be lost on restart. A request can notify again after a complete search
+sees it disappear and a later search sees it return.
 See the [Codex Queue guide](../../actions/codex-queue/readme.md) to route URLs
 to a Codex conversation.
 
@@ -160,8 +162,10 @@ IFS= read -r subscription
 "$run/agent-pulse-hub$suffix" unsubscribe --subscription-id "$subscription" --address 127.0.0.1:47832
 ```
 
-Expect `"ok":true` and the same subscription ID. Cancellation removes its saved
-progress. A later registration establishes a new silent baseline.
+Expect `"ok":true` and the same subscription ID. Cancellation removes the watch
+and its saved progress. A later registration establishes a new silent baseline. Issued actions
+can still finish. See [cancellation recovery](../manual/walkthrough.md#cancel-one-subscription)
+for failed or uncertain results.
 
 ## Reset or roll back
 
@@ -174,5 +178,6 @@ After reset, the retained watch establishes a new silent baseline.
 The plugin reads compatible v1 checkpoints and writes v2. After a v2 save,
 rolling back to a v1-only binary requires restoring the compatible backup or
 resetting the affected watch while stopped. A reset on the older binary can
-notify requests in the first search. See
+notify requests in the first search. See [checkpoint migration](../../../docs/design/github-review-request.md#restore-upgrade-and-reset)
+and
 [upgrade and rollback details](../../../docs/design/github-review-request.md#change-impact-and-open-decisions).
