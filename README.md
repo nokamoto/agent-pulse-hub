@@ -65,11 +65,6 @@ cancelling one subscription and inspecting retained notification evidence.
 | Watch review requests addressed directly to your GitHub user | [GitHub review request trigger](plugins/triggers/github-review-request/readme.md) |
 | Watch one PR for reviews, discussion, CI failures, conflicts, and readiness | [GitHub PR watch trigger](plugins/triggers/github-pr-watch/readme.md) |
 
-Each guide covers setup, registration, observation, and recovery for that
-integration. Codex queue acceptance means queued for the conversation; observe
-receipt and task completion separately. GitHub Enterprise Server 3.19.x
-compatibility verification for review requests remains incomplete.
-
 ## Writing plugins
 
 Implement a trigger (protocol `input`) or action (protocol `output`) using
